@@ -102,10 +102,10 @@ function T.save_envelope_with_the_published_fingerprint_validates_strictly(_, ve
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
--- Reads the runner-prepared field-core scope (which publishes the complete
+-- Reads the runner-prepared complete scope (which publishes the complete
 -- script corpus with canonical sidecars) read-only; the oracle loads bodies
 -- through the same cache without writing.
 suite.metadata.capabilities = { "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = { "field-core" }
+suite.metadata.derivedAssets = {}
 suite.metadata.tags = { "script", "save", "compatibility" }
 return suite

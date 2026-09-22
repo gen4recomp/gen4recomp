@@ -2087,15 +2087,16 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
   end)
 end
 
--- A milestone must not certify its discovery-time roster: field-core stays
--- pending while icon membership is unknown even when every currently known
--- member is ready, and no successful milestone record is published from
--- that discovery-time set.
-function T.field_core_waits_for_adopted_page_membership()
+-- Registration must not certify an undiscovered roster: the intro answers
+-- pending without failure before any source membership is known, and no
+-- successful milestone record is published from that undiscovered set.
+-- (Audio/bank membership finalizes only after source adoption, covered by
+-- the adopted-plan tests.)
+function T.new_game_intro_registration_certifies_nothing_while_source_is_unknown()
   local calls = freshCalls()
   local backend = FakeCache.new()
   local cacheFs = CacheFs.forVersion("heartgold", backend)
-  stageSynthetic(cacheFs, "discovery-core-generation")
+  stageSynthetic(cacheFs, "discovery-intro-generation")
   local realForVersion = CacheFs.forVersion
   local patches = plannerPatches(calls)
   patches[#patches + 1] = {
@@ -2107,34 +2108,19 @@ function T.field_core_waits_for_adopted_page_membership()
   }
   withPatched(patches, function()
     local pool = recordingPool()
-    local session = openSession("discovery-core-generation", pool)
-    local ready, failure = session:requestMilestone("field-core", "required")
-    Assert.isFalse(ready, "field-core stays pending while its membership is unknown")
-    Assert.isNil(failure, "field-core reports no failure while its membership is unknown")
-    pool.states["source-plan:global"] = "ready"
-    for _ = 1, 3 do
-      session:update()
-    end
-    Assert.isTrue(session.sourceLoaded, "the staged inventory is adopted")
-    Assert.isFalse(session.pagesKnown, "no layout means no page membership")
-    session:requestMilestone("field-core", "required")
-    for _, entry in pairs(session.byKey) do
-      if type(entry) == "table" and entry.failure == nil then
-        entry.ready = true
-      end
-    end
-    local again, againFailure = session:requestMilestone("field-core", "required")
-    Assert.isFalse(again, "discovery-time readiness never certifies field-core")
-    Assert.isNil(againFailure, "unknown membership stays pending instead of failing")
-    Assert.isFalse(session:status().settled, "a scope awaiting adoption never settles")
-    Assert.isNil(session.recorded["field-core"], "no successful milestone is recorded from a discovery-time roster")
+    local session = openSession("discovery-intro-generation", pool)
+    local again, againFailure = session:requestMilestone("new-game-intro", "required")
+    Assert.isFalse(again, "an undiscovered roster never answers ready")
+    Assert.isNil(againFailure, "an undiscovered roster reports no failure")
+    Assert.isFalse(session:status().settled, "an undiscovered scope never settles")
+    Assert.isNil(session.recorded["new-game-intro"], "no successful milestone is recorded from an undiscovered roster")
   end)
 end
 
 -- Failed discovery terminates instead of waiting forever: a failed source
--- inventory ends field-core with the original prerequisite cause, never as
+-- inventory ends the intro with the original prerequisite cause, never as
 -- an unsupported-source claim.
-function T.failed_source_discovery_ends_field_core_with_its_cause()
+function T.failed_source_discovery_ends_the_intro_with_its_cause()
   local calls = freshCalls()
   local backend = FakeCache.new()
   local realForVersion = CacheFs.forVersion
@@ -2149,7 +2135,7 @@ function T.failed_source_discovery_ends_field_core_with_its_cause()
   withPatched(patches, function()
     local pool = recordingPool()
     local session = openSession("failed-discovery-generation", pool)
-    session:requestMilestone("field-core", "required")
+    session:requestMilestone("new-game-intro", "required")
     -- Prerequisite submission is paced by the shared planning budget:
     -- a starved wall-clock slice may spend the first pump on roster
     -- construction, so poll boundedly for submission instead of
@@ -2160,13 +2146,13 @@ function T.failed_source_discovery_ends_field_core_with_its_cause()
         break
       end
     end
-    Assert.isTrue(contains(pool.submitted, "source-plan:global"), "field-core demand schedules the source inventory")
+    Assert.isTrue(contains(pool.submitted, "source-plan:global"), "intro demand schedules the source inventory")
     pool.states["source-plan:global"] = { state = "failed", details = { error = "synthetic inventory fault" } }
     for _ = 1, 5 do
       session:update()
     end
-    local ready, failure = session:requestMilestone("field-core", "required")
-    Assert.isFalse(ready, "field-core never succeeds behind a failed inventory")
+    local ready, failure = session:requestMilestone("new-game-intro", "required")
+    Assert.isFalse(ready, "the intro never succeeds behind a failed inventory")
     Assert.notNil(failure, "the failed discovery terminates the scope instead of waiting")
     Assert.isTrue(
       tostring(failure):find("source-plan:global", 1, true) ~= nil,
@@ -2176,10 +2162,10 @@ function T.failed_source_discovery_ends_field_core_with_its_cause()
   end)
 end
 
--- Failed layout discovery also terminates: a failed mon-layout ends
--- field-core with the original prerequisite cause instead of waiting for
--- page membership that can never arrive.
-function T.failed_layout_discovery_ends_field_core_with_its_cause()
+-- Failed layout discovery also terminates: a failed mon-layout ends an
+-- explicit layout request with the original prerequisite cause instead of
+-- waiting, and the session settles terminally around it.
+function T.failed_layout_discovery_ends_layout_demand_with_its_cause()
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
   local generation = "failed-layout-generation"
   local calls = freshCalls()
@@ -2201,47 +2187,44 @@ function T.failed_layout_discovery_ends_field_core_with_its_cause()
   withPatched(patches, function()
     local pool = recordingPool()
     local session = openSession(generation, pool)
-    session:requestMilestone("field-core", "required")
-    local layoutSubmitted = false
-    -- The partially discovered corpus holds hundreds of entries under a small
-    -- per-update planning slice, so prerequisite scheduling may legitimately
-    -- take many pumps; the loop exits as soon as the layout is scheduled.
-    for _ = 1, 300 do
+    -- Layout demand schedules only after source adoption: the intro pulls
+    -- the inventory first, then the layout is demanded explicitly.
+    session:requestMilestone("new-game-intro", "required")
+    pool.states["source-plan:global"] = "ready"
+    for _ = 1, 25 do
       session:update()
-      if contains(pool.submitted, "mon-catalog:global") and pool.states["mon-catalog:global"] == nil then
-        pool.states["mon-catalog:global"] = "ready"
-      end
-      if contains(pool.submitted, "mon-layout:global") then
-        layoutSubmitted = true
+      if session.sourceLoaded then
         break
       end
     end
-    local status = session:status()
-    Assert.isTrue(
-      layoutSubmitted,
-      "field-core demand schedules the layout"
-        .. " sourceLoaded="
-        .. tostring(session.sourceLoaded)
-        .. " planningPending="
-        .. tostring(status.planningPending)
-        .. " submittedN="
-        .. tostring(#pool.submitted)
-    )
+    Assert.isTrue(session.sourceLoaded, "the staged inventory adopts first")
+    -- The layout depends on the catalog: drive both explicitly.
+    session:requestJob("mon-catalog", "global", "required")
+    pool.states["mon-catalog:global"] = "ready"
+    local cold, coldFailure = session:requestJob("mon-layout", "global", "required")
+    Assert.isFalse(cold, "the layout starts pending")
+    Assert.isNil(coldFailure, "the layout reports no failure while pending")
+    for _ = 1, 25 do
+      session:update()
+      if contains(pool.submitted, "mon-layout:global") then
+        break
+      end
+    end
+    Assert.isTrue(contains(pool.submitted, "mon-layout:global"), "layout demand schedules layout work")
     pool.states["mon-layout:global"] = { state = "failed", details = { error = "synthetic layout fault" } }
     for _ = 1, 5 do
       session:update()
     end
-    local ready, failure = session:requestMilestone("field-core", "required")
-    Assert.isFalse(ready, "field-core never succeeds behind a failed layout")
-    Assert.notNil(failure, "the failed layout terminates the scope instead of waiting")
+    local ready, failure = session:requestJob("mon-layout", "global", "required")
+    Assert.isFalse(ready, "the layout never succeeds behind a failed compile")
+    Assert.notNil(failure, "the failed layout terminates the demand instead of waiting")
     Assert.isTrue(
       tostring(failure):find("mon-layout:global", 1, true) ~= nil,
-      "the scope names its failed prerequisite: " .. tostring(failure)
+      "the demand names its failed prerequisite: " .. tostring(failure)
     )
     Assert.isTrue(session:status().settled, "a failed discovery settles terminally")
   end)
 end
-
 -- One request suffices for deferred support: a syntactically valid map that
 -- is absent from the later inventory settles to a source exclusion through
 -- updates alone, without a second request and without worker dispatch.
@@ -2577,7 +2560,11 @@ function T.exhausted_budget_admits_layout_adoption_before_reading_plans()
     }, function()
       local pool = recordingPool()
       local session = openSession(generation, pool)
-      session:requestMilestone("field-core", "required")
+      session:requestMilestone("new-game-intro", "required")
+      -- Page membership flows through explicit layout demand: the layout
+      -- (and its catalog prerequisite) joins the intro-driven session here.
+      session:requestJob("mon-catalog", "global", "required")
+      session:requestJob("mon-layout", "global", "required")
       -- The first planning node sets the slice start; every later clock
       -- read observes an exhausted slice, so the layout adoption below
       -- cannot admit its planning node in this pass.
@@ -2659,15 +2646,15 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
   )
   writeMonReceipt(cacheFs, generation, "mon-layout", "global", layoutMarker)
   local realBootstrapJobs = ArtifactJobs.bootstrapJobs
-  local realFieldCoreJobs = ArtifactJobs.fieldCoreJobs
-  local constructions = { bootstrap = 0, core = 0 }
+  local realIntroJobs = ArtifactJobs.newGameIntroJobs
+  local constructions = { bootstrap = 0, intro = 0 }
   ArtifactJobs.bootstrapJobs = function(...)
     constructions.bootstrap = constructions.bootstrap + 1
     return realBootstrapJobs(...)
   end
-  ArtifactJobs.fieldCoreJobs = function(...)
-    constructions.core = constructions.core + 1
-    return realFieldCoreJobs(...)
+  ArtifactJobs.newGameIntroJobs = function(...)
+    constructions.intro = constructions.intro + 1
+    return realIntroJobs(...)
   end
   local realBackendRead = backend.read
   local backendReads = 0
@@ -2691,7 +2678,10 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
         epoch = 1,
         pool = pool,
       })
-      session:requestMilestone("field-core", "near")
+      session:requestMilestone("new-game-intro", "near")
+      -- Page membership flows through explicit layout demand: the staged
+      -- layout adopts only once the test demands it directly.
+      session:requestJob("mon-layout", "global", "near")
       pool.states["source-plan:global"] = "ready"
       pool.states["mon-catalog:global"] = "ready"
       pool.states["mon-layout:global"] = "ready"
@@ -2705,7 +2695,7 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
       end
       Assert.isTrue(adopted, "the staged layout is adopted through the pump")
       -- Selective page demand enrolls the adopted page: blanket icon pages
-      -- are no longer part of field-core, so the page joins only through
+      -- are never part of the intro roster, so the page joins only through
       -- the fixed demand path, once, at the retained urgency.
       session:requestIconPage(0, "near")
       -- Drain every other demand without touching the still-cold page, so
@@ -2752,13 +2742,11 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
         Assert.isNil(seen[entry.jobKey], "adoption keeps one retained job: " .. entry.jobKey)
         seen[entry.jobKey] = true
       end
-      local pending, pendingFailure = session:requestMilestone("field-core", "near")
-      Assert.isFalse(pending, "field-core waits for its cold page")
-      Assert.isNil(pendingFailure, "the waiting scope reports no failure")
-      Assert.isFalse(session:status().settled, "a scope awaiting enrollment never settles")
+      -- The tail guards idle-steady-state invariants with no further
+      -- demand: the intro already served its adoption role above.
       local before = {
         bootstrap = constructions.bootstrap,
-        core = constructions.core,
+        intro = constructions.intro,
         reads = backendReads,
         submitted = #pool.submitted,
       }
@@ -2766,7 +2754,7 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
         session:update()
       end
       Assert.equal(constructions.bootstrap, before.bootstrap, "idle updates rebuild no bootstrap roster")
-      Assert.equal(constructions.core, before.core, "idle updates rebuild no field-core roster")
+      Assert.equal(constructions.intro, before.intro, "idle updates rebuild no intro roster")
       Assert.equal(backendReads, before.reads, "idle updates perform no readiness reads")
       Assert.equal(#pool.submitted, before.submitted, "idle updates submit no worker jobs")
       local duplicates = {}
@@ -2779,7 +2767,7 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
     end)
   end)
   ArtifactJobs.bootstrapJobs = realBootstrapJobs
-  ArtifactJobs.fieldCoreJobs = realFieldCoreJobs
+  ArtifactJobs.newGameIntroJobs = realIntroJobs
   if not ok then
     error(failure, 0)
   end

@@ -99,5 +99,5 @@ end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 suite.metadata.capabilities = { "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = { "field-core", "map:60" }
+suite.metadata.derivedAssets = { "map:60" }
 return suite

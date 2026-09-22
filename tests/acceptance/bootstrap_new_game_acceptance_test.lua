@@ -1,7 +1,7 @@
 -- Gated New Game through production menu routing. Choosing New Game
 -- requests the semantic intro milestone and hands the real candidate from
 -- the real mon and item catalogs to Oak composition only once that
--- milestone is ready, without waiting on field-core work. A read facade
+-- milestone is ready, without waiting on global field work. A read facade
 -- derives item availability from the real intro closure, so a warm
 -- complete cache cannot conceal the declared boundary: every catalog byte
 -- still loads through the genuine readers and validators.
@@ -66,6 +66,12 @@ function T.tests.new_game_enters_oak_on_intro_readiness_without_field_core()
       return false
     end,
     ensureField = function(_)
+      return true
+    end,
+    requestLogicalField = function(_, _)
+      return false
+    end,
+    ensureLogicalField = function(_)
       return true
     end,
     requestCell = function(_)
@@ -139,7 +145,7 @@ function T.tests.new_game_enters_oak_on_intro_readiness_without_field_core()
     local introRequests = 0
     local sawNearAtMenu = false
     for _, request in ipairs(requestedMilestones) do
-      Assert.isTrue(request.name ~= "field-core", "no field-core request is used to make this pass")
+      Assert.isTrue(request.name ~= "field-core", "no removed-milestone request is used to make this pass")
       if request.name == "new-game-intro" then
         introRequests = introRequests + 1
         if request.urgency == "near" then

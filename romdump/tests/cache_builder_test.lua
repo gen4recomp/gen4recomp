@@ -43,7 +43,7 @@ local function newEnv()
     excludedKeys = {},
     milestones = {
       bootstrap = { "world-catalog:global", "field-camera:global" },
-      ["field-core"] = { "world-catalog:global", "actors:global", "map:7" },
+      ["field-runtime"] = { "world-catalog:global", "actors:global", "map:7" },
     },
     sessions = {},
     pools = {},
@@ -105,7 +105,7 @@ local function makeSession(pool, identity)
   end
   function session:requestMilestone(name, urgency)
     assert(not self.retired, "generation session is retired")
-    assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
+    assert(name == "bootstrap" or name == "field-runtime", "milestones accept only bootstrap or field-runtime")
     local members = env.milestones[name] or {}
     local failures = {}
     local ready = true
@@ -128,7 +128,56 @@ local function makeSession(pool, identity)
     assert(not self.retired, "generation session is retired")
     assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
     self.completeRequested = urgency
-    return false, nil
+    -- Complete intent enrolls the fixture-known corpus, mirroring the
+    -- production enumerator: every key the fixture stages as failed,
+    -- excluded, ready, or pending joins once, so per-job outcomes flow
+    -- through their own confirmations.
+    if not self.corpusEnrolled then
+      self.corpusEnrolled = true
+      local seen = {}
+      for _, jobKey in ipairs(self.requested) do
+        seen[jobKey] = true
+      end
+      local keySets = { env.failKeys, env.excludedKeys, env.readyKeys }
+      if env.pendingKeys ~= nil then
+        keySets[#keySets + 1] = env.pendingKeys
+      end
+      for _, keySet in ipairs(keySets) do
+        if type(keySet) == "table" then
+          for jobKey in pairs(keySet) do
+            if not seen[jobKey] then
+              seen[jobKey] = true
+              local kind, key = splitJobKey(jobKey)
+              if kind ~= nil and key ~= nil then
+                self:requestJob(kind, key, urgency)
+              end
+            end
+          end
+        end
+      end
+    end
+    -- Complete-scope readiness mirrors production: every requested job
+    -- terminal (completed, ready, failed, or excluded), with per-job
+    -- failures reported through their own confirmations, not this scope.
+    self.completed = self.completed or {}
+    for _, jobKey in ipairs(self.requested) do
+      if
+        env.failKeys[jobKey] == nil
+        and env.excludedKeys[jobKey] == nil
+        and env.pendingKeys ~= nil
+        and env.pendingKeys[jobKey]
+      then
+        return false, nil
+      end
+      if
+        env.failKeys[jobKey] == nil
+        and env.excludedKeys[jobKey] == nil
+        and not (self.completed[jobKey] or (env.readyKeys ~= nil and env.readyKeys[jobKey]))
+      then
+        return false, nil
+      end
+    end
+    return true, nil
   end
   function session:update()
     assert(not self.retired, "generation session is retired")
@@ -404,8 +453,6 @@ function T.complete_scope_delegates_to_one_common_session_per_version()
     "an exhaustive client requests the explicit complete build"
   )
   local requested = requestedSet(env.sessions[1])
-  Assert.isTrue(requested["world-catalog:global"], "field core is requested")
-  Assert.isTrue(requested["actors:global"], "field core is requested")
   Assert.isTrue(requested["mon-summary:global"], "the mon summary is requested")
   Assert.equal(#env.publishes, 1, "a strict success publishes its attestation")
   local identity = env.publishes[1]

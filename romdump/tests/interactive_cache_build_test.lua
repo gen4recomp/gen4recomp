@@ -12,6 +12,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local CompilerPool = require("romdump.src.build.CompilerPool")
 local FakeCache = require("tests.support.FakeCache")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local MonCache = require("libs.assets.src.MonCache")
@@ -130,14 +131,6 @@ function T.every_family_maps_to_its_fixed_size_class()
   Assert.throws(function()
     ArtifactJobs.sizeClass("world")
   end)
-end
-
-local function jobSet(jobs)
-  local set = {}
-  for _, job in ipairs(jobs) do
-    set[job.kind .. ":" .. job.key] = true
-  end
-  return set
 end
 
 local function syntheticPlans()
@@ -2065,101 +2058,6 @@ function T.bootstrap_membership_is_exactly_the_menu_font()
   Assert.equal(jobs[1].key, "global", "the menu prerequisite is the global font")
 end
 
-function T.field_core_contains_bootstrap_without_geometry_or_portraits()
-  local lists = {
-    audioBankIds = { 7 },
-    messageBankIds = { 219, 220 },
-    scriptMemberIds = { 149 },
-    iconPageIds = { 3 },
-    mapDataIds = { 7 },
-  }
-  local coreJobs = ArtifactJobs.fieldCoreJobs(lists)
-  local core = jobSet(coreJobs)
-  local bootstrap = ArtifactJobs.bootstrapJobs()
-  for _, job in ipairs(bootstrap) do
-    Assert.isTrue(core[job.kind .. ":" .. job.key] == true, "core keeps bootstrap work")
-  end
-  local coreItemsCount = 0
-  for _, job in ipairs(coreJobs) do
-    if job.kind == "items" and job.key == "global" then
-      coreItemsCount = coreItemsCount + 1
-    end
-  end
-  Assert.equal(coreItemsCount, 1, "field core carries exactly one canonical items job")
-  for _, name in ipairs({
-    "actors:global",
-    "starter-choice:global",
-    "items:global",
-    "bag:global",
-    "message-bank:219",
-    "message-bank:220",
-    "message-summary:global",
-    "script-member:149",
-    "script-summary:global",
-    "map-data:7",
-  }) do
-    Assert.isTrue(core[name] == true, "core carries " .. name)
-  end
-  Assert.isNil(core["mon-icon-page:3"], "party views demand icon pages; field entry carries none")
-  for identityKey in pairs(core) do
-    local kind = identityKey:match("^([^:]+):")
-    Assert.isTrue(
-      kind ~= "map" and kind ~= "field-cell" and kind ~= "mon-portrait-page" and kind ~= "mon-summary",
-      "field entry never waits for geometry or portraits: " .. identityKey
-    )
-  end
-end
-
--- Decoupling bootstrap from field core must not silently shrink field
--- readiness: the decoupled roster carries every previously inherited
--- member plus the audio catalog the current summary dependency requires.
-function T.field_core_preserves_the_decoupled_closure()
-  local lists = {
-    audioBankIds = { 7 },
-    messageBankIds = { 219, 220 },
-    scriptMemberIds = { 149 },
-    iconPageIds = { 3 },
-    mapDataIds = { 7 },
-  }
-  local core = jobSet(ArtifactJobs.fieldCoreJobs(lists))
-  local expected = {
-    "world-catalog:global",
-    "field-cell-index:global",
-    "field-camera:global",
-    "field-weather:global",
-    "field-effects:global",
-    "field-emotes:global",
-    "field-ui:global",
-    "field-font:global",
-    "intro:global",
-    "new-game-init:global",
-    "mon-catalog:global",
-    "mon-layout:global",
-    "items:global",
-    "message-bank:219",
-    "message-bank:220",
-    "audio-catalog:global",
-    "audio-summary:global",
-    "audio-bank:7",
-    "actors:global",
-    "starter-choice:global",
-    "bag:global",
-    "message-summary:global",
-    "script-member:149",
-    "script-summary:global",
-    "map-data:7",
-  }
-  for _, name in ipairs(expected) do
-    Assert.isTrue(core[name] == true, "decoupled core keeps " .. name)
-  end
-  Assert.isNil(core["mon-icon-page:3"], "party views demand icon pages; field entry carries none")
-  local count = 0
-  for _ in pairs(core) do
-    count = count + 1
-  end
-  Assert.equal(count, #expected, "decoupled core carries nothing else")
-end
-
 -- A cold bootstrap request enrolls only the menu font: no source
 -- inventory, no page layout, and no work beyond the font reaches the pool.
 function T.bootstrap_registers_no_source_or_page_metadata()
@@ -2174,7 +2072,7 @@ function T.bootstrap_registers_no_source_or_page_metadata()
   end
   Assert.isNil(session.byKey["source-plan:global"], "bootstrap schedules no source inventory")
   Assert.isNil(session.byKey["mon-layout:global"], "bootstrap schedules no page layout")
-  Assert.isNil(session.milestones["field-core"], "bootstrap enrolls no field-core intent")
+  Assert.isNil(session.milestones["field-runtime"], "bootstrap enrolls no field intent")
   for jobKey in pairs(session.byKey) do
     Assert.equal(jobKey, "field-font:global", "bootstrap interest stays font-scoped: " .. jobKey)
   end
@@ -2183,10 +2081,10 @@ function T.bootstrap_registers_no_source_or_page_metadata()
   end
 end
 
--- Bootstrap readiness must not enroll field-core interest on its own:
+-- Bootstrap readiness must not enroll field interest on its own:
 -- explicit field preparation owns that demand. This drives a demand-only
--- session to readiness and proves no field-core intent appears.
-function T.bootstrap_readiness_registers_no_automatic_field_core()
+-- session to readiness and proves no field intent appears.
+function T.bootstrap_readiness_registers_no_automatic_field_demand()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
   local realForVersion = CacheFs.forVersion
@@ -2215,7 +2113,7 @@ function T.bootstrap_readiness_registers_no_automatic_field_core()
   local ready, failure = session:requestMilestone("bootstrap", "required")
   Assert.isTrue(ready, "bootstrap answers ready from the font alone")
   Assert.isNil(failure, "bootstrap reports no failure on success")
-  Assert.isNil(session.milestones["field-core"], "ready bootstrap never auto-requests field core")
+  Assert.isNil(session.milestones["field-runtime"], "ready bootstrap never auto-requests field demand")
 end
 
 -- Explicit complete intent is an idempotent owner operation: it records
@@ -2416,6 +2314,9 @@ end
 -- unchanged polls register nothing.
 function T.first_milestone_demand_promotes_existing_members()
   local env = openLiveSession({ generation = "milestone-promotion-generation", bankIds = { 3, 5 } })
+  -- The runtime roster pins the shared transition bank: the fixture source
+  -- models it as known so the promotion mechanics stay under test.
+  env.session.audioBankIds = { 750 }
   requestJob(env, "actors", "global", "sweep")
   requestJob(env, "bag", "global", "sweep")
   pumpSession(env, 2)
@@ -2423,10 +2324,10 @@ function T.first_milestone_demand_promotes_existing_members()
   Assert.equal(poolStatus(env, "bag", "global"), "queued", "the second leaf waits its turn")
   local before = #env.host.dispatched
   local first, second = withHost(env.host, function()
-    return env.session:requestMilestone("field-core", "required")
+    return env.session:requestMilestone("field-runtime", "required")
   end)
-  Assert.isFalse(first, "field core stays pending while cold")
-  Assert.isNil(second, "field core reports no failure while cold")
+  Assert.isFalse(first, "the runtime stays pending while cold")
+  Assert.isNil(second, "the runtime reports no failure while cold")
   pumpSession(env, 5)
   local actors = env.session.byKey["actors:global"]
   local bag = env.session.byKey["bag:global"]
@@ -2438,7 +2339,7 @@ function T.first_milestone_demand_promotes_existing_members()
   Assert.equal(poolStatus(env, "bag", "global"), "running", "the promoted second leaf takes the free worker")
   local calls = #env.host.dispatched
   withHost(env.host, function()
-    local again, againFailure = env.session:requestMilestone("field-core", "required")
+    local again, againFailure = env.session:requestMilestone("field-runtime", "required")
     Assert.isFalse(again, "an unchanged poll stays pending")
     Assert.isNil(againFailure, "an unchanged poll reports no failure")
   end)
@@ -2589,14 +2490,14 @@ end
 
 local function countWork(counts, backend)
   local realBootstrapJobs = ArtifactJobs.bootstrapJobs
-  local realFieldCoreJobs = ArtifactJobs.fieldCoreJobs
+  local realIntroJobs = ArtifactJobs.newGameIntroJobs
   ArtifactJobs.bootstrapJobs = function(...)
     counts.bootstrap = counts.bootstrap + 1
     return realBootstrapJobs(...)
   end
-  ArtifactJobs.fieldCoreJobs = function(...)
-    counts.core = counts.core + 1
-    return realFieldCoreJobs(...)
+  ArtifactJobs.newGameIntroJobs = function(...)
+    counts.intro = counts.intro + 1
+    return realIntroJobs(...)
   end
   local realBackendRead = backend.read
   function backend.read(self, path)
@@ -2610,7 +2511,7 @@ local function countWork(counts, backend)
   end
   return {
     bootstrapJobs = realBootstrapJobs,
-    fieldCoreJobs = realFieldCoreJobs,
+    newGameIntroJobs = realIntroJobs,
   }
 end
 
@@ -2677,7 +2578,7 @@ function T.settled_updates_reuse_retained_membership_without_new_work()
     Assert.isTrue(#pool.submitted > 0, "warm demand reaches the pool for worker proof")
     local before = {
       bootstrap = counts.bootstrap,
-      core = counts.core,
+      intro = counts.intro,
       planReads = planReads,
       publishedReads = publishedReads,
       backendRead = counts.backendRead,
@@ -2691,7 +2592,7 @@ function T.settled_updates_reuse_retained_membership_without_new_work()
     end
     session:outcomes()
     Assert.equal(counts.bootstrap, before.bootstrap, "idle updates rebuild no bootstrap roster")
-    Assert.equal(counts.core, before.core, "idle updates rebuild no field-core roster")
+    Assert.equal(counts.intro, before.intro, "idle updates rebuild no intro roster")
     Assert.equal(planReads, before.planReads, "idle updates reread no source inventory")
     Assert.equal(publishedReads, before.publishedReads, "idle updates readopt no published plans")
     Assert.equal(counts.backendRead, before.backendRead, "idle updates perform no readiness reads")
@@ -2705,7 +2606,7 @@ function T.settled_updates_reuse_retained_membership_without_new_work()
   end)
   CacheFs.forVersion = realForVersion
   ArtifactJobs.bootstrapJobs = originals.bootstrapJobs
-  ArtifactJobs.fieldCoreJobs = originals.fieldCoreJobs
+  ArtifactJobs.newGameIntroJobs = originals.newGameIntroJobs
   ArtifactJobs.validate = realValidate
   SourcePlan.read = realPlanRead
   ArtifactJobs.publishedPlans = realPublishedPlans
@@ -2743,7 +2644,7 @@ function T.repeated_scope_polls_observe_retained_answers_without_new_work()
     Assert.isNil(coldFailure, "registration reports no failure")
     local before = {
       bootstrap = counts.bootstrap,
-      core = counts.core,
+      intro = counts.intro,
       validates = validates,
       backendRead = counts.backendRead,
       backendWrite = counts.backendWrite,
@@ -2760,7 +2661,7 @@ function T.repeated_scope_polls_observe_retained_answers_without_new_work()
     session:status()
     session:outcomes()
     Assert.equal(counts.bootstrap, before.bootstrap, "polls rebuild no bootstrap roster")
-    Assert.equal(counts.core, before.core, "polls rebuild no field-core roster")
+    Assert.equal(counts.intro, before.intro, "polls rebuild no intro roster")
     Assert.equal(validates, before.validates, "polls run no family validation")
     Assert.equal(counts.backendRead, before.backendRead, "polls perform no cache reads")
     Assert.equal(counts.backendWrite, before.backendWrite, "polls publish no milestone record")
@@ -2776,7 +2677,7 @@ function T.repeated_scope_polls_observe_retained_answers_without_new_work()
     Assert.isNil(establishedFailure, "the established scope reports no failure")
     local settledCounts = {
       bootstrap = counts.bootstrap,
-      core = counts.core,
+      intro = counts.intro,
       validates = validates,
       backendRead = counts.backendRead,
       backendWrite = counts.backendWrite,
@@ -2788,7 +2689,7 @@ function T.repeated_scope_polls_observe_retained_answers_without_new_work()
       Assert.isNil(againFailure, "a repeated poll of the ready scope reports no failure")
     end
     Assert.equal(counts.bootstrap, settledCounts.bootstrap, "ready polls rebuild no bootstrap roster")
-    Assert.equal(counts.core, settledCounts.core, "ready polls rebuild no field-core roster")
+    Assert.equal(counts.intro, settledCounts.intro, "ready polls rebuild no intro roster")
     Assert.equal(validates, settledCounts.validates, "ready polls run no family validation")
     Assert.equal(counts.backendRead, settledCounts.backendRead, "ready polls perform no cache reads")
     Assert.equal(counts.backendWrite, settledCounts.backendWrite, "ready polls publish no milestone record")
@@ -2796,7 +2697,7 @@ function T.repeated_scope_polls_observe_retained_answers_without_new_work()
   end)
   CacheFs.forVersion = realForVersion
   ArtifactJobs.bootstrapJobs = originals.bootstrapJobs
-  ArtifactJobs.fieldCoreJobs = originals.fieldCoreJobs
+  ArtifactJobs.newGameIntroJobs = originals.newGameIntroJobs
   ArtifactJobs.validate = realValidate
   if not ok then
     error(failure, 0)
@@ -3326,13 +3227,13 @@ function T.unexpanded_inventory_waits_without_a_cycle()
   local backend = FakeCache.new()
   local pool = recordingPool()
   local session, _ = isolatedSession("unexpanded-inventory", pool, backend)
-  local ready, requestFailure = session:requestMilestone("field-core", "required")
-  Assert.isFalse(ready, "the core stays pending until its inventory arrives")
+  local ready, requestFailure = session:requestMilestone("new-game-intro", "required")
+  Assert.isFalse(ready, "the intro stays pending until its inventory arrives")
   Assert.isNil(requestFailure, "registration reports no failure")
   for _ = 1, 20 do
     session:update()
   end
-  local again, againFailure = session:requestMilestone("field-core", "required")
+  local again, againFailure = session:requestMilestone("new-game-intro", "required")
   Assert.isFalse(again, "unexpanded inventory never answers ready")
   Assert.isNil(againFailure, "a wait for inventory is pending, never a cycle")
 end
@@ -4027,6 +3928,408 @@ function T.running_background_candidate_reports_no_runnable_planning_until_settl
     end
   end
   Assert.isTrue(advanced, "the cursor advances once the candidate settles")
+end
+
+-- Bounded field-entry readiness: the planning and runtime milestones and the
+-- semantic logical/full field composites. A logical field owns only the
+-- semantic leaves of one map (its field record, message bank, script member,
+-- audio catalog and referenced audio banks); a full field adds the visual map
+-- artifact. Fixtures stage the published field record and hand-adopt the
+-- audio/script inventory exactly like the established milestone tests.
+local SEMANTIC_MAP_ID = 5311
+local SEMANTIC_DEDUP_MAP_ID = 5312
+local SEMANTIC_MESSAGE_BANK = 219
+local SEMANTIC_SCRIPT_MEMBER = 149
+
+local function semanticAudioPlan()
+  return {
+    index = {
+      sequences = {
+        [2] = { id = 2, bankId = 10 },
+        [100] = { id = 100, symbol = "SEQ_SEMANTIC_DAY", bankId = 20 },
+        [101] = { id = 101, symbol = "SEQ_SEMANTIC_NIGHT", bankId = 30 },
+      },
+      sequenceBySymbol = {
+        SEQ_SEMANTIC_DAY = 100,
+        SEQ_SEMANTIC_NIGHT = 101,
+      },
+    },
+  }
+end
+
+local function stageSemanticFieldRecord(cacheFs, mapId, music, plates)
+  cacheFs:writeLua(FieldMapDataCache.fieldPath(mapId), {
+    schema = FieldMapDataCache.FIELD_SCHEMA,
+    mapId = mapId,
+    mapSymbol = "MAP_SEMANTIC_TEST",
+    cameraType = 1,
+    transitionEnvironment = "outdoors",
+    messageBankId = SEMANTIC_MESSAGE_BANK,
+    scriptBankId = SEMANTIC_SCRIPT_MEMBER,
+    initScripts = {},
+    music = music,
+    events = { background = {}, objects = {}, warps = {}, coordinates = {} },
+    soundplates = plates,
+  })
+end
+
+local function stageDivergentSemanticRecord(cacheFs, mapId)
+  stageSemanticFieldRecord(cacheFs, mapId, {
+    day = "SEQ_SEMANTIC_DAY",
+    night = 2,
+    flagOverrides = { { flagId = 9, sequence = "SEQ_SEMANTIC_NIGHT" } },
+    traversalOverrides = { { traversal = "surf", sequence = 2 } },
+  }, {
+    { x = 0, z = 0, xBounds = 1, zBounds = 1, sequence = "SEQ_SEMANTIC_DAY", useFieldMusicBank = false },
+  })
+end
+
+local function stageConvergentSemanticRecord(cacheFs, mapId)
+  stageSemanticFieldRecord(cacheFs, mapId, {
+    day = "SEQ_SEMANTIC_DAY",
+    night = "SEQ_SEMANTIC_DAY",
+    flagOverrides = {},
+    traversalOverrides = {},
+  }, {
+    { x = 0, z = 0, xBounds = 1, zBounds = 1, sequence = "SEQ_SEMANTIC_DAY", useFieldMusicBank = false },
+  })
+end
+
+local function adoptSemanticInventory(session)
+  session.sourceLoaded = true
+  session.audioBankIds = { 10, 20, 30 }
+  session.scriptMemberIds = { SEMANTIC_SCRIPT_MEMBER }
+  session.mapDataIds = { SEMANTIC_MAP_ID, SEMANTIC_DEDUP_MAP_ID }
+  session.mapCellKeys = { [SEMANTIC_MAP_ID] = {}, [SEMANTIC_DEDUP_MAP_ID] = {} }
+  local hasBank = false
+  for _, bankId in ipairs(session.messageBankIds) do
+    if bankId == SEMANTIC_MESSAGE_BANK then
+      hasBank = true
+    end
+  end
+  if not hasBank then
+    session.messageBankIds[#session.messageBankIds + 1] = SEMANTIC_MESSAGE_BANK
+  end
+  session.adopted = {
+    audioPlan = semanticAudioPlan(),
+    scriptPlan = { generationKey = "semantic-test-generation" },
+    messageBankIds = session.messageBankIds,
+    audioBankIds = session.audioBankIds,
+    scriptMemberIds = session.scriptMemberIds,
+    mapDataIds = session.mapDataIds,
+    mapIds = {},
+    mapCellKeys = session.mapCellKeys,
+  }
+  session.byKey["source-plan:global"] = {
+    kind = "source-plan",
+    key = "global",
+    jobKey = "source-plan:global",
+    urgency = "required",
+    priority = 0,
+    submitted = false,
+    ready = true,
+    failure = nil,
+    phase = "ready",
+    finalDeps = {},
+    depsFinal = true,
+    depIndex = 1,
+    pendingDeps = {},
+  }
+  session.interest[#session.interest + 1] = session.byKey["source-plan:global"]
+end
+
+local function settleSubmittedExcept(session, pool, skip)
+  for _ = 1, 12 do
+    session:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if pool.states[jobKey] == nil and (skip == nil or not skip[jobKey]) then
+        pool.states[jobKey] = "ready"
+      end
+    end
+  end
+  session:update()
+end
+
+local function audioBankInterests(session)
+  local banks = {}
+  for jobKey in pairs(session.byKey) do
+    local bank = jobKey:match("^audio%-bank:(.+)$")
+    if bank ~= nil then
+      banks[#banks + 1] = bank
+    end
+  end
+  table.sort(banks)
+  return banks
+end
+
+function T.planning_milestone_carries_only_determination_closure()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("semantic-planning-generation", pool, backend)
+  local ready, failure = session:requestMilestone("field-planning", "required")
+  Assert.isFalse(ready, "planning stays pending while cold")
+  Assert.isNil(failure, "planning reports no failure while pending")
+  for _ = 1, 6 do
+    session:update()
+  end
+  local roster = assert(session.roster["field-planning"], "planning builds its roster from retained intent")
+  local set = {}
+  for _, member in ipairs(roster) do
+    set[member.kind .. ":" .. member.key] = true
+  end
+  for _, expected in ipairs({ "source-plan:global", "world-catalog:global", "field-cell-index:global" }) do
+    Assert.isTrue(set[expected] == true, "planning carries " .. expected)
+  end
+  local count = 0
+  for _ in pairs(set) do
+    count = count + 1
+  end
+  Assert.equal(count, 3, "planning carries nothing beyond determination")
+  for jobKey in pairs(session.byKey) do
+    local kind = jobKey:match("^([^:]+):")
+    Assert.isTrue(
+      kind ~= "audio-bank"
+        and kind ~= "audio-summary"
+        and kind ~= "message-bank"
+        and kind ~= "message-summary"
+        and kind ~= "script-member"
+        and kind ~= "script-summary"
+        and kind ~= "map-data"
+        and kind ~= "map",
+      "planning enrolls no family corpus: " .. jobKey
+    )
+  end
+end
+
+function T.runtime_milestone_carries_bounded_static_services()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("semantic-runtime-generation", pool, backend)
+  local ready, failure = session:requestMilestone("field-runtime", "required")
+  Assert.isFalse(ready, "runtime stays pending while cold")
+  Assert.isNil(failure, "runtime reports no failure while pending")
+  for _ = 1, 6 do
+    session:update()
+  end
+  local roster = assert(session.roster["field-runtime"], "runtime builds its roster from retained intent")
+  local set = {}
+  for _, member in ipairs(roster) do
+    set[member.kind .. ":" .. member.key] = true
+  end
+  local expected = {
+    "world-catalog:global",
+    "field-cell-index:global",
+    "field-camera:global",
+    "field-weather:global",
+    "field-effects:global",
+    "field-emotes:global",
+    "field-ui:global",
+    "field-font:global",
+    "actors:global",
+    "mon-catalog:global",
+    "mon-layout:global",
+    "items:global",
+    "bag:global",
+    "starter-choice:global",
+    "message-bank:219",
+    "audio-catalog:global",
+    "script-summary:global",
+  }
+  for _, name in ipairs(expected) do
+    Assert.isTrue(set[name] == true, "runtime carries " .. name)
+  end
+  local count = 0
+  for _ in pairs(set) do
+    count = count + 1
+  end
+  Assert.equal(count, #expected, "runtime carries nothing beyond its static services")
+  for _, name in ipairs({ "intro:global", "new-game-init:global", "message-summary:global", "audio-summary:global" }) do
+    Assert.isNil(set[name], "runtime excludes " .. name)
+  end
+  for identityKey in pairs(set) do
+    local kind, key = identityKey:match("^([^:]+):(.+)$")
+    Assert.isTrue(kind ~= "audio-bank", "runtime enrolls no audio bank: " .. identityKey)
+    Assert.isTrue(kind ~= "script-member", "runtime enrolls no script member: " .. identityKey)
+    Assert.isTrue(kind ~= "map-data", "runtime enrolls no field record: " .. identityKey)
+    Assert.isTrue(kind ~= "map", "runtime enrolls no visual map: " .. identityKey)
+    if kind == "message-bank" then
+      Assert.equal(key, "219", "runtime carries only the pinned label bank")
+    end
+  end
+end
+
+function T.logical_field_waits_for_map_data_then_enrolls_exact_leaves()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("semantic-logical-generation", pool, backend)
+  adoptSemanticInventory(session)
+  stageDivergentSemanticRecord(cacheFs, SEMANTIC_MAP_ID)
+  local ready, failure = session:requestLogicalField(SEMANTIC_MAP_ID, "required")
+  Assert.isFalse(ready, "logical field waits for its field record")
+  Assert.isNil(failure, "logical field reports no failure while pending")
+  pool.states["map-data:" .. SEMANTIC_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  Assert.isTrue(session.byKey["map-data:" .. SEMANTIC_MAP_ID] ~= nil, "logical field owns its field record")
+  Assert.isTrue(session.byKey["message-bank:219"] ~= nil, "logical field owns its message bank")
+  Assert.isTrue(session.byKey["script-member:149"] ~= nil, "logical field owns its script member")
+  Assert.isTrue(session.byKey["audio-catalog:global"] ~= nil, "logical field owns the audio catalog")
+  Assert.deepEqual(audioBankInterests(session), { "10", "20", "30" }, "logical field owns exactly its audio banks")
+  Assert.isNil(session.byKey["map:" .. SEMANTIC_MAP_ID], "logical field enrolls no visual map")
+  Assert.isNil(session.byKey["audio-summary:global"], "logical field enrolls no audio summary")
+  Assert.isNil(session.byKey["message-summary:global"], "logical field enrolls no message summary")
+  local pending, pendingFailure = session:requestLogicalField(SEMANTIC_MAP_ID, "required")
+  Assert.isFalse(pending, "logical field waits for its leaves")
+  Assert.isNil(pendingFailure, "logical field reports no failure while its leaves are pending")
+  settleSubmittedExcept(session, pool, nil)
+  local done, doneFailure = session:requestLogicalField(SEMANTIC_MAP_ID, "required")
+  Assert.isTrue(done, "logical field settles once its leaves are ready")
+  Assert.isNil(doneFailure, "logical field reports no failure on success")
+end
+
+function T.logical_field_audio_references_collapse_to_unique_banks()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("semantic-dedup-generation", pool, backend)
+  adoptSemanticInventory(session)
+  stageConvergentSemanticRecord(cacheFs, SEMANTIC_DEDUP_MAP_ID)
+  local ready, failure = session:requestLogicalField(SEMANTIC_DEDUP_MAP_ID, "required")
+  Assert.isFalse(ready, "convergent logical field waits for its field record")
+  Assert.isNil(failure, "convergent logical field reports no failure while pending")
+  pool.states["map-data:" .. SEMANTIC_DEDUP_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  Assert.deepEqual(audioBankInterests(session), { "20" }, "duplicate audio references collapse to one bank")
+  settleSubmittedExcept(session, pool, nil)
+  local done, doneFailure = session:requestLogicalField(SEMANTIC_DEDUP_MAP_ID, "required")
+  Assert.isTrue(done, "convergent logical field settles once its leaves are ready")
+  Assert.isNil(doneFailure, "convergent logical field reports no failure on success")
+end
+
+function T.full_field_requires_logical_closure_and_visual_map()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("semantic-full-generation", pool, backend)
+  adoptSemanticInventory(session)
+  stageDivergentSemanticRecord(cacheFs, SEMANTIC_MAP_ID)
+  local cold, coldFailure = session:requestField(SEMANTIC_MAP_ID, "required")
+  Assert.isFalse(cold, "full field stays pending while cold")
+  Assert.isNil(coldFailure, "full field reports no failure while pending")
+  settleSubmittedExcept(session, pool, { ["map:" .. SEMANTIC_MAP_ID] = true })
+  local visualPending, visualFailure = session:requestField(SEMANTIC_MAP_ID, "required")
+  Assert.isFalse(visualPending, "full field waits for its visual map")
+  Assert.isNil(visualFailure, "full field reports no failure while its visual map is pending")
+  pool.states["map:" .. SEMANTIC_MAP_ID] = "ready"
+  settleSubmittedExcept(session, pool, nil)
+  local done, doneFailure = session:requestField(SEMANTIC_MAP_ID, "required")
+  Assert.isTrue(done, "full field settles once its logical closure and visual map are ready")
+  Assert.isNil(doneFailure, "full field reports no failure on success")
+  local backend2 = FakeCache.new()
+  local pool2 = retryCapablePool()
+  local session2, cacheFs2 = isolatedSession("semantic-full-logical-generation", pool2, backend2)
+  adoptSemanticInventory(session2)
+  stageDivergentSemanticRecord(cacheFs2, SEMANTIC_MAP_ID)
+  session2:requestField(SEMANTIC_MAP_ID, "required")
+  pool2.states["map:" .. SEMANTIC_MAP_ID] = "ready"
+  settleSubmittedExcept(session2, pool2, { ["message-bank:219"] = true })
+  local logicalPending, logicalFailure = session2:requestField(SEMANTIC_MAP_ID, "required")
+  Assert.isFalse(logicalPending, "full field waits for its logical leaves even when the visual map is ready")
+  Assert.isNil(logicalFailure, "full field reports no failure while its logical leaves are pending")
+end
+
+function T.logical_readiness_never_tests_visual_map()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("semantic-logical-only-generation", pool, backend)
+  adoptSemanticInventory(session)
+  stageDivergentSemanticRecord(cacheFs, SEMANTIC_MAP_ID)
+  session:requestLogicalField(SEMANTIC_MAP_ID, "required")
+  settleSubmittedExcept(session, pool, { ["map:" .. SEMANTIC_MAP_ID] = true })
+  Assert.isTrue(session:ensureLogicalField(SEMANTIC_MAP_ID), "logical readiness settles without the visual map")
+  Assert.isNil(session.byKey["map:" .. SEMANTIC_MAP_ID], "logical readiness enrolls no visual map")
+end
+
+function T.full_field_readiness_fails_loudly_without_complete_closure()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("semantic-full-visual-generation", pool, backend)
+  adoptSemanticInventory(session)
+  stageDivergentSemanticRecord(cacheFs, SEMANTIC_MAP_ID)
+  session:requestField(SEMANTIC_MAP_ID, "required")
+  pool.states["map:" .. SEMANTIC_MAP_ID] = { state = "failed", details = { error = "synthetic visual failure" } }
+  settleSubmittedExcept(session, pool, nil)
+  local ready, failure = session:requestField(SEMANTIC_MAP_ID, "required")
+  Assert.isFalse(ready, "full field fails when its visual map fails")
+  Assert.isTrue(
+    tostring(failure):find(tostring(SEMANTIC_MAP_ID), 1, true) ~= nil,
+    "visual failure names its map: " .. tostring(failure)
+  )
+  local backend2 = FakeCache.new()
+  local pool2 = retryCapablePool()
+  local session2, cacheFs2 = isolatedSession("semantic-full-leaf-generation", pool2, backend2)
+  adoptSemanticInventory(session2)
+  stageDivergentSemanticRecord(cacheFs2, SEMANTIC_MAP_ID)
+  session2:requestField(SEMANTIC_MAP_ID, "required")
+  pool2.states["map:" .. SEMANTIC_MAP_ID] = "ready"
+  pool2.states["message-bank:219"] = { state = "failed", details = { error = "synthetic bank failure" } }
+  settleSubmittedExcept(session2, pool2, nil)
+  local leafReady, leafFailure = session2:requestField(SEMANTIC_MAP_ID, "required")
+  Assert.isFalse(leafReady, "full field fails when a logical leaf fails even though the visual map is ready")
+  Assert.isTrue(
+    tostring(leafFailure):find("219", 1, true) ~= nil,
+    "leaf failure names its bank: " .. tostring(leafFailure)
+  )
+  local err = Assert.throws(function()
+    session2:ensureField(SEMANTIC_MAP_ID)
+  end)
+  Assert.isTrue(
+    tostring(err):find("219", 1, true) ~= nil,
+    "the full-field assertion carries its leaf cause: " .. tostring(err)
+  )
+end
+
+function T.foreground_promotion_reuses_ticket_identity_without_double_submit()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local priorities = {}
+  local baseRequest = pool.request
+  pool.request = function(self, job)
+    priorities[job.jobKey] = job.priority
+    return baseRequest(self, job)
+  end
+  local session, cacheFs = isolatedSession("semantic-promotion-generation", pool, backend)
+  adoptSemanticInventory(session)
+  stageDivergentSemanticRecord(cacheFs, SEMANTIC_MAP_ID)
+  local first, firstFailure = session:requestLogicalField(SEMANTIC_MAP_ID, "near")
+  Assert.isFalse(first, "prefetched logical field stays pending while cold")
+  Assert.isNil(firstFailure, "prefetch reports no failure")
+  for _ = 1, 6 do
+    session:update()
+  end
+  local second, secondFailure = session:requestLogicalField(SEMANTIC_MAP_ID, "required")
+  Assert.isFalse(second, "promoted logical field stays pending while cold")
+  Assert.isNil(secondFailure, "promotion reports no failure")
+  for _ = 1, 6 do
+    session:update()
+  end
+  local counts = {}
+  for _, jobKey in ipairs(pool.submitted) do
+    counts[jobKey] = (counts[jobKey] or 0) + 1
+  end
+  local promoted = 0
+  for _, entry in pairs(session.byKey) do
+    if type(entry) == "table" and entry.failure == nil and entry.submitted then
+      Assert.equal(entry.priority, 0, "a promoted member reaches required priority: " .. entry.jobKey)
+      Assert.equal(priorities[entry.jobKey], 0, "the pool observes the promoted priority: " .. entry.jobKey)
+      promoted = promoted + 1
+    end
+  end
+  Assert.isTrue(promoted > 0, "the promotion reaches submitted members")
+  for jobKey, count in pairs(counts) do
+    Assert.isTrue(count <= 2, "no identity resubmits across promotion: " .. jobKey)
+  end
 end
 
 return { metadata = { capabilities = {} }, tests = T }

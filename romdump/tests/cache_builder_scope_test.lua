@@ -47,7 +47,7 @@ local function newEnv()
     excludedKeys = {},
     milestones = {
       bootstrap = { "field-camera:global", "message-bank:219" },
-      ["field-core"] = { "field-camera:global", "map-data:7", "script-member:0" },
+      ["field-runtime"] = { "field-camera:global", "map-data:7", "script-member:0" },
     },
     sessions = {},
     pools = {},
@@ -121,7 +121,7 @@ local function makeSession(pool, identity)
   end
   function session:requestMilestone(name, urgency)
     assert(not self.retired, "generation session is retired")
-    assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
+    assert(name == "bootstrap" or name == "field-runtime", "milestones accept only bootstrap or field-runtime")
     local members = env.milestones[name] or {}
     local failures = {}
     local ready = true
@@ -147,7 +147,18 @@ local function makeSession(pool, identity)
     assert(not self.retired, "generation session is retired")
     assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
     self.completeRequested = urgency
-    return false, nil
+    -- Complete-scope readiness mirrors production: every requested job
+    -- terminal (completed, ready, failed, or excluded) with exclusions
+    -- reported through their own job confirmations, not this scope.
+    self.completed = self.completed or {}
+    for _, jobKey in ipairs(self.requested) do
+      if env.failKeys[jobKey] == nil and env.excludedKeys[jobKey] == nil then
+        if not (self.completed[jobKey] or env.readyKeys[jobKey]) then
+          return false, nil
+        end
+      end
+    end
+    return true, nil
   end
   function session:update()
     assert(not self.retired, "generation session is retired")
@@ -843,11 +854,11 @@ function T.camera_only_scope_requests_no_inventory_work()
 end
 
 -- The command never proves a scope the session still calls pending: a
--- field-core with one page that never becomes ready fails and leaves no
+-- scope with one page that never becomes ready fails and leaves no
 -- successful receipt behind.
-function T.unready_field_core_withholds_its_proof()
+function T.unready_scope_withholds_its_proof()
   env = newEnv()
-  env.milestones["field-core"] = { "field-camera:global", "map-data:7", "mon-icon-page:9" }
+  env.milestones["bootstrap"] = { "field-camera:global", "map-data:7", "mon-icon-page:9" }
   env.pendingKeys["mon-icon-page:9"] = true
   requireScopedPreparation()
   local recordPath = newOutputPath("unready-core", ".lua")
@@ -856,7 +867,7 @@ function T.unready_field_core_withholds_its_proof()
     return CacheBuilder.prepareVersion(
       "heartgold",
       scopedOptions({
-        requirements = { "field-core" },
+        requirements = { "bootstrap" },
         preparationRecord = recordPath,
         saveDirectory = "/private/test-root",
       })
@@ -873,20 +884,20 @@ function T.unready_field_core_withholds_its_proof()
 end
 
 -- Balanced counts never override a pending scope: a session that reports a
--- settled successful census while its originally requested field-core is
+-- settled successful census while its originally requested scope is
 -- still pending fails with a structured error naming the scope and issues
 -- no successful receipt.
 function T.settled_counts_never_override_a_pending_scope()
   env = newEnv()
-  env.milestones["field-core"] = { "field-camera:global", "map-data:7" }
-  env.stuckMilestones["field-core"] = true
+  env.milestones["bootstrap"] = { "field-camera:global", "map-data:7" }
+  env.stuckMilestones["bootstrap"] = true
   requireScopedPreparation()
   local recordPath = newOutputPath("pending-scope", ".lua")
   os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
-      requirements = { "field-core" },
+      requirements = { "bootstrap" },
       preparationRecord = recordPath,
       saveDirectory = "/private/test-root",
     })
@@ -896,7 +907,7 @@ function T.settled_counts_never_override_a_pending_scope()
   local Errors = require("libs.errors.src.Errors")
   Assert.isTrue(Errors.is(err), "the scope failure is structured")
   Assert.isTrue(
-    tostring(err):find("field-core", 1, true) ~= nil,
+    tostring(err):find("bootstrap", 1, true) ~= nil,
     "the failure names its pending scope: " .. tostring(err)
   )
   local handle = io.open(recordPath, "r")
@@ -908,24 +919,24 @@ function T.settled_counts_never_override_a_pending_scope()
   Assert.equal(env.publishes, 0, "a pending scope publishes no attestation")
 end
 
--- A satisfied field-core proves its selected scope without claiming a
+-- A satisfied scope proves its selection without claiming a
 -- complete cache: the successful record follows the satisfied closure
 -- and still reports complete=false with no full attestation.
-function T.ready_field_core_issues_its_proof_without_complete_attestation()
+function T.ready_scope_issues_its_proof_without_complete_attestation()
   env = newEnv()
   requireScopedPreparation()
-  local recordPath = newOutputPath("ready-core", ".lua")
+  local recordPath = newOutputPath("ready-scope", ".lua")
   os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
-      requirements = { "field-core" },
+      requirements = { "bootstrap" },
       preparationRecord = recordPath,
       saveDirectory = "/private/test-root",
     })
   )
   Assert.isNil(err)
-  assert(report, "a satisfied field-core returns its report")
+  assert(report, "a satisfied scope returns its report")
   Assert.isTrue(report.requestedReady, "the satisfied closure proves readiness")
   Assert.isFalse(report.complete, "a targeted scope never reports a complete cache")
   local handle = assert(io.open(recordPath, "r"), "a satisfied scope issues its receipt")

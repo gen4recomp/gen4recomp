@@ -1853,7 +1853,7 @@ local module = {
           return true, nil
         end
         function session:requestMilestone(name, urgency)
-          assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
+          assert(name == "bootstrap" or name == "field-runtime", "milestones accept only bootstrap or field-runtime")
           assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
           return true, nil
         end

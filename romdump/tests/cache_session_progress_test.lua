@@ -1998,7 +1998,7 @@ function T.warm_duplicate_prefix_reaches_its_cold_tail_through_the_command()
   Assert.isTrue(ok, tostring(err))
 end
 
--- Both requested roster scopes enroll: bootstrap and field-core keep
+-- Both requested roster scopes enroll: bootstrap and field-runtime keep
 -- their distinct controls through the budget, cover their union once
 -- and never duplicate an admission.
 function T.both_milestone_rosters_enroll_their_scopes()
@@ -2024,9 +2024,9 @@ function T.both_milestone_rosters_enroll_their_scopes()
     local milestoneReady, milestoneFailure = session:requestMilestone("bootstrap", "required")
     Assert.isFalse(milestoneReady, "bootstrap starts pending")
     Assert.isNil(milestoneFailure, "bootstrap reports no failure")
-    milestoneReady, milestoneFailure = session:requestMilestone("field-core", "required")
-    Assert.isFalse(milestoneReady, "field-core starts pending")
-    Assert.isNil(milestoneFailure, "field-core reports no failure")
+    milestoneReady, milestoneFailure = session:requestMilestone("field-runtime", "required")
+    Assert.isFalse(milestoneReady, "field-runtime starts pending")
+    Assert.isNil(milestoneFailure, "field-runtime reports no failure")
     -- The expected union comes from the authoritative milestone
     -- membership functions over the session's adopted selections, never
     -- from a frozen member list: inventory growth must not break this.
@@ -2037,15 +2037,7 @@ function T.both_milestone_rosters_enroll_their_scopes()
       for _, job in ipairs(ArtifactJobs.bootstrapJobs()) do
         union[#union + 1] = job.kind .. ":" .. job.key
       end
-      for _, job in
-        ipairs(ArtifactJobs.fieldCoreJobs({
-          audioBankIds = session.audioBankIds,
-          messageBankIds = session.messageBankIds,
-          scriptMemberIds = session.scriptMemberIds,
-          iconPageIds = session.iconPageIds,
-          mapDataIds = session.mapDataIds,
-        }))
-      do
+      for _, job in ipairs(ArtifactJobs.fieldRuntimeJobs()) do
         union[#union + 1] = job.kind .. ":" .. job.key
       end
       return union

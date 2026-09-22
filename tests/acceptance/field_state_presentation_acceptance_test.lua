@@ -11,7 +11,7 @@ local FieldStatePresentationFixture = require("tests.support.FieldStatePresentat
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
-    derivedAssets = { "field-core", "map:7" },
+    derivedAssets = { "map:7" },
     tags = { "field", "presentation", "lifecycle", "last-known-good" },
   },
   tests = {},

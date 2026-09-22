@@ -1003,7 +1003,7 @@ end
 -- same selection assemble identical preparation arguments.
 function T.selected_requirements_are_deduplicated_and_sorted()
   local plan = parse({})
-  local lines = Cli.renderPlan(plan, nil, 1, { "map:7", "field-core", "map:7", "bootstrap" })
+  local lines = Cli.renderPlan(plan, nil, 1, { "map:7", "map:7", "bootstrap" })
   local requires = {}
   for _, line in ipairs(lines) do
     local key, value = line:match("^([^=]+)=(.*)$")
@@ -1011,7 +1011,7 @@ function T.selected_requirements_are_deduplicated_and_sorted()
       requires[#requires + 1] = value
     end
   end
-  Assert.deepEqual(requires, { "bootstrap", "field-core", "map:7" }, "the union is deduplicated and sorted")
+  Assert.deepEqual(requires, { "bootstrap", "map:7" }, "the union is deduplicated and sorted")
   Assert.equal(prepareOf(lines), "assets", "a partial union prepares its partial scope")
 end
 

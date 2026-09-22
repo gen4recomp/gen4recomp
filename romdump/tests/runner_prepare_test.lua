@@ -312,15 +312,24 @@ function T.request_grammar_matches_the_command_boundary()
   local CacheBuilder = require("romdump.src.CacheBuilder")
   local bootstrap = assert(CacheBuilder.parseRequirement("bootstrap"))
   Assert.equal(bootstrap.scope, "bootstrap")
-  local fieldCore = assert(CacheBuilder.parseRequirement("field-core"))
-  Assert.equal(fieldCore.scope, "field-core")
   local complete = assert(CacheBuilder.parseRequirement("complete"))
   Assert.equal(complete.scope, "complete")
   local job = assert(CacheBuilder.parseRequirement("map:7"))
   Assert.equal(job.jobKey, "map:7")
   local cell = assert(CacheBuilder.parseRequirement("field-cell:3-11"))
   Assert.equal(cell.jobKey, "field-cell:3-11")
-  for _, text in ipairs({ "fused:7", "maps/7/complete", "plan.lua", "map: 7", "map:7 ", "map:-7", "map:", ":7", "" }) do
+  for _, text in ipairs({
+    "fused:7",
+    "maps/7/complete",
+    "plan.lua",
+    "map: 7",
+    "map:7 ",
+    "map:-7",
+    "map:",
+    ":7",
+    "",
+    "field-core",
+  }) do
     local parsed, _ = CacheBuilder.parseRequirement(text)
     Assert.isNil(parsed, "malformed requirement must fail: " .. text)
   end

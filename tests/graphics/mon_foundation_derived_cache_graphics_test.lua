@@ -161,6 +161,12 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         ensureField = function(_)
           return true
         end,
+        requestLogicalField = function(_, _)
+          return true
+        end,
+        ensureLogicalField = function(_)
+          return true
+        end,
         requestCell = function(_, _)
           return true
         end,

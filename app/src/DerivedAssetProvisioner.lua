@@ -93,6 +93,14 @@ function DerivedAssetProvisioner.new(options)
       assert(type(mapId) == "number" and mapId % 1 == 0 and mapId >= 0, "field readiness requires its map")
       return assertion("field", { mapId = mapId }, "field " .. tostring(mapId))
     end,
+    requestLogicalField = function(mapId, urgency)
+      assert(type(mapId) == "number" and mapId % 1 == 0 and mapId >= 0, "logical field request requires its map")
+      return ask("logical-field", urgency, { mapId = mapId })
+    end,
+    ensureLogicalField = function(mapId)
+      assert(type(mapId) == "number" and mapId % 1 == 0 and mapId >= 0, "logical field readiness requires its map")
+      return assertion("logical-field", { mapId = mapId }, "logical field " .. tostring(mapId))
+    end,
     requestCell = function(descriptor, urgency)
       assert(type(descriptor) == "table", "cell request requires its descriptor")
       assert(

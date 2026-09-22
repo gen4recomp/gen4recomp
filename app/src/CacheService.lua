@@ -11,7 +11,8 @@ local ORDINARY_PER_UPDATE = 8
 local POLL_IDS_PER_ROUND = 8
 local ABSORB_PER_UPDATE = 32
 
-local VALID_KINDS = { milestone = true, field = true, cell = true, portrait = true, ["icon-page"] = true }
+local VALID_KINDS =
+  { milestone = true, field = true, ["logical-field"] = true, cell = true, portrait = true, ["icon-page"] = true }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
 
@@ -98,12 +99,12 @@ local function selectorKey(selector)
   if kind == "milestone" then
     assert(type(selector.name) == "string" and selector.name ~= "", "milestone request requires its name")
     return "milestone:" .. selector.name
-  elseif kind == "field" then
+  elseif kind == "field" or kind == "logical-field" then
     assert(
       type(selector.mapId) == "number" and selector.mapId % 1 == 0 and selector.mapId >= 0,
-      "field request requires a non-negative integer mapId"
+      kind .. " request requires a non-negative integer mapId"
     )
-    return "field:" .. tostring(selector.mapId)
+    return kind .. ":" .. tostring(selector.mapId)
   elseif kind == "cell" then
     assert(
       type(selector.matrixMemberId) == "number" and selector.matrixMemberId % 1 == 0 and selector.matrixMemberId >= 0,
@@ -210,7 +211,7 @@ function CacheService:request(epoch, selector)
   }
   if selector.requestKind == "milestone" then
     command.name = selector.name
-  elseif selector.requestKind == "field" then
+  elseif selector.requestKind == "field" or selector.requestKind == "logical-field" then
     command.mapId = selector.mapId
   elseif selector.requestKind == "cell" then
     command.matrixMemberId = selector.matrixMemberId
@@ -515,8 +516,8 @@ function CacheService:_absorbObservation(packet)
   local key
   if packet.requestKind == "milestone" then
     key = "milestone:" .. tostring(packet.name)
-  elseif packet.requestKind == "field" then
-    key = "field:" .. tostring(packet.mapId)
+  elseif packet.requestKind == "field" or packet.requestKind == "logical-field" then
+    key = packet.requestKind .. ":" .. tostring(packet.mapId)
   elseif packet.requestKind == "cell" then
     key = "cell:" .. tostring(packet.matrixMemberId) .. ":" .. tostring(packet.index)
   elseif packet.requestKind == "portrait" then

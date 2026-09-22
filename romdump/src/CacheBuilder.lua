@@ -28,7 +28,6 @@ local CacheBuilder = {}
 -- Anything else must be a canonical kind:key pair owned by ArtifactState.
 local SCOPES = {
   bootstrap = true,
-  ["field-core"] = true,
   complete = true,
 }
 
@@ -687,14 +686,14 @@ local function verifyOriginalRequirements(session, parsed, versionId)
     end
   end
   for _, entry in ipairs(parsed) do
-    if entry.scope == "bootstrap" or entry.scope == "field-core" then
+    if entry.scope == "bootstrap" then
       local scope = assert(entry.scope, "parsed requirements are scopes or canonical jobs")
       confirm(scope, function()
         return session:requestMilestone(scope, "required")
       end)
     elseif entry.scope == "complete" then
-      confirm("field-core", function()
-        return session:requestMilestone("field-core", "required")
+      confirm("complete", function()
+        return session:requestComplete("required")
       end)
       confirm("mon-summary:global", function()
         return session:requestJob("mon-summary", "global", "required")
@@ -831,11 +830,11 @@ local function collectVersionFacts(
       session:requestComplete("required")
     end
     for _, entry in ipairs(parsed) do
-      if entry.scope == "bootstrap" or entry.scope == "field-core" then
+      if entry.scope == "bootstrap" then
         local scope = assert(entry.scope, "parsed requirements are scopes or canonical jobs")
         session:requestMilestone(scope, "required")
       elseif entry.scope == "complete" then
-        session:requestMilestone("field-core", "required")
+        session:requestComplete("required")
         session:requestJob("mon-summary", "global", "required")
       else
         local kind = assert(entry.kind, "parsed requirements are scopes or canonical jobs")

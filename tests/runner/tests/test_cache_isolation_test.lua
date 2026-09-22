@@ -1117,7 +1117,7 @@ function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
     {
       label = "narrow-derived",
       args = "--filter field_dialogue_test",
-      requires = { "complete", "field-core" },
+      requires = { "complete" },
     },
     {
       label = "complete",
@@ -1263,15 +1263,16 @@ local function writeStrictPreparationRecord(path, overrides)
   writeFile(path, table.concat(parts, "\n") .. "\n")
 end
 
--- A receipt for a narrower closure never authorizes a wider selection: the
--- dialogue focus requires its field core, so a bootstrap-only receipt fails
--- before any setup without needing a dump to prove the mismatch.
+-- A receipt for a narrower closure never authorizes a wider selection:
+-- the corridor focus requires its committed maps, so a bootstrap-only
+-- receipt fails before any setup without needing a dump to prove the
+-- mismatch.
 function T.a_preparation_record_for_a_narrower_closure_fails_before_any_setup()
   withTempDirectory(function(root)
     local receipt = root .. "/narrow-preparation.lua"
     writeStrictPreparationRecord(receipt, { requested = { "bootstrap" } })
 
-    local status, output = runEntryChild(root, "serial-narrow", "--filter field_dialogue_test", {
+    local status, output = runEntryChild(root, "serial-narrow", "--filter field_navigation_corridor_acceptance_test", {
       "export PORTEMON_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
     })
     Assert.isTrue(status ~= "0", "a narrower receipt must fail before setup, got: " .. output)
@@ -1279,7 +1280,7 @@ function T.a_preparation_record_for_a_narrower_closure_fails_before_any_setup()
       output:find("1 passed", 1, true),
       "no test may execute against a narrower preparation, got: " .. output
     )
-    contains(output, "field-core", "the failure names the uncovered requirement")
+    contains(output, "map:33", "the failure names the uncovered requirement")
   end)
 end
 

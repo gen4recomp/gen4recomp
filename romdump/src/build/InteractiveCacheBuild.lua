@@ -17,6 +17,7 @@ local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
+local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 
@@ -118,8 +119,9 @@ InteractiveCacheBuild.__index = InteractiveCacheBuild
 
 local MILESTONE_FILES = {
   bootstrap = "data/generated/bootstrap.lua",
-  ["field-core"] = "data/generated/field-core.lua",
   ["new-game-intro"] = "data/generated/new-game-intro.lua",
+  ["field-planning"] = "data/generated/field-planning.lua",
+  ["field-runtime"] = "data/generated/field-runtime.lua",
 }
 
 -- One update advances at most this many dependency/validation nodes, Urgent
@@ -226,6 +228,8 @@ function InteractiveCacheBuild.new(options)
     submittedPending = {},
     enrollCursor = nil,
     enrollChunk = 0,
+    logicalDemand = {},
+    logicalMembers = {},
     scopes = {},
     roster = {},
     rosterFailure = {},
@@ -787,7 +791,7 @@ end
 function InteractiveCacheBuild:_noteTerminal(entry)
   -- Every scope holding this member settles it exactly once: only a
   -- member still recorded pending moves the cached counters.
-  for _, name in ipairs({ "bootstrap", "field-core", "new-game-intro" }) do
+  for _, name in ipairs({ "bootstrap", "new-game-intro", "field-planning", "field-runtime" }) do
     local scope = self.scopes[name]
     if scope ~= nil and scope.seen[entry.jobKey] == "pending" then
       scope.seen[entry.jobKey] = "settled"
@@ -1241,7 +1245,7 @@ function InteractiveCacheBuild:_requestDirect(kind, key, urgency)
   return entry
 end
 
----@param name string bootstrap, field-core, or new-game-intro
+---@param name string bootstrap, new-game-intro, field-planning, or field-runtime
 ---@param members { kind: string, key: string }[]
 ---@return boolean ready
 ---@return string|nil failure
@@ -1251,12 +1255,10 @@ function InteractiveCacheBuild:_milestoneAnswer(name, members)
   -- readiness additionally requires complete enrollment and membership.
   -- Broken build work outranks absent membership in the aggregate; the
   -- per-member answer still carries its own exact exclusion.
-  -- A field-core answer additionally requires its final scope knowledge:
-  -- adopted source inventory and adopted page membership. A new-game-intro
-  -- answer requires adopted source inventory for its final audio bank
-  -- membership, but never page membership. Discovery-time readiness never
-  -- certifies either scope; bootstrap answers from its own roster without
-  -- a page-membership gate.
+  -- A new-game-intro answer requires adopted source inventory for its
+  -- final audio bank membership, but never page membership.
+  -- Discovery-time readiness never certifies the scope; bootstrap answers
+  -- from its own roster without a page-membership gate.
   local failure, exclusion = nil, nil
   for _, member in ipairs(members) do
     local entry = self.byKey[member.kind .. ":" .. member.key]
@@ -1280,9 +1282,6 @@ function InteractiveCacheBuild:_milestoneAnswer(name, members)
   -- requested member must be enrolled, not merely listed, before the
   -- scope can certify readiness.
   if self:_enrollmentPending(name) then
-    return false, nil
-  end
-  if name == "field-core" and (not self.sourceLoaded or not self.pagesKnown) then
     return false, nil
   end
   if name == "new-game-intro" and not self.sourceLoaded then
@@ -1323,24 +1322,21 @@ function InteractiveCacheBuild:_milestoneMembers(name)
   -- The single membership construction site: only update and adoption
   -- transitions call it, never public requests, status or publication.
   assert(
-    name == "bootstrap" or name == "field-core" or name == "new-game-intro",
-    "milestones accept only bootstrap, field-core, or new-game-intro"
+    name == "bootstrap" or name == "new-game-intro" or name == "field-planning" or name == "field-runtime",
+    "milestones accept only bootstrap, new-game-intro, field-planning, or field-runtime"
   )
   if name == "bootstrap" then
     return ArtifactJobs.bootstrapJobs()
   end
-  if name == "new-game-intro" then
-    local audioPlan = self.adopted ~= nil and self.adopted.audioPlan or nil
-    local jobs = ArtifactJobs.newGameIntroJobs(audioPlan)
-    return jobs
+  if name == "field-planning" then
+    return ArtifactJobs.fieldPlanningJobs()
   end
-  return ArtifactJobs.fieldCoreJobs({
-    audioBankIds = self.audioBankIds,
-    messageBankIds = self.messageBankIds,
-    scriptMemberIds = self.scriptMemberIds,
-    iconPageIds = self.iconPageIds,
-    mapDataIds = self.mapDataIds,
-  })
+  if name == "field-runtime" then
+    return ArtifactJobs.fieldRuntimeJobs()
+  end
+  local audioPlan = self.adopted ~= nil and self.adopted.audioPlan or nil
+  local jobs = ArtifactJobs.newGameIntroJobs(audioPlan)
+  return jobs
 end
 
 ---@param name string
@@ -1560,15 +1556,19 @@ function InteractiveCacheBuild:_needsSourceDemand()
   -- the corpus. Ordinary artifacts initiate their source prerequisite
   -- through the authoritative dependency graph, never through a second
   -- kind table here. Bootstrap answers from the field font alone and
-  -- never pulls the inventory; the intro closure needs source knowledge,
-  -- field core needs source and pages.
+  -- never pulls the inventory; the intro closure and the two bounded
+  -- field milestones need source knowledge.
   if self.completeUrgency ~= nil then
     return true
   end
   if self.sweepAuthorized then
     return true
   end
-  if self.milestones["field-core"] ~= nil or self.milestones["new-game-intro"] ~= nil then
+  if
+    self.milestones["new-game-intro"] ~= nil
+    or self.milestones["field-planning"] ~= nil
+    or self.milestones["field-runtime"] ~= nil
+  then
     return true
   end
   return false
@@ -1580,9 +1580,6 @@ function InteractiveCacheBuild:_needsPageDemand()
     return true
   end
   if self.sweepAuthorized then
-    return true
-  end
-  if self.milestones["field-core"] ~= nil then
     return true
   end
   for _, entry in ipairs(self.interest) do
@@ -1644,7 +1641,7 @@ function InteractiveCacheBuild:_publishMilestone(name)
   if not ready then
     return
   end
-  if name == "field-core" then
+  if name == "field-runtime" then
     local followersErr = self:_followerError()
     if followersErr ~= nil then
       local entry = self.byKey["actors:global"]
@@ -1699,8 +1696,8 @@ end
 function InteractiveCacheBuild:requestMilestone(name, urgency)
   assert(not self.retired, "generation session is retired")
   assert(
-    name == "bootstrap" or name == "field-core" or name == "new-game-intro",
-    "milestones accept only bootstrap, field-core, or new-game-intro"
+    name == "bootstrap" or name == "new-game-intro" or name == "field-planning" or name == "field-runtime",
+    "milestones accept only bootstrap, new-game-intro, field-planning, or field-runtime"
   )
   ArtifactJobs.priorityFor(urgency)
   local current = self.milestones[name]
@@ -1717,16 +1714,11 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
   -- registers nothing and observes the retained answer.
   if current == nil then
     -- Bootstrap answers from the menu font alone and schedules no
-    -- inventory; only the intro closure and field core pull source
-    -- knowledge, and only field core pulls page membership.
-    if not self.sourceLoaded and (name == "field-core" or name == "new-game-intro") then
+    -- inventory; the intro closure and the two bounded field milestones
+    -- pull source knowledge. No milestone pulls page membership directly:
+    -- page membership flows through explicit layout demand.
+    if not self.sourceLoaded and (name == "new-game-intro" or name == "field-planning" or name == "field-runtime") then
       self:_request("source-plan", "global", urgency)
-    end
-    -- Only field core pulls page membership: bootstrap answers from its
-    -- own roster and the New Game intro closure needs source knowledge
-    -- but no mon pages.
-    if name == "field-core" and not self.pagesKnown then
-      self:_request("mon-layout", "global", urgency)
     end
     self:_enqueueControl("roster", 0, name)
   elseif stronger then
@@ -1912,6 +1904,209 @@ function InteractiveCacheBuild:_knownMap(mapId)
   return self.mapCellKeys[mapId] ~= nil
 end
 
+-- The semantic closure of one map: its field record, its message bank,
+-- its script member, the audio catalog and every audio bank its music
+-- references resolve to. The closure derives from the published field
+-- record and the adopted audio index, so runtime code never duplicates
+-- producer catalogs. Missing planning knowledge is pending membership,
+-- never an empty closure.
+---@param mapId integer
+---@return { kind: string, key: string }[]|nil members nil while planning knowledge is incomplete
+function InteractiveCacheBuild:_logicalFieldMembers(mapId)
+  local recordEntry = self.byKey["map-data:" .. tostring(mapId)]
+  if recordEntry == nil or not recordEntry.ready then
+    return nil
+  end
+  local adopted = self.adopted
+  if adopted == nil or adopted.audioPlan == nil then
+    return nil
+  end
+  local field = self.cacheFs:loadLua(FieldMapDataCache.fieldPath(mapId))
+  if type(field) ~= "table" or field.mapId ~= mapId then
+    return nil
+  end
+  local messageBankId = field.messageBankId
+  local scriptBankId = field.scriptBankId
+  if type(messageBankId) ~= "number" or messageBankId % 1 ~= 0 or messageBankId < 0 then
+    error(self.generationId .. " logical field " .. tostring(mapId) .. ": field record has no message bank", 0)
+  end
+  if type(scriptBankId) ~= "number" or scriptBankId % 1 ~= 0 or scriptBankId < 0 then
+    error(self.generationId .. " logical field " .. tostring(mapId) .. ": field record has no script member", 0)
+  end
+  local audioPlan = assert(adopted.audioPlan, "logical field needs the adopted audio plan")
+  local index = assert(audioPlan.index, "logical field needs the adopted audio index")
+  assert(type(index.sequences) == "table", "logical field needs the adopted sequences")
+  assert(type(index.sequenceBySymbol) == "table", "logical field needs the adopted sequence symbols")
+  local banks = {}
+  local function addBank(bankId, reference)
+    assert(
+      type(bankId) == "number" and bankId % 1 == 0 and bankId >= 0,
+      self.generationId
+        .. " logical field "
+        .. tostring(mapId)
+        .. " audio reference resolves to no bank: "
+        .. tostring(reference)
+    )
+    banks[tostring(bankId)] = true
+  end
+  local function addSequenceReference(reference)
+    if reference == nil then
+      return
+    end
+    local sequenceId = reference
+    if type(reference) == "string" then
+      sequenceId = index.sequenceBySymbol[reference]
+      if sequenceId == nil then
+        error(self.generationId .. " logical field " .. tostring(mapId) .. " has no adopted sequence: " .. reference, 0)
+      end
+    end
+    if type(sequenceId) ~= "number" or sequenceId % 1 ~= 0 or sequenceId < 0 then
+      error(
+        self.generationId .. " logical field " .. tostring(mapId) .. " has no adopted sequence: " .. tostring(reference),
+        0
+      )
+    end
+    local entry = index.sequences[sequenceId]
+    if type(entry) ~= "table" then
+      error(
+        self.generationId .. " logical field " .. tostring(mapId) .. " has no adopted sequence: " .. tostring(reference),
+        0
+      )
+    end
+    addBank(entry.bankId, reference)
+  end
+  local members = {
+    { kind = "map-data", key = tostring(mapId) },
+    { kind = "message-bank", key = tostring(messageBankId) },
+    { kind = "script-member", key = tostring(scriptBankId) },
+    { kind = "audio-catalog", key = "global" },
+  }
+  local music = field.music
+  if type(music) == "table" then
+    addSequenceReference(music.day)
+    addSequenceReference(music.night)
+    if type(music.flagOverrides) == "table" then
+      for _, override in ipairs(music.flagOverrides) do
+        if type(override) == "table" then
+          addSequenceReference(override.sequence)
+        end
+      end
+    end
+    if type(music.traversalOverrides) == "table" then
+      for _, override in ipairs(music.traversalOverrides) do
+        if type(override) == "table" then
+          addSequenceReference(override.sequence)
+        end
+      end
+    end
+  end
+  if type(field.soundplates) == "table" then
+    for _, plate in ipairs(field.soundplates) do
+      if type(plate) == "table" then
+        addSequenceReference(plate.sequence)
+      end
+    end
+  end
+  for bankKey in pairs(banks) do
+    members[#members + 1] = { kind = "audio-bank", key = bankKey }
+  end
+  return members
+end
+
+---@param members { kind: string, key: string }[]
+---@return boolean ready
+---@return string|nil failure
+function InteractiveCacheBuild:_compositeAnswer(members)
+  -- Terminal failure takes precedence over pending siblings: every member
+  -- is inspected for a failure before a pending aggregate is claimed.
+  local failure = nil
+  for _, member in ipairs(members) do
+    local entry = self.byKey[member.kind .. ":" .. member.key]
+    if entry ~= nil and entry.failure ~= nil and failure == nil then
+      failure = entry.failure
+    end
+  end
+  if failure ~= nil then
+    return false, failure
+  end
+  for _, member in ipairs(members) do
+    local entry = self.byKey[member.kind .. ":" .. member.key]
+    if entry == nil or not entry.ready then
+      return false, nil
+    end
+  end
+  return true, nil
+end
+
+---@param mapId integer
+---@param urgency string
+---@return { kind: string, key: string }[]|nil members nil while the closure is unknowable
+---@return string|nil failure
+function InteractiveCacheBuild:_enrollLogicalField(mapId, urgency)
+  -- Registration only: record canonical interest in the closure members
+  -- and queue runnable planning tickets for the pump. A planning failure
+  -- (for example an adopted audio plan that cannot resolve a required
+  -- reference) settles the composite with its cause instead of crashing
+  -- the pump.
+  local key = tostring(mapId)
+  local retained = self.logicalDemand[key]
+  if retained == nil or ArtifactJobs.priorityFor(urgency) < ArtifactJobs.priorityFor(retained.urgency) then
+    self.logicalDemand[key] = { mapId = mapId, urgency = urgency }
+  end
+  local record = self:_request("map-data", key, urgency)
+  if record.failure ~= nil then
+    return nil, record.failure
+  end
+  local members = self.logicalMembers[key]
+  if members == nil then
+    local membersOk, membersOrCause = pcall(function()
+      return self:_logicalFieldMembers(mapId)
+    end)
+    if not membersOk then
+      return nil, tostring(membersOrCause)
+    end
+    if membersOrCause == nil then
+      return nil, nil
+    end
+    members = membersOrCause
+    self.logicalMembers[key] = members
+  end
+  for _, member in ipairs(members) do
+    self:_request(member.kind, member.key, urgency)
+  end
+  return members, nil
+end
+
+function InteractiveCacheBuild:_expandLogicalFields()
+  -- Retained logical-field demand expands during the pump: once the field
+  -- record and adopted audio membership can name a closure, its leaves
+  -- enroll under the retained strongest urgency. Known membership stays
+  -- memoized, so settled composites cost no record reread.
+  for _, demand in pairs(self.logicalDemand) do
+    if self.logicalMembers[tostring(demand.mapId)] == nil then
+      self:_enrollLogicalField(demand.mapId, demand.urgency)
+    end
+  end
+end
+
+---@param mapId integer
+---@param urgency string
+---@return boolean
+---@return string|nil
+function InteractiveCacheBuild:requestLogicalField(mapId, urgency)
+  assert(not self.retired, "generation session is retired")
+  assert(isInteger(mapId) and mapId >= 0, "map ID must be a non-negative integer")
+  ArtifactJobs.priorityFor(urgency)
+  local members, failure = self:_enrollLogicalField(mapId, urgency)
+  if failure ~= nil then
+    return false, failure
+  end
+  if members == nil then
+    return false, nil
+  end
+  return self:_compositeAnswer(members)
+end
+
 ---@param mapId integer
 ---@param urgency string
 ---@return boolean
@@ -1932,7 +2127,32 @@ function InteractiveCacheBuild:requestField(mapId, urgency)
   for _, cellKey in ipairs(self.mapCellKeys[mapId]) do
     self:_request("field-cell", cellKey, urgency)
   end
-  return self:_answer(self:_requestDirect("map", tostring(mapId), urgency))
+  -- A full field is its logical closure plus the visual map artifact:
+  -- either side pending keeps the composite pending, and either side
+  -- failing fails it with the underlying cause.
+  local members, failure = self:_enrollLogicalField(mapId, urgency)
+  if failure ~= nil then
+    self:_requestDirect("map", tostring(mapId), urgency)
+    return false, failure
+  end
+  local visual = self:_requestDirect("map", tostring(mapId), urgency)
+  if members == nil then
+    if visual.failure ~= nil then
+      return false, visual.failure
+    end
+    return false, nil
+  end
+  local logicalReady, logicalFailure = self:_compositeAnswer(members)
+  if logicalFailure ~= nil then
+    return false, logicalFailure
+  end
+  if visual.failure ~= nil then
+    return false, visual.failure
+  end
+  if not logicalReady or not visual.ready then
+    return false, nil
+  end
+  return true, nil
 end
 
 ---@param descriptor table<string, unknown>
@@ -2268,6 +2488,22 @@ end
 
 ---@param mapId integer
 ---@return boolean
+function InteractiveCacheBuild:ensureLogicalField(mapId)
+  assert(not self.retired, "generation session is retired")
+  local ready, failure = self:requestLogicalField(mapId, "required")
+  if ready then
+    return true
+  end
+  if failure ~= nil then
+    error(failure, 0)
+  end
+  return self:_blockComposite("logical-field:" .. tostring(mapId), function()
+    return self:requestLogicalField(mapId, "required")
+  end)
+end
+
+---@param mapId integer
+---@return boolean
 function InteractiveCacheBuild:ensureField(mapId)
   assert(not self.retired, "generation session is retired")
   local ready, failure = self:requestField(mapId, "required")
@@ -2277,7 +2513,44 @@ function InteractiveCacheBuild:ensureField(mapId)
   if failure ~= nil then
     error(failure, 0)
   end
-  return self:_blockOn("map", tostring(mapId))
+  return self:_blockComposite("field:" .. tostring(mapId), function()
+    return self:requestField(mapId, "required")
+  end)
+end
+
+---@param label string composite identity for diagnostics
+---@param answer fun(): boolean, string|nil retained composite poll
+---@return boolean
+function InteractiveCacheBuild:_blockComposite(label, answer)
+  local rounds = 0
+  while rounds < 10000 do
+    rounds = rounds + 1
+    if self.retired then
+      error("generation session is retired: " .. label, 0)
+    end
+    self:update()
+    local ready, failure = answer()
+    if ready then
+      return true
+    end
+    if failure ~= nil then
+      error(failure, 0)
+    end
+    -- Local planning with an idle pool is progress still available: repump
+    -- instead of waiting on nonexistent physical work. Only unfinished
+    -- physical work earns a bounded wait; anything else is diagnosable.
+    local status = self:status()
+    if status.planningPending then
+      -- Repump: the next update advances the remaining local work.
+    elseif self:_awaitingPoolWork() then
+      -- Member work is already dispatched: the wait only advances it
+      -- until it publishes.
+      self.pool:waitForProgress()
+    else
+      error(label .. ": blocking wait made no progress", 0)
+    end
+  end
+  error(label .. ": blocking wait timed out", 0)
 end
 
 ---@param descriptor table<string, unknown>
@@ -2359,8 +2632,7 @@ function InteractiveCacheBuild:_scheduleMetadataDemand()
       self:_request(
         "source-plan",
         "global",
-        self.milestones["field-core"]
-          or self.milestones["new-game-intro"]
+        self.milestones["new-game-intro"]
           or self.completeUrgency
           or self.milestones["bootstrap"]
           or (self.sweepAuthorized and "sweep")
@@ -2370,15 +2642,9 @@ function InteractiveCacheBuild:_scheduleMetadataDemand()
   end
   if self.sourceLoaded and not self.pagesKnown and self:_needsPageDemand() then
     local layoutEntry = self.byKey["mon-layout:global"]
-    if
-      layoutEntry == nil
-      and (self.milestones["field-core"] ~= nil or self.completeUrgency ~= nil or self.sweepAuthorized)
-    then
-      layoutEntry = self:_request(
-        "mon-layout",
-        "global",
-        self.milestones["field-core"] or self.completeUrgency or (self.sweepAuthorized and "sweep") or "near"
-      )
+    if layoutEntry == nil and (self.completeUrgency ~= nil or self.sweepAuthorized) then
+      layoutEntry =
+        self:_request("mon-layout", "global", self.completeUrgency or (self.sweepAuthorized and "sweep") or "near")
     end
     if self:_adoptPagesEligible() then
       self:_enqueueControl("adoptPages", 0, nil)
@@ -2482,7 +2748,7 @@ end
 -- this transition see final membership, and newly known members enroll
 -- through the bounded cursor instead of a full re-enrollment loop.
 function InteractiveCacheBuild:_refreshAdoptionRosters()
-  for _, name in ipairs({ "bootstrap", "field-core", "new-game-intro" }) do
+  for _, name in ipairs({ "bootstrap", "new-game-intro" }) do
     if self.roster[name] ~= nil then
       self:_refreshRoster(name, self.milestones[name] ~= nil)
     end
@@ -2597,6 +2863,7 @@ function InteractiveCacheBuild:update()
   self:_pollSubmitted()
   self:_scheduleMetadataDemand()
   self:_buildPendingRosters()
+  self:_expandLogicalFields()
   self:_expandComplete(budget)
   self:_advanceSweep(budget)
   -- New submissions precede the single pool lifecycle tick so dispatched
@@ -2607,8 +2874,9 @@ function InteractiveCacheBuild:update()
   self:_pollSubmitted()
   self:_drainTickets(budget)
   self:_publishMilestone("bootstrap")
-  self:_publishMilestone("field-core")
   self:_publishMilestone("new-game-intro")
+  self:_publishMilestone("field-planning")
+  self:_publishMilestone("field-runtime")
   self.planningPending = self:_hasRunnablePlanning()
 end
 
@@ -2696,8 +2964,10 @@ function InteractiveCacheBuild:status()
   -- Read-only retained observation: no cache IO, no validation, no pool
   -- polling. Queued and running follow the last pump-observed pool states;
   -- settled and planningPending carry the exact readiness contract.
-  local bootstrapState, fieldCoreState, newGameIntroState = "pending", "pending", "pending"
-  local bootstrapFailed, fieldCoreFailed, newGameIntroFailed = false, false, false
+  local bootstrapState, newGameIntroState = "pending", "pending"
+  local planningState, runtimeState = "pending", "pending"
+  local bootstrapFailed, newGameIntroFailed = false, false
+  local planningFailed, runtimeFailed = false, false
   if not self.retired then
     local bootstrapMembers = self.roster["bootstrap"]
     if bootstrapMembers ~= nil then
@@ -2709,15 +2979,36 @@ function InteractiveCacheBuild:status()
         bootstrapFailed = self.milestones["bootstrap"] ~= nil
       end
     end
-    if self.milestones["field-core"] ~= nil then
-      local coreMembers = self.roster["field-core"]
-      if coreMembers ~= nil then
-        local coreReady, coreFailure = self:_milestoneAnswer("field-core", coreMembers)
-        if coreReady then
-          fieldCoreState = "ready"
-        elseif coreFailure ~= nil then
-          fieldCoreState = "failed"
-          fieldCoreFailed = true
+    for _, name in ipairs({ "field-planning", "field-runtime" }) do
+      if self.milestones[name] ~= nil then
+        if self.rosterFailure[name] ~= nil then
+          if name == "field-planning" then
+            planningState = "failed"
+            planningFailed = true
+          else
+            runtimeState = "failed"
+            runtimeFailed = true
+          end
+        else
+          local members = self.roster[name]
+          if members ~= nil then
+            local ready, failure = self:_milestoneAnswer(name, members)
+            if ready then
+              if name == "field-planning" then
+                planningState = "ready"
+              else
+                runtimeState = "ready"
+              end
+            elseif failure ~= nil then
+              if name == "field-planning" then
+                planningState = "failed"
+                planningFailed = true
+              else
+                runtimeState = "failed"
+                runtimeFailed = true
+              end
+            end
+          end
         end
       end
     end
@@ -2770,10 +3061,13 @@ function InteractiveCacheBuild:status()
     if self.milestones["bootstrap"] ~= nil and bootstrapState == "pending" then
       milestonesTerminal = false
     end
-    if self.milestones["field-core"] ~= nil and fieldCoreState == "pending" then
+    if self.milestones["new-game-intro"] ~= nil and newGameIntroState == "pending" then
       milestonesTerminal = false
     end
-    if self.milestones["new-game-intro"] ~= nil and newGameIntroState == "pending" then
+    if self.milestones["field-planning"] ~= nil and planningState == "pending" then
+      milestonesTerminal = false
+    end
+    if self.milestones["field-runtime"] ~= nil and runtimeState == "pending" then
       milestonesTerminal = false
     end
   end
@@ -2786,7 +3080,7 @@ function InteractiveCacheBuild:status()
   -- unrelated failed job never settles around still-pending work.
   -- Success never settles around running work.
   local completeDone = self.completeUrgency == nil or self.completeExhausted
-  local milestoneFailed = bootstrapFailed or fieldCoreFailed or newGameIntroFailed
+  local milestoneFailed = bootstrapFailed or newGameIntroFailed or planningFailed or runtimeFailed
   local metadataFailed = false
   if #failures > 0 then
     local sourceOwner = self.byKey["source-plan:global"]
@@ -2812,8 +3106,11 @@ function InteractiveCacheBuild:status()
       sweepState = "warming"
     end
   end
-  local complete = bootstrapState == "ready"
-    and fieldCoreState == "ready"
+  -- Exhaustive attestation is stricter than settlement: only an
+  -- explicitly requested and exhausted complete build certifies it.
+  local completeAttested = self.completeUrgency ~= nil and self.completeExhausted
+  local complete = completeAttested
+    and bootstrapState == "ready"
     and #failures == 0
     and (ready + queued + running) > 0
     and queued == 0
@@ -2823,7 +3120,6 @@ function InteractiveCacheBuild:status()
     generationId = self.generationId,
     epoch = self.epoch,
     bootstrap = bootstrapState,
-    fieldCore = fieldCoreState,
     enumerated = #self.interest,
     ready = ready,
     queued = queued,
@@ -2839,7 +3135,7 @@ function InteractiveCacheBuild:status()
   }
 end
 
----@param name string bootstrap, field-core, or new-game-intro
+---@param name string bootstrap, new-game-intro, field-planning, or field-runtime
 ---@return { state: string, ready: integer, total: integer|nil, failure: string|nil } read-only milestone-local progress snapshot
 function InteractiveCacheBuild:milestoneStatus(name)
   -- Read-only milestone-local progress projection. It inspects only the
@@ -2849,8 +3145,8 @@ function InteractiveCacheBuild:milestoneStatus(name)
   -- answer. A missing or not-yet-final roster reports pending without a
   -- denominator instead of inventing one.
   assert(
-    name == "bootstrap" or name == "field-core" or name == "new-game-intro",
-    "milestones accept only bootstrap, field-core, or new-game-intro"
+    name == "bootstrap" or name == "new-game-intro" or name == "field-planning" or name == "field-runtime",
+    "milestones accept only bootstrap, new-game-intro, field-planning, or field-runtime"
   )
   local members = self.roster[name]
   local rosterFailure = self.rosterFailure[name]
@@ -2881,13 +3177,14 @@ function InteractiveCacheBuild:milestoneStatus(name)
     return { state = "failed", ready = readyCount, total = nil, failure = failure }
   end
   -- The denominator is authoritative only once adopted knowledge fixed
-  -- the roster: bootstrap answers from its own roster, while the intro
-  -- closure needs adopted source inventory and field core additionally
-  -- needs adopted page membership. Adoption rebuilds retained rosters
-  -- synchronously, so a retained roster observed after adoption is final.
+  -- the roster: bootstrap and the two bounded field milestones answer from
+  -- their own static rosters, while the intro closure needs adopted source
+  -- inventory. Adoption rebuilds retained rosters synchronously, so a
+  -- retained roster observed after adoption is final.
   local final = name == "bootstrap"
+    or name == "field-planning"
+    or name == "field-runtime"
     or (name == "new-game-intro" and self.sourceLoaded)
-    or (name == "field-core" and self.sourceLoaded and self.pagesKnown)
   if not final then
     return { state = "pending", ready = readyCount, total = nil, failure = nil }
   end
@@ -2935,6 +3232,8 @@ function InteractiveCacheBuild:retire()
   self.scopes = {}
   self.roster = {}
   self.rosterFailure = {}
+  self.logicalDemand = {}
+  self.logicalMembers = {}
   self.completeUrgency = nil
   self.completeNext = nil
   self.completeExhausted = false

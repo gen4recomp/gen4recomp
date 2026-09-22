@@ -50,6 +50,6 @@ end
 
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = { "field-core" }
+suite.metadata.derivedAssets = {}
 suite.metadata.tags = { "mon", "following-mon", "visual" }
 return suite

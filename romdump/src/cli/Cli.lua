@@ -43,7 +43,6 @@ local COMMAND_FLAGS = {
 -- Anything else must be a canonical kind:key pair owned by ArtifactState.
 local SCOPES = {
   bootstrap = true,
-  ["field-core"] = true,
   complete = true,
 }
 

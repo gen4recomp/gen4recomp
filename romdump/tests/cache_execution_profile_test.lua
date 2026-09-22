@@ -69,7 +69,7 @@ local function newEnv()
     publishedVersions = {},
     milestones = {
       bootstrap = { "field-camera:global" },
-      ["field-core"] = { "map:7" },
+      ["field-runtime"] = { "map:7" },
     },
     sessions = {},
     pools = {},
@@ -146,7 +146,7 @@ local function makeSession(pool, identity)
   end
   function session:requestMilestone(name, urgency)
     assert(not self.retired, "generation session is retired")
-    assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
+    assert(name == "bootstrap" or name == "field-runtime", "milestones accept only bootstrap or field-runtime")
     local members = env.milestones[name] or {}
     local failures = {}
     local ready = true
@@ -169,7 +169,76 @@ local function makeSession(pool, identity)
     assert(not self.retired, "generation session is retired")
     assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
     self.completeRequested = urgency
-    return false, nil
+    -- Complete intent enrolls the fixture-known corpus, mirroring the
+    -- production enumerator: every key the fixture stages as failed,
+    -- excluded, ready, or pending joins once, so per-job outcomes flow
+    -- through their own confirmations.
+    if not self.corpusEnrolled then
+      self.corpusEnrolled = true
+      local seen = {}
+      for _, jobKey in ipairs(self.requested) do
+        seen[jobKey] = true
+      end
+      local keySets = { env.failKeys, env.excludedKeys, env.readyKeys }
+      if env.pendingKeys ~= nil then
+        keySets[#keySets + 1] = env.pendingKeys
+      end
+      -- Per-version failures belong to this session's corpus too: without
+      -- them a failing version would never request its failing job.
+      if env.failByVersion ~= nil and self.identity ~= nil and self.identity.versionId ~= nil then
+        local versioned = env.failByVersion[self.identity.versionId]
+        if type(versioned) == "table" then
+          keySets[#keySets + 1] = versioned
+        end
+      end
+      for _, keySet in ipairs(keySets) do
+        if type(keySet) == "table" then
+          for jobKey in pairs(keySet) do
+            if not seen[jobKey] then
+              seen[jobKey] = true
+              local kind, key = splitJobKey(jobKey)
+              if kind ~= nil and key ~= nil then
+                self:requestJob(kind, key, urgency)
+              end
+            end
+          end
+        end
+      end
+    end
+    -- Complete-scope readiness mirrors production: every requested job
+    -- terminal (completed, ready, failed, or excluded), with per-job
+    -- failures reported through their own confirmations, not this scope.
+    self.completed = self.completed or {}
+    local function versionFailed(jobKey)
+      if env.failByVersion == nil or self.identity == nil or self.identity.versionId == nil then
+        return nil
+      end
+      local versioned = env.failByVersion[self.identity.versionId]
+      if type(versioned) == "table" then
+        return versioned[jobKey]
+      end
+      return nil
+    end
+    for _, jobKey in ipairs(self.requested) do
+      if versionFailed(jobKey) ~= nil then
+        -- A per-version failure is terminal for this session; its cause
+        -- surfaces through the job confirmation, not this scope.
+      elseif
+        env.failKeys[jobKey] == nil
+        and env.excludedKeys[jobKey] == nil
+        and env.pendingKeys ~= nil
+        and env.pendingKeys[jobKey]
+      then
+        return false, nil
+      elseif
+        env.failKeys[jobKey] == nil
+        and env.excludedKeys[jobKey] == nil
+        and not (self.completed[jobKey] or (env.readyKeys ~= nil and env.readyKeys[jobKey]))
+      then
+        return false, nil
+      end
+    end
+    return true, nil
   end
   function session:update()
     assert(not self.retired, "generation session is retired")
@@ -766,7 +835,7 @@ function T.explicit_rebuild_deduplicates_keys_and_reruns_only_the_selected_job()
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
-      requirements = { "complete" },
+      requirements = { "complete", "map:7" },
       rebuild = { "map:7", "map:7" },
       dev = true,
     })
@@ -1125,6 +1194,9 @@ end
 function T.later_version_failure_publishes_no_new_attestation()
   env = newEnv()
   env.auditAvailable = true
+  -- Heartgold's map stays warm while soulsilver's fails: the complete
+  -- scope enrolls the fixture-known corpus in every version.
+  env.readyKeys = { ["map:7"] = true }
   env.failByVersion = { soulsilver = { ["map:7"] = "WORKER_FAILED: injected later-version failure" } }
   env.failureClasses["map:7"] = "job"
   local profilePath = newOutputPath("later-version", ".jsonl")
@@ -1371,6 +1443,8 @@ end
 function T.later_version_recorded_failure_keeps_all_started_evidence()
   env = newEnv()
   env.auditAvailable = true
+  -- Heartgold's map stays warm while soulsilver's fails (see above).
+  env.readyKeys = { ["map:7"] = true }
   local fatal = "recorded stop in the later version"
   env.failByVersion = { soulsilver = { ["map:7"] = "WORKER_FAILED: injected later-version failure" } }
   env.failureClasses["map:7"] = "job"

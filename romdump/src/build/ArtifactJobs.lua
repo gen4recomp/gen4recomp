@@ -99,29 +99,6 @@ function ArtifactJobs.jobKey(kind, key)
   return kind .. ":" .. key
 end
 
--- Field core keeps the exact pre-decoupling closure on its own: the former
--- bootstrap coarse members plus the audio catalog the current summary
--- dependency requires. It never derives from bootstrapJobs, so shrinking
--- bootstrap cannot silently shrink field readiness.
-local FIELD_CORE_COARSE = {
-  "world-catalog",
-  "field-cell-index",
-  "field-camera",
-  "field-weather",
-  "field-effects",
-  "field-emotes",
-  "field-ui",
-  "field-font",
-  "intro",
-  "new-game-init",
-  "mon-catalog",
-  "mon-layout",
-  "items",
-  "message-bank:219",
-  "audio-catalog",
-  "audio-summary",
-}
-
 local function sortedJobs(jobs)
   table.sort(jobs, function(left, right)
     if left.kind == right.kind then
@@ -143,7 +120,7 @@ local function fixedJobs(entries)
   local jobs = {}
   for _, entry in ipairs(entries) do
     local kind, key = entry:match("^([^:]+):?(.*)$")
-    assert(kind, "field-core membership entry is malformed: " .. tostring(entry))
+    assert(kind, "milestone membership entry is malformed: " .. tostring(entry))
     if key == "" then
       key = "global"
     end
@@ -227,38 +204,48 @@ function ArtifactJobs.newGameIntroJobs(audioPlan)
   return sortedJobs(jobs), true
 end
 
----@param lists { audioBankIds: integer[], messageBankIds: integer[], scriptMemberIds: integer[], iconPageIds: integer[], mapDataIds: integer[] }
+-- The smallest closure that can determine and request a target location:
+-- source inventory plus the structural world and cell catalogs. It never
+-- enumerates family summaries or per-map/per-bank corpus membership.
+local FIELD_PLANNING_JOBS = {
+  "source-plan:global",
+  "world-catalog:global",
+  "field-cell-index:global",
+}
+
+-- The static generated services the field runtime consumes eagerly: world
+-- and cell catalogs, presentation services, actor/mon/item/bag catalogs,
+-- the pinned Start Menu label bank, the audio catalog and the script
+-- summary. It never contains intro setup, whole-family summaries, or a
+-- per-map/per-bank corpus enumeration.
+local FIELD_RUNTIME_JOBS = {
+  "world-catalog:global",
+  "field-cell-index:global",
+  "field-camera:global",
+  "field-weather:global",
+  "field-effects:global",
+  "field-emotes:global",
+  "field-ui:global",
+  "field-font:global",
+  "actors:global",
+  "mon-catalog:global",
+  "mon-layout:global",
+  "items:global",
+  "bag:global",
+  "starter-choice:global",
+  "message-bank:219",
+  "audio-catalog:global",
+  "script-summary:global",
+}
+
 ---@return { kind: string, key: string }[]
-function ArtifactJobs.fieldCoreJobs(lists)
-  assert(type(lists) == "table", "field-core membership requires the planned family selections")
-  local audioBankIds = assert(lists.audioBankIds, "field-core needs the audio closures")
-  local messageBankIds = assert(lists.messageBankIds, "field-core needs the required message banks")
-  local scriptMemberIds = assert(lists.scriptMemberIds, "field-core needs the nonempty script members")
-  -- Icon pages stay out of field core: the layout/catalog prerequisites
-  -- remain, but pages are demanded later by the party views that show
-  -- them. The lists.iconPageIds selection is still accepted so the
-  -- mon-summary dependency can cover every declared page for batch.
-  local mapDataIds = assert(lists.mapDataIds, "field-core needs the supported field records")
-  local jobs = fixedJobs(FIELD_CORE_COARSE)
-  for _, bankId in ipairs(audioBankIds) do
-    assert(type(bankId) == "number" and bankId % 1 == 0 and bankId >= 0, "audio closure needs its bank identity")
-    jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
-  end
-  jobs[#jobs + 1] = { kind = "actors", key = "global" }
-  jobs[#jobs + 1] = { kind = "starter-choice", key = "global" }
-  jobs[#jobs + 1] = { kind = "bag", key = "global" }
-  jobs[#jobs + 1] = { kind = "message-summary", key = "global" }
-  jobs[#jobs + 1] = { kind = "script-summary", key = "global" }
-  for _, bankId in ipairs(messageBankIds) do
-    jobs[#jobs + 1] = { kind = "message-bank", key = tostring(bankId) }
-  end
-  for _, memberId in ipairs(scriptMemberIds) do
-    jobs[#jobs + 1] = { kind = "script-member", key = tostring(memberId) }
-  end
-  for _, mapId in ipairs(mapDataIds) do
-    jobs[#jobs + 1] = { kind = "map-data", key = tostring(mapId) }
-  end
-  return sortedJobs(jobs)
+function ArtifactJobs.fieldPlanningJobs()
+  return sortedJobs(fixedJobs(FIELD_PLANNING_JOBS))
+end
+
+---@return { kind: string, key: string }[]
+function ArtifactJobs.fieldRuntimeJobs()
+  return sortedJobs(fixedJobs(FIELD_RUNTIME_JOBS))
 end
 
 ---@param kind string

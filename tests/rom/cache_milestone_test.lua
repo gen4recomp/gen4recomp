@@ -1,7 +1,7 @@
 -- Census over the common generation session through the real ROM-derived
--- plans: bootstrap requests only the menu font with no inventory, field core
--- keeps its decoupled closure, and an explicit background storm still
--- converges afterward.
+-- plans: bootstrap requests only the menu font with no inventory, the
+-- complete scope keeps its exhaustive closure, and an explicit background
+-- storm still converges afterward.
 -- arrives as near work while geometry stays cold, demand promotes
 -- dependencies, every canonical key submits exactly once while the pool
 -- owns physical dispatch, failures stay visible without global collapse,
@@ -407,7 +407,7 @@ local function completeThroughWorker(context, pool, jobKey, stageName)
   return result
 end
 
-function T.common_session_drives_bootstrap_core_and_background_storm(romFs, versionId)
+function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, versionId)
   -- Writer isolation: the census borrows the real dump read-only while every
   -- receipt, milestone, and publication lands in the owned backend the suite
   -- hooks installed, so the shared prepared fixture never changes under
@@ -492,7 +492,7 @@ function T.common_session_drives_bootstrap_core_and_background_storm(romFs, vers
   local targeted = openSession(identity, 1, pool)
   -- Readiness the session observes is the owned backend's state, so work the
   -- session itself completes is never resubmitted. Snapshot current-generation
-  -- receipts for the whole field-core membership before the session runs so
+  -- receipts for the whole bootstrap membership before the session runs so
   -- expectations below stay exact.
   local preReady = {}
   do
@@ -532,7 +532,7 @@ function T.common_session_drives_bootstrap_core_and_background_storm(romFs, vers
     local status = targeted:status()
     Assert.keySet(
       status,
-      "bootstrap,complete,enumerated,enumerationComplete,epoch,failed,failures,fieldCore,generationId,planningPending,queued,ready,running,settled,sweepState"
+      "bootstrap,complete,enumerated,enumerationComplete,epoch,failed,failures,generationId,planningPending,queued,ready,running,settled,sweepState"
     )
     Assert.equal(status.generationId, generationId)
     Assert.isFalse(status.complete, "an untouched session completes nothing")
@@ -627,7 +627,7 @@ function T.common_session_drives_bootstrap_core_and_background_storm(romFs, vers
     Assert.equal(#live, 0, "retirement cancels every live record: " .. table.concat(live, ", "))
   end
 
-  -- Full client: field core arrives as near work while geometry stays cold.
+  -- Full client: the complete scope arrives as sweep work while geometry stays cold.
   local session = openSession(identity, 2, pool)
   do
     -- The new selection archives the superseded epoch: history keeps the
@@ -642,15 +642,55 @@ function T.common_session_drives_bootstrap_core_and_background_storm(romFs, vers
     Assert.equal(pool:status("source-plan:global"), "unknown", "the new epoch inherits no live lookup")
   end
   do
-    local first, second = session:requestMilestone("field-core", "required")
-    checkPending(first, second, "field core")
+    -- Required urgency resubmits ready members for worker proof (like the
+    -- old required closure did); sweep would answer warm receipts without
+    -- submitting, leaving the census empty on a reused root.
+    local completeReady, completeFailure = session:requestComplete("required")
+    Assert.isFalse(completeReady, "the complete scope stays pending until the pump runs")
+    Assert.isNil(completeFailure, "complete registration reports no failure")
   end
   settle(session, pool)
-  -- Field core owns the persisted source inventory like any other scope:
+  -- Field runtime owns the persisted source inventory like any other scope:
   -- complete it through the real worker path so the session plans the
-  -- census from published data. Bootstrap no longer schedules it.
+  -- census from published data.
   if pool.records["source-plan:global"] ~= nil and pool.records["source-plan:global"].state == "queued" then
     complete("source-plan:global")
+    settle(session, pool)
+  end
+  -- The complete corpus is unknowable before source and page adoption:
+  -- drive the mon-catalog/mon-layout chain through the real worker path
+  -- so the session adopts page membership before the census below.
+  -- (The gated-parent driving further below stays valid; completing an
+  -- already-ready record is a no-op.)
+  do
+    local function completeKindNow(kind)
+      for _, record in ipairs(pool:recordsForKind(kind)) do
+        if pool.records[record.jobKey].state == "queued" then
+          complete(record.jobKey)
+        end
+      end
+    end
+    for _, kind in ipairs({
+      "world-catalog",
+      "field-cell-index",
+      "field-camera",
+      "field-weather",
+      "field-effects",
+      "field-emotes",
+      "field-ui",
+      "field-font",
+      "intro",
+      "new-game-init",
+      "items",
+      "bag",
+      "mon-catalog",
+    }) do
+      completeKindNow(kind)
+    end
+    settle(session, pool)
+    for _, kind in ipairs({ "mon-layout", "actors", "starter-choice" }) do
+      completeKindNow(kind)
+    end
     settle(session, pool)
   end
   do
@@ -722,15 +762,12 @@ function T.common_session_drives_bootstrap_core_and_background_storm(romFs, vers
     Assert.equal(
       #missing,
       0,
-      "field core must plan every synchronous consumer contract, missing: " .. table.concat(missing, ", ")
+      "complete scope must plan every synchronous consumer contract, missing: " .. table.concat(missing, ", ")
     )
-    for identityKey in pairs(requested) do
-      local kind = identityKey:match("^([^:]+):")
-      Assert.isTrue(
-        kind ~= "map" and kind ~= "field-cell" and kind ~= "mon-portrait-page" and kind ~= "mon-summary",
-        "field entry must not wait for geometry or portraits: " .. identityKey
-      )
-    end
+    -- The exhaustive census above intentionally includes portraits,
+    -- geometry, and visuals: the complete scope owns the whole corpus.
+    -- (The old decoupled-closure exclusion belonged to the deleted
+    -- milestone and does not apply here.)
   end
 
   -- Complete the cheap families through the real worker path.
@@ -852,7 +889,7 @@ function T.common_session_drives_bootstrap_core_and_background_storm(romFs, vers
   -- of answering from receipts: every warm resubmission must reuse
   -- without compiling. Targeted resumption, not an exhaustive sweep: the
   -- restarted session proves reuse for its explicitly requested milestones
-  -- (bootstrap and field core, which carry every completed kind), while the
+  -- (bootstrap and field runtime, which carry every completed kind), while the
   -- storm below proves exhaustive cursor enrollment at scale. Cursor extras
   -- (cells, maps, portraits) are cold here and never asserted, so they would
   -- only burn frontier turns without proving reuse.
@@ -862,8 +899,8 @@ function T.common_session_drives_bootstrap_core_and_background_storm(romFs, vers
     checkPending(first, second, "resumed bootstrap")
   end
   do
-    local first, second = resumed:requestMilestone("field-core", "required")
-    checkPending(first, second, "resumed core")
+    local first, second = resumed:requestMilestone("field-runtime", "required")
+    checkPending(first, second, "resumed runtime")
   end
   settle(resumed, pool)
   do

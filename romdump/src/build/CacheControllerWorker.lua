@@ -63,7 +63,8 @@ function CacheControllerWorker.bootstrap()
   return bootstrapSource()
 end
 
-local VALID_KINDS = { milestone = true, field = true, cell = true, portrait = true, ["icon-page"] = true }
+local VALID_KINDS =
+  { milestone = true, field = true, ["logical-field"] = true, cell = true, portrait = true, ["icon-page"] = true }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
 ---@class CacheControllerSelection
@@ -136,12 +137,17 @@ local function validateSelectors(params)
     return "unknown cache urgency: " .. tostring(params.urgency)
   end
   if kind == "milestone" then
-    if params.name ~= "bootstrap" and params.name ~= "field-core" and params.name ~= "new-game-intro" then
+    if
+      params.name ~= "bootstrap"
+      and params.name ~= "new-game-intro"
+      and params.name ~= "field-planning"
+      and params.name ~= "field-runtime"
+    then
       return "unknown milestone: " .. tostring(params.name)
     end
-  elseif kind == "field" then
+  elseif kind == "field" or kind == "logical-field" then
     if type(params.mapId) ~= "number" or params.mapId % 1 ~= 0 or params.mapId < 0 then
-      return "field request needs a non-negative integer mapId"
+      return kind .. " request needs a non-negative integer mapId"
     end
   elseif kind == "cell" then
     if type(params.matrixMemberId) ~= "number" or params.matrixMemberId % 1 ~= 0 or params.matrixMemberId < 0 then
@@ -172,6 +178,8 @@ function Worker:_invoke(params)
     return session:requestMilestone(params.name, urgency)
   elseif kind == "field" then
     return session:requestField(params.mapId, urgency)
+  elseif kind == "logical-field" then
+    return session:requestLogicalField(params.mapId, urgency)
   elseif kind == "cell" then
     return session:requestCell({ matrixMemberId = params.matrixMemberId, index = params.index }, urgency)
   elseif kind == "portrait" then
