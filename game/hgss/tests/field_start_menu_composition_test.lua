@@ -124,9 +124,6 @@ local function composeSelf(overrides)
     saveStore = {},
     audio = nil,
     presentationDisplay = display,
-    presentationWindows = {
-      start_menu = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-    },
   }
 end
 

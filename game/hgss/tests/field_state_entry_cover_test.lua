@@ -68,6 +68,7 @@ local function boot(withCover)
       windowStyles = {
         resolve = function() end,
       },
+      playerData = { options = { textFrame = 0 } },
       menuHost = {
         setScreenTopology = function() end,
         setPresentationMetrics = function() end,

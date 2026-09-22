@@ -194,7 +194,7 @@ function T.confirm_launches_the_selected_application()
     applicationId = "pokedex",
     actionId = "vanilla.pokedex",
   })
-  Assert.equal(controller:status().open, false, "a taken result ends the menu lifetime")
+  Assert.equal(controller:status().open, true, "a taken launch result keeps the menu open for its retained background")
 end
 
 function T.confirming_a_field_action_emits_a_field_action_result()
@@ -672,6 +672,21 @@ function T.hidden_positions_are_skipped_in_declared_candidate_order()
   Assert.equal(move(sparseAt(5), "right"), 5, "right from 5 must skip hidden 1 and stay")
 end
 
+function T.dismiss_closes_immediately_without_activation()
+  local control = newController()
+  Assert.isTrue(control:status().open, "the menu starts open")
+  control:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(control:takeResult(), { kind = "close" }, "dismiss records the terminal close result")
+  Assert.isFalse(control:status().open, "dismiss closes the menu")
+end
+
+function T.dismiss_ends_the_batch_so_later_events_cannot_overwrite_the_close()
+  local control = newController()
+  control:updateFixed({ { type = "dismiss" }, { type = "confirm" }, { type = "navigate", direction = "down" } })
+  Assert.deepEqual(control:takeResult(), { kind = "close" }, "only the terminal close survives the batch")
+  Assert.isNil(control:takeResult(), "the close result is delivered exactly once")
+end
+
 function T.entries_outside_the_normal_seven_positions_are_rejected()
   Assert.throws(function()
     StartMenuController.new({
@@ -681,6 +696,28 @@ function T.entries_outside_the_normal_seven_positions_are_rejected()
       interactive = INTERACTIVE,
     })
   end, "position 7 is outside the normal seven-position selector")
+end
+
+-- A taken launch keeps its menu presentable: the launched snapshot stays
+-- open as the drawable background under its child, while close and field
+-- actions still end the menu lifetime.
+function T.a_taken_launch_result_keeps_the_menu_open_for_its_retained_background()
+  local controller = newController()
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(controller:takeResult(), {
+    kind = "launch",
+    applicationId = "pokedex",
+    actionId = "vanilla.pokedex",
+  })
+  Assert.equal(controller:status().open, true, "a launched menu stays presentable under its child")
+  local saver = newController({
+    entries = {
+      { id = "vanilla.save", actionKind = "field_action", displayPosition = 0, enabled = true },
+    },
+  })
+  saver:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(saver:takeResult(), { kind = "field_action", actionId = "vanilla.save" })
+  Assert.equal(saver:status().open, false, "field actions still end the menu lifetime")
 end
 
 return { tests = T }

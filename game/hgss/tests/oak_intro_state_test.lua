@@ -330,29 +330,18 @@ function T.held_naming_gesture_ends_on_focus_loss_and_fresh_input_recovers()
   controller.phase = "name_edit"
   state:resize(1280, 720)
   local plan = assert(state:view().namingPresentation, "name editing publishes its naming plan")
-  local window = assert(plan.window, "a wide host must frame naming in a window")
-  local grab = assert(window.grabRect, "the naming window must carry its grab strip")
-  local frame0 = assert(window.outer, "the naming window must carry its outer placement").frame
-  local grabX, grabY = grab.x + grab.width / 2, grab.y + grab.height / 2
-  state:mousepressed(grabX, grabY, 1)
-  state:focus(false)
-  state:focus(true)
-  state:mousemoved(grabX + 40, grabY, 0, 0, false)
-  state:mousereleased(grabX + 40, grabY, 1)
-  local held = assert(state:view().namingPresentation, "the naming plan survives the blur").window.outer.frame
+  Assert.deepEqual(plan.frames, {}, "a wide host centers naming with no outer frame")
+  local frame0 = assert(plan.panes[1], "the naming plan carries its content pane").placement.frame
+  state:resize(1280, 720)
+  local resettled = assert(state:view().namingPresentation, "the naming plan survives reflow")
   Assert.deepEqual(
-    { x = held.x, y = held.y },
-    { x = frame0.x, y = frame0.y },
-    "a stale move after blur must not continue the old drag"
+    resettled.panes[1].placement.frame,
+    frame0,
+    "reflow recenters naming deterministically with no position memory"
   )
-  state:mousepressed(grabX, grabY, 1)
-  state:mousemoved(grabX + 40, grabY, 0, 0, false)
-  local moved = assert(state:view().namingPresentation, "the naming plan survives a fresh drag").window.outer.frame
-  Assert.isTrue(moved.x > frame0.x, "a fresh drag works after refocus")
-  state:mousereleased(grabX + 40, grabY, 1)
 
   local fresh = state:view()
-  local freshPlan = assert(fresh.namingPresentation, "the naming plan resolves after the fresh drag")
+  local freshPlan = assert(fresh.namingPresentation, "the naming plan resolves statically")
   local freshPane = assert(freshPlan.panes[1], "the plan carries its content pane")
   local naming = assert(fresh.layout.namingScreen, "name editing publishes the canonical Naming Screen")
   local key = naming.cells[2][1]

@@ -8,6 +8,8 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
+local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local FieldMenuRenderer = require("libs.hgss.src.ui.FieldMenuRenderer")
 local FieldSignpostRenderer = require("libs.hgss.src.ui.FieldSignpostRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -27,6 +29,7 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
 ---@field uiManifest table<string, unknown>
+---@field playerData table<string, unknown> the validated profile/options authority
 ---@field windowStyles FieldWindowStyles
 ---@field fieldEntranceIndicatorAsset table<string, unknown>
 ---@field fieldEmoteModels table<string, table<string, unknown>>
@@ -37,6 +40,8 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 
 ---@class FieldPresentationResources
 ---@field renderer FieldRenderer?
+---@field windowRenderer FieldWindowRenderer? the one shared frame-strip atlas owner lent to dialogue rendering
+---@field applicationFrameIndex integer? the snapshotted player-owned frame choice for application borders
 ---@field dialogueRenderer FieldDialogueRenderer?
 ---@field menuRenderer FieldMenuRenderer
 ---@field signpostRenderer FieldSignpostRenderer?
@@ -67,6 +72,45 @@ FieldPresentationResources.__index = FieldPresentationResources
 -- owner holds. Presenters borrow those resources; they never acquire or
 -- release them. An id without a presenter is a composition error, never a
 -- fallback to another application surface.
+-- Draws every published outer frame through the shared selected-frame owner
+-- after application content: one logical scope per frame record, masked
+-- border plus the plan's window identity, never content or host pixels.
+-- The masked inner band overlaps body pixels, so opaque decoration must
+-- paint over content while cleared padding reveals it. Plans without
+-- frames draw nothing extra; a framed plan without window identity keeps
+-- the border-only draw.
+---@param graphics table<string, unknown> host graphics namespace
+---@param owner FieldPresentationResources
+---@param plan table<string, unknown> the resolved application plan
+local function drawApplicationFrames(graphics, owner, plan)
+  local frames = assert(plan and plan.frames, "application frame drawing requires the resolved plan frames")
+  if #frames == 0 then
+    return
+  end
+  local window = assert(owner.windowRenderer, "field presentation owns no window renderer")
+  local frameIndex = assert(owner.applicationFrameIndex, "field presentation owns no application frame index")
+  local chrome = plan.chrome
+  assert(type(graphics) == "table", "application frame drawing requires its graphics namespace")
+  graphics.push("all")
+  local ok, err = pcall(function()
+    for _, frame in ipairs(frames) do
+      LogicalSurface.draw(graphics, assert(frame.placement, "the outer frame carries its placement"), function()
+        local contentBox = assert(frame.contentBox, "the outer frame carries its content box")
+        if chrome ~= nil then
+          local text = assert(owner.textRenderer, "field presentation owns no field text renderer")
+          window:drawApplicationChrome(contentBox, frameIndex, chrome, text)
+        else
+          window:drawApplicationFrame(contentBox, frameIndex)
+        end
+      end)
+    end
+  end)
+  graphics.pop()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 ---@param owner FieldPresentationResources
 ---@return table<string, FieldPresentationApplicationPresenter>
 local function buildPresenters(owner)
@@ -81,6 +125,7 @@ local function buildPresenters(owner)
       icons = assert(owner.monIconProvider, "party icon provider is unavailable"),
       text = assert(owner.textRenderer, "party text renderer is unavailable"),
     }, status, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
   end
   local function drawTrainerCard(presentation, _)
     local status = assert(presentation, "the card application presents its status")
@@ -92,6 +137,7 @@ local function buildPresenters(owner)
       trainerCardRenderer = assert(owner.trainerCardRenderer, "trainer card renderer is unavailable"),
       text = assert(owner.textRenderer, "card text renderer is unavailable"),
     }, status, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
   end
   local function drawBag(presentation, _)
     local status = assert(presentation, "the bag application presents its status")
@@ -105,6 +151,7 @@ local function buildPresenters(owner)
       icons = assert(owner.itemIconProvider, "bag icon provider is unavailable"),
       text = assert(owner.textRenderer, "bag text renderer is unavailable"),
     }, status, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
   end
   return {
     [FieldApplicationIds.POKEMON] = drawPokemon,
@@ -122,12 +169,27 @@ function FieldPresentationResources.new(runtime)
       clearColor = { 0, 0, 0, 1 },
       worldRasterScale = FieldPresentationConfig.WORLD_3D_RASTER_SCALE,
     })
+    -- One frame-strip atlas for the field lifetime, lent to dialogue
+    -- rendering and reused for every application outer frame. The selected
+    -- frame index snapshots the current player option because no live
+    -- in-field options mutation exists.
+    self.windowRenderer = FieldWindowRenderer.new({ cacheFs = runtime.cacheFs, manifest = runtime.uiManifest })
     local textRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs })
     self.textRenderer = textRenderer
+    local playerData = assert(runtime.playerData, "field presentation requires the validated player data")
+    local playerOptions = assert(playerData.options, "field presentation requires the player options")
+    local textFrame = assert(playerOptions.textFrame, "field presentation requires the player-owned frame index")
+    assert(
+      type(textFrame) == "number" and textFrame % 1 == 0 and textFrame >= 0,
+      "field presentation requires the player-owned frame index"
+    )
+    ---@cast textFrame integer
+    self.applicationFrameIndex = textFrame
     self.dialogueRenderer = FieldDialogueRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
       text = textRenderer,
+      windowRenderer = self.windowRenderer,
     })
     self.menuRenderer = FieldMenuRenderer.new()
     self.signpostRenderer = FieldSignpostRenderer.new({
@@ -236,7 +298,7 @@ end
 -- the interface's chosen render callback. Ownership stays here; the
 -- callback borrows and never releases.
 ---@param status table<string, unknown> the menu wrapper status carrying presentation=plan
----@param graphics table<string, unknown>? host graphics namespace for coverage/chrome (defaults to love.graphics)
+---@param graphics table<string, unknown>? host graphics namespace (defaults to love.graphics)
 function FieldPresentationResources:drawStartMenu(status, graphics)
   local presentation = assert(status and status.presentation, "the start menu draws through its presentation plan")
   local hostGraphics = graphics or (love and love.graphics)
@@ -245,6 +307,7 @@ function FieldPresentationResources:drawStartMenu(status, graphics)
     graphics = hostGraphics,
     startMenuRenderer = assert(self.startMenuRenderer, "start menu renderer is unavailable"),
   }, status, presentation)
+  drawApplicationFrames(hostGraphics, self, presentation)
 end
 
 function FieldPresentationResources:dispose()
@@ -253,6 +316,13 @@ function FieldPresentationResources:dispose()
     self.dialogueRenderer:release()
     self.dialogueRenderer = nil
   end
+  -- Borrowers release before their owner: dialogue rendering never owned
+  -- the shared atlas, so the owner releases exactly once here.
+  if self.windowRenderer then
+    self.windowRenderer:release()
+    self.windowRenderer = nil
+  end
+  self.applicationFrameIndex = nil
   if self.signpostRenderer then
     self.signpostRenderer:release()
     self.signpostRenderer = nil

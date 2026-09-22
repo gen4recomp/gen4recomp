@@ -76,52 +76,70 @@ local function paletteB(i)
   return 255 - (i * 12) % 90, 210 + (i * 3) % 30, 140 + (i * 17) % 90
 end
 
-local function tileBytes(i, palette)
-  local r, g, b = palette(i)
-  return string.rep(string.char(r, g, b, 255), 64)
-end
-
--- The strip atlas: frame rows stacked, each row the 18 tiles of one frame.
----@return string png
-function FieldUiFixture.stripBytes()
-  local rgba = {}
-  for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
-    local palette = frame == 0 and paletteA or paletteB
-    for tile = 0, FieldUiFixture.TILES_PER_FRAME - 1 do
-      rgba[#rgba + 1] = tileBytes(tile, palette)
-    end
-  end
-  return PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, table.concat(rgba))
-end
-
--- The raw RGBA rows of one frame row (144x8), so tests can compose an
--- independent expected render from the tile bytes.
----@param frame integer
----@return string rgba
-function FieldUiFixture.framePixels(frame)
-  local palette = frame == 0 and paletteA or paletteB
+-- One frame row painted as the renderer samples it: a row-major 144-wide
+-- image where the 8x8 cell at (tile * 8, row) carries that tile's bytes,
+-- so image-space addressing matches the frame-strip quads.
+---@param palette fun(i: integer): integer, integer, integer
+---@return string rgba the frame row pixels, 144x8 row-major
+local function frameRowBytes(palette)
   local rows = {}
-  for tile = 0, FieldUiFixture.TILES_PER_FRAME - 1 do
-    rows[#rows + 1] = tileBytes(tile, palette)
+  for _ = 0, 7 do
+    for tile = 0, FieldUiFixture.TILES_PER_FRAME - 1 do
+      local r, g, b = palette(tile)
+      rows[#rows + 1] = string.rep(string.char(r, g, b, 255), 8)
+    end
   end
   return table.concat(rows)
 end
 
+-- The strip atlas: frame rows stacked, each row the 18 tiles of one frame
+-- in renderer image space.
+---@return string png
+function FieldUiFixture.stripBytes()
+  local rgba = {}
+  for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
+    rgba[#rgba + 1] = frameRowBytes(frame == 0 and paletteA or paletteB)
+  end
+  return PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, table.concat(rgba))
+end
+
+-- The raw RGBA rows of one frame row (144x8) in renderer image space, so
+-- tests can compose an independent expected render from the tile bytes.
+---@param frame integer
+---@return string rgba
+function FieldUiFixture.framePixels(frame)
+  return frameRowBytes(frame == 0 and paletteA or paletteB)
+end
+
+-- Border tiles the synthetic application strip clears entirely: the
+-- window-interior seed tile plus one content-adjacent border tile. A real
+-- compiler clears every interior-connected padding cell even when the
+-- connected region spans a whole tile (a thin-border style whose inner
+-- ring is padding-colored), so a fully cleared border tile is faithful
+-- synthetic coverage for the masked overlap seam: cleared tiles reveal the
+-- application underneath while every other tile stays opaque decoration.
+-- Clearing addresses whole 8x8 image cells, the same units the renderer
+-- samples, so a cleared tile reveals the application at every texel.
+FieldUiFixture.APPLICATION_TRANSPARENT_TILES = { [2] = true, [8] = true }
+
 -- The application frame strip: the same rows as the dialogue strip, but
--- with each row's window-interior seed tile (tile 8, the third tile of the
--- middle frame row) cleared to transparent, mirroring the compiled class
--- where interior-connected padding reveals the application underneath
--- while the surrounding decoration stays opaque.
+-- with each row's window-interior seed tile (tile 8) and one
+-- content-adjacent border tile cleared to transparent, mirroring the
+-- compiled class where interior-connected padding reveals the application
+-- underneath while the surrounding decoration stays opaque.
 ---@return string png
 function FieldUiFixture.applicationStripBytes()
   local rgba = {}
   for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
     local palette = frame == 0 and paletteA or paletteB
-    for tile = 0, FieldUiFixture.TILES_PER_FRAME - 1 do
-      if tile == 8 then
-        rgba[#rgba + 1] = string.rep(string.char(0, 0, 0, 0), 64)
-      else
-        rgba[#rgba + 1] = tileBytes(tile, palette)
+    for _ = 0, 7 do
+      for tile = 0, FieldUiFixture.TILES_PER_FRAME - 1 do
+        if FieldUiFixture.APPLICATION_TRANSPARENT_TILES[tile] then
+          rgba[#rgba + 1] = string.rep(string.char(0, 0, 0, 0), 8)
+        else
+          local r, g, b = palette(tile)
+          rgba[#rgba + 1] = string.rep(string.char(r, g, b, 255), 8)
+        end
       end
     end
   end

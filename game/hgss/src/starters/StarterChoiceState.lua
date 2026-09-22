@@ -33,7 +33,6 @@ local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoiceP
 ---@field _frameIndex integer player-owned text-frame choice carried into the presentation
 ---@field _doneIndex integer? completed candidate once the lock settles
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
----@field _windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
 ---@field _overrides table<string, unknown>? per-case function overrides for this application
 ---@field _session ApplicationPresentation? the per-open presentation session beside the controller
 local StarterChoiceState = {}
@@ -44,7 +43,6 @@ StarterChoiceState.__index = StarterChoiceState
 ---@field cacheFs CacheFs generated-asset filesystem for the application cache
 ---@field frameIndex integer player-owned text-frame choice
 ---@field measureDisplay fun(): DisplayMeasurement the live display facts
----@field windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
 ---@param opts StarterChoiceState.Options
@@ -58,13 +56,11 @@ function StarterChoiceState.new(opts)
     "starter choice requires the player-owned frame index"
   )
   assert(type(opts.measureDisplay) == "function", "starter choice requires the display facts")
-  assert(type(opts.windowState) == "table", "starter choice borrows its window memory")
   return setmetatable({
     _catalog = opts.catalog,
     _cacheFs = opts.cacheFs,
     _frameIndex = opts.frameIndex,
     _measureDisplay = opts.measureDisplay,
-    _windowState = opts.windowState,
     _overrides = opts.overrides,
     _controller = nil,
     _candidates = nil,
@@ -205,7 +201,7 @@ function StarterChoiceState:open(cursor, candidates)
   })
   presentation:reset()
   self._presentation = presentation
-  local session = ApplicationPresentation.new(StarterChoiceInterface.withOverrides(self._overrides), self._windowState)
+  local session = ApplicationPresentation.new(StarterChoiceInterface.withOverrides(self._overrides))
   self._session = session
   local resolveOk, resolveErr = pcall(function()
     session:resolve(self:_measured(), self:_sessionView())
@@ -431,15 +427,21 @@ end
 
 -- Draws the modal through the field text provider. Reconciles the
 -- presentation geometry through the state-owned session, then executes
--- the resolved plan with the borrowed presentation and text. Drawing
+-- the resolved plan with the borrowed presentation, text, and field window
+-- renderer. Drawing
 -- before preparation completes is a composition error and fails loudly;
 -- the field draws the starter surface only once ready. Repeated draws
 -- never advance semantic clocks.
 ---@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
-function StarterChoiceState:drawPresentation(text)
+---@param windowRenderer table<string, unknown> field-borrowed window primitive for framed surfaces
+function StarterChoiceState:drawPresentation(text, windowRenderer)
   activeController(self)
   assert(text ~= nil and type(text.drawLine) == "function", "starter presentation requires the text provider")
   assert(self:isPresentationReady(), "starter presentation is not prepared")
+  assert(
+    windowRenderer ~= nil and type(windowRenderer.drawApplicationFrame) == "function",
+    "starter presentation borrows the field window renderer at draw time"
+  )
   local session = assert(self._session, "an open choice owns its presentation session")
   local view = self:_sessionView()
   session:resolve(self:_measured(), view)
@@ -448,6 +450,7 @@ function StarterChoiceState:drawPresentation(text)
     graphics = graphics,
     presentation = activePresentation(self),
     text = text,
+    windowRenderer = windowRenderer,
   }, view, session:plan())
 end
 

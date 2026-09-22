@@ -25,12 +25,11 @@ local function planFor(layout, width, height, pixelScale)
   local covered = PixelScale.cover({ x = 0, y = 0, width = width, height = height }, pixelScale, 1)
   return {
     panes = { { id = "content", placement = covered.placement, interactive = true } },
-    content = { layout = layout },
+    frames = {},
+    content = { layout = layout, hostBackgrounds = { { x = 0, y = 0, width = width, height = height } } },
     inputKey = "main-menu-graphics",
     render = function() end,
     mapInput = function() end,
-    coverage = {},
-    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
   }
 end
 

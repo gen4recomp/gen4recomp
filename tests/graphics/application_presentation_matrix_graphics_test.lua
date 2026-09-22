@@ -85,7 +85,6 @@ local function contextFor(measured, configuration, interfaceTable)
     configuration = configuration,
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interfaceTable.nativeLike,
   }
 end
@@ -299,7 +298,7 @@ function T.callback_failure_restores_scope_and_propagates(scope)
 end
 
 -- Every migrated interface resolves its real plans across the matrix:
--- canonical single panes fullscreen or auxiliary, draggable windows on
+-- canonical single panes fullscreen or auxiliary, static frames on
 -- wide/tall, matched input keys, and no window on fullscreen cases.
 function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   local _ = scope
@@ -310,8 +309,8 @@ function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   local singleMeasured = singleDisplay(640, 480)
   local menuPlan = startMenu.nativeLike(contextFor(singleMeasured, "nativeLike", startMenu), {})
   Assert.equal(#menuPlan.panes, 1, "native-like start menu shows its single body")
-  Assert.isNil(menuPlan.window, "native-like carries no window")
-  Assert.isTrue(#menuPlan.coverage >= 1, "fullscreen owns its target region")
+  local untypedMenu = menuPlan --[[@as table<string, unknown>]]
+  Assert.isNil(untypedMenu.fadeCoverage, "fullscreen names no transition region")
 
   local partyPlan = party.nativeLike(contextFor(singleMeasured, "nativeLike", party), partyView)
   Assert.equal(#partyPlan.panes, 1, "native-like party shows its single compact pane")
@@ -322,17 +321,19 @@ function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
 
   local wideMeasured = singleDisplay(1280, 720)
   local wideMenu = startMenu.wide(contextFor(wideMeasured, "wide", startMenu), {})
-  Assert.notNil(wideMenu.window, "wide frames the start menu in a window")
-  Assert.equal(#(wideMenu.coverage or {}), 0, "a window owns no fullscreen coverage")
+  Assert.equal(#wideMenu.frames, 1, "wide frames the start menu in a static box")
+  local untypedWide = wideMenu --[[@as table<string, unknown>]]
+  Assert.isNil(untypedWide.fadeCoverage, "a static frame owns no transition region")
   local wideParty = party.wide(contextFor(wideMeasured, "wide", party), partyView)
-  Assert.notNil(wideParty.window, "wide frames the party in a window")
+  Assert.equal(#wideParty.frames, 1, "wide frames the party in a static box")
   local wideCard = card.wide(contextFor(wideMeasured, "wide", card), {})
-  Assert.notNil(wideCard.window, "wide frames the card in a window")
+  Assert.equal(#wideCard.frames, 1, "wide frames the card in a static box")
 
   local tallMeasured = singleDisplay(390, 844)
-  Assert.notNil(
-    startMenu.tall(contextFor(tallMeasured, "tall", startMenu), {}).window,
-    "tall frames the start menu in a window"
+  Assert.equal(
+    #startMenu.tall(contextFor(tallMeasured, "tall", startMenu), {}).frames,
+    1,
+    "tall frames the start menu in a static box"
   )
 
   local dualMeasured = translatedPair()
@@ -346,10 +347,10 @@ function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   )
 end
 
--- The Bag pairs hero and interaction at one shared integer scale with the
--- locked gap; native-like collapses to interaction with its description
--- fallback content.
-function T.bag_pairs_share_scale_and_gap(scope)
+-- The Bag pairs hero and interaction at one shared integer scale with no
+-- synthetic gap and one frame around the common envelope; native-like
+-- collapses to interaction with its description fallback content.
+function T.bag_pairs_share_scale_with_no_gap(scope)
   local _ = scope
   local tabs = {}
   for index = 0, 7 do
@@ -388,6 +389,27 @@ function T.bag_pairs_share_scale_and_gap(scope)
     wide.panes[2].placement.pixelScale,
     "paired bag panes must share one integer scale"
   )
+  Assert.near(
+    wide.panes[1].placement.frame.x + wide.panes[1].placement.frame.width,
+    wide.panes[2].placement.frame.x,
+    1e-6,
+    "paired bag panes touch with no gap"
+  )
+  Assert.equal(#wide.frames, 1, "the pair carries one frame around its envelope")
+  local tall = bag.tall(contextFor(singleDisplay(390, 844), "tall", bag), {})
+  Assert.equal(#tall.panes, 2, "tall stacks hero above interaction")
+  Assert.equal(
+    tall.panes[1].placement.pixelScale,
+    tall.panes[2].placement.pixelScale,
+    "stacked bag panes must share one integer scale"
+  )
+  Assert.near(
+    tall.panes[1].placement.frame.y + tall.panes[1].placement.frame.height,
+    tall.panes[2].placement.frame.y,
+    1e-6,
+    "stacked bag panes touch with no gap"
+  )
+  Assert.equal(#tall.frames, 1, "the stacked pair carries one frame around its envelope")
   local native = bag.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", bag), {})
   Assert.equal(#native.panes, 1, "native-like bag shows only interaction")
   Assert.notNil(native.content.descriptionFallback, "lower-only bag must carry its description fallback")
@@ -572,6 +594,12 @@ function T.hosted_naming_magnifies_once_across_densities(scope)
   Assert.equal(onePlacement.logicalWidth, 256, "the child stays canonical at 1x")
   Assert.equal(twoPlacement.logicalWidth, 256, "the child stays canonical at 2x")
   Assert.equal(twoPlacement.pixelScale, 2, "the denser host must use the doubled scale")
+  Assert.deepEqual(one.frames, {}, "native-like naming publishes no outer frame")
+  Assert.deepEqual(two.frames, {}, "denser native-like naming publishes no outer frame")
+  local wideNaming = naming.wide(contextFor(singleDisplay(1280, 720), "wide", naming), {})
+  Assert.equal(#wideNaming.panes, 1, "wide naming keeps one canonical pane")
+  Assert.equal(wideNaming.panes[1].placement.logicalWidth, 256, "the wide naming child stays canonical")
+  Assert.deepEqual(wideNaming.frames, {}, "wide naming publishes no outer frame")
   Assert.deepEqual(
     one.content.layout.surface,
     two.content.layout.surface,
@@ -594,20 +622,32 @@ function T.hosted_naming_magnifies_once_across_densities(scope)
   Assert.equal(math.floor(x2), math.floor(x1) * 2, "one output scale doubles the columns")
 end
 
--- The Trainer Card near-fit bump protects its text: the guarded rect
--- stays fully inside the visible logical area at the cropped 3x.
+-- The Trainer Card near fit never mixes crop with chrome: 750x560 misses
+-- fullscreen, so the card refits as an uncropped decorated box whose
+-- complete surface keeps the guarded text rect fully visible.
 function T.trainer_crop_protects_text_bounds(scope)
   local _ = scope
   local card = TrainerCardInterface.withOverrides(nil)
   local plan = card.nativeLike(contextFor(singleDisplay(750, 560), "nativeLike", card), {})
   local placement = assert(plan.panes[1], "the card plan carries its pane").placement
-  Assert.equal(placement.pixelScale, 3, "750x560 must use the cropped 3x")
-  local visible = assert(placement.visibleLogicalRect, "the cropped placement names its visible area")
+  Assert.equal(placement.pixelScale, 2, "750x560 must use the decorated 2x")
+  Assert.deepEqual(
+    placement.crop or { left = 0, right = 0, top = 0, bottom = 0 },
+    { left = 0, right = 0, top = 0, bottom = 0 },
+    "a visible frame never coexists with body crop"
+  )
+  local visible = assert(placement.visibleLogicalRect, "the decorated placement names its visible area")
+  Assert.deepEqual(
+    visible,
+    { x = 0, y = 0, width = 256, height = 192 },
+    "the decorated body keeps every source pixel visible"
+  )
   Assert.isTrue(visible.x <= 8 and visible.y <= 8, "the visible area must start at or before the protected rect")
   Assert.isTrue(
     visible.x + visible.width >= 248 and visible.y + visible.height >= 184,
     "the visible area must cover the protected rect"
   )
+  Assert.equal(#plan.frames, 1, "the underfilled card carries its complete frame")
 end
 
 -- The responsive startup menu grows its logical viewport with density
@@ -669,6 +709,284 @@ function T.plan_draw_restores_state_for_every_case(scope)
       1,
       host.name .. " content paints through its plan"
     )
+  end
+end
+
+-- Masked application chrome overlaps body pixels without a halo: opaque
+-- border tiles cover edge body pixels, cleared border tiles reveal the
+-- body underneath, and pixels outside the outer placement keep the host
+-- sentinel. The cleared tile stands in for a style whose inner ring is
+-- padding-connected; the opaque tiles prove decoration is preserved.
+function T.masked_chrome_overlaps_the_body_without_a_halo(scope)
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+  local dialogueRow = FieldUiFixture.framePixels(0)
+  -- The strip atlas is a row-major 144-wide image, so the texel at the
+  -- center of tile `tile`'s 8x8 cell lives at (tile * 8 + 4, 4): the same
+  -- image-space addressing the frame-strip quads use.
+  local function tileColor(tile)
+    local base = (4 * 144 + tile * 8 + 4) * 4
+    return {
+      string.byte(dialogueRow, base + 1) / 255,
+      string.byte(dialogueRow, base + 2) / 255,
+      string.byte(dialogueRow, base + 3) / 255,
+      1,
+    }
+  end
+  local bodyTint = { 1, 0, 1, 1 }
+  for _, density in ipairs({ 1, 2 }) do
+    local tag = density .. "x"
+    local box = { x = 16, y = 32, width = 64, height = 64 }
+    local canvasWidth, canvasHeight = 96 * density, 136 * density
+    local window = scope:own(FieldWindowRenderer.new({
+      cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
+      manifest = FieldUiFixture.manifest(),
+    }))
+    local canvas = renderToCanvas(scope, canvasWidth, canvasHeight, function()
+      local lg = love.graphics
+      lg.push("all")
+      lg.scale(density, density)
+      lg.setColor(bodyTint[1], bodyTint[2], bodyTint[3], bodyTint[4])
+      lg.rectangle("fill", box.x, box.y, box.width, box.height)
+      window:drawApplicationFrame(box, 0)
+      lg.pop()
+    end)
+    local data = scope:own(canvas:newImageData())
+    local function sample(lx, ly)
+      return data:getPixel(lx * density, ly * density)
+    end
+    local function assertBodyPixel(lx, ly, label)
+      local r, g, b, a = sample(lx, ly)
+      Assert.near(r, 1, 1e-2, tag .. " " .. label .. " red")
+      Assert.near(g, 0, 1e-2, tag .. " " .. label .. " green")
+      Assert.near(b, 1, 1e-2, tag .. " " .. label .. " blue")
+      Assert.near(a, 1, 1e-2, tag .. " " .. label .. " alpha")
+    end
+    local function assertTilePixel(lx, ly, tile, label)
+      local want = tileColor(tile)
+      local r, g, b, a = sample(lx, ly)
+      Assert.near(r, want[1], 1e-2, tag .. " " .. label .. " red")
+      Assert.near(g, want[2], 1e-2, tag .. " " .. label .. " green")
+      Assert.near(b, want[3], 1e-2, tag .. " " .. label .. " blue")
+      Assert.near(a, want[4], 1e-2, tag .. " " .. label .. " alpha")
+    end
+    local overlaps, reveals = 0, 0
+    for _, placement in ipairs(FieldDialogueTheme.applicationFrameTilePlacements(box)) do
+      local cx, cy = placement.x + 4, placement.y + 4
+      if cx >= box.x and cx < box.x + box.width and cy >= box.y and cy < box.y + box.height then
+        if FieldUiFixture.APPLICATION_TRANSPARENT_TILES[placement.tile] then
+          assertBodyPixel(cx, cy, "cleared tile " .. placement.tile .. " reveals the body")
+          reveals = reveals + 1
+        else
+          assertTilePixel(cx, cy, placement.tile, "tile " .. placement.tile .. " covers the body edge")
+          overlaps = overlaps + 1
+        end
+      end
+    end
+    Assert.isTrue(overlaps > 0, tag .. " decoration overlaps body pixels")
+    Assert.isTrue(reveals > 0, tag .. " cleared padding reveals the body")
+    assertBodyPixel(box.x + 32, box.y + 32, "the body center stays uncovered")
+    assertPixelNear(data, 0, 0, 0, 0, 0, 0, tag .. " outside the frame stays sentinel")
+    assertPixelNear(data, canvasWidth - 1, canvasHeight - 1, 0, 0, 0, 0, tag .. " past the frame edge stays sentinel")
+  end
+end
+
+-- Framed windows carry readable title chrome: every framed application
+-- draws its fixed title inside the shared title region and every
+-- closable one centers a dash mark in the shared dismiss control, at
+-- wide/tall hosts and at more than one integer scale. The starter choice
+-- draws its title with no dismiss mark. Pixel deltas against the
+-- border-only render separate title/dash ink from frame artwork.
+local function chromeGeometry(box)
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local locate = FieldDialogueTheme.applicationChromeGeometry
+  if type(locate) ~= "function" then
+    error("the shared theme must locate window chrome geometry for drawing", 0)
+  end
+  return locate(box)
+end
+
+local function chromeBagInterface()
+  local tabs = {}
+  for index = 0, 7 do
+    tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
+  end
+  local slots = {}
+  for index = 1, 6 do
+    slots[index] = { rect = { x = 0, y = 32 + (index - 1) * 24, width = 128, height = 22 } }
+  end
+  return BagInterface.withOverrides(nil, {
+    interactive = {
+      pocketTabs = { rects = tabs },
+      itemSlots = { slots = slots },
+      cancel = { rect = { x = 192, y = 168, width = 64, height = 24 } },
+      overlays = {
+        descriptionFallback = {
+          frame = { x = 0, y = 144, width = 256, height = 48 },
+          textRect = { x = 20, y = 144, width = 236, height = 48 },
+        },
+        actionMenu = {
+          buttons = {
+            { x = 8, y = 136, width = 80, height = 16 },
+            { x = 104, y = 136, width = 80, height = 16 },
+            { x = 8, y = 168, width = 80, height = 16 },
+            { x = 104, y = 168, width = 80, height = 16 },
+          },
+        },
+      },
+    },
+  })
+end
+
+function T.framed_windows_carry_title_and_dismiss_chrome(scope)
+  local lg = love.graphics
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+  local startMenu = StartMenuInterface.withOverrides(nil)
+  local party = PartyScreenInterface.withOverrides(nil)
+  local card = TrainerCardInterface.withOverrides(nil)
+  local starter = StarterChoiceInterface.withOverrides(nil)
+  local bag = chromeBagInterface()
+  local partyView = { cancellable = true, cursorNode = 0 }
+  local starterView = { selection = 0, selectionState = "null", transition = "idle", done = false }
+  local wideMeasured = singleDisplay(1280, 720)
+  local apps = {
+    {
+      name = "start menu",
+      plan = startMenu.wide(contextFor(wideMeasured, "wide", startMenu), {}),
+      chrome = { title = "MENU", dismissible = true },
+    },
+    {
+      name = "party",
+      plan = party.wide(contextFor(wideMeasured, "wide", party), partyView),
+      chrome = { title = "POKéMON", dismissible = true },
+    },
+    {
+      name = "bag",
+      plan = bag.wide(contextFor(wideMeasured, "wide", bag), {}),
+      chrome = { title = "BAG", dismissible = true },
+    },
+    {
+      name = "trainer card",
+      plan = card.wide(contextFor(wideMeasured, "wide", card), {}),
+      chrome = { title = "TRAINER CARD", dismissible = true },
+    },
+    {
+      name = "starter choice",
+      plan = starter.wide(contextFor(wideMeasured, "wide", starter), starterView),
+      chrome = { title = "STARTER CHOICE", dismissible = false },
+    },
+  }
+  for _, app in ipairs(apps) do
+    Assert.isTrue(#app.plan.frames >= 1, "the wide " .. app.name .. " must publish its outer frame")
+    local contentBox = assert(app.plan.frames[1].contentBox, "the " .. app.name .. " frame carries its body")
+    -- Real body dimensions anchor the chrome box; the origin stays
+    -- canvas-local so border/title/control pixels stay fully on-canvas.
+    local box = { x = 24, y = 48, width = contentBox.width, height = contentBox.height }
+    local geometry = chromeGeometry(box)
+    local placements = FieldDialogueTheme.applicationFrameTilePlacements(box)
+    local outerMinX, outerMinY, outerMaxX, outerMaxY = math.huge, math.huge, -math.huge, -math.huge
+    for _, placement in ipairs(placements) do
+      outerMinX = math.min(outerMinX, placement.x)
+      outerMinY = math.min(outerMinY, placement.y)
+      outerMaxX = math.max(outerMaxX, placement.x + 8)
+      outerMaxY = math.max(outerMaxY, placement.y + 8)
+    end
+    Assert.isTrue(
+      geometry.title.x - outerMinX >= 32,
+      app.name .. ": the title keeps the generous left margin from the outer edge"
+    )
+    Assert.isTrue(
+      geometry.title.x + geometry.title.width <= geometry.dismiss.x,
+      app.name .. ": the title ends before the dismiss control space"
+    )
+    Assert.isTrue(
+      geometry.dismiss.width >= 16 and geometry.dismiss.width <= 32,
+      app.name .. ": the dismiss control stays near the roughly 24px target"
+    )
+    Assert.isTrue(
+      outerMaxX - (geometry.dismiss.x + geometry.dismiss.width) >= 8,
+      app.name .. ": the dismiss control keeps corner margin from the outer edge"
+    )
+    for _, density in ipairs({ 1, 2 }) do
+      local tag = app.name .. " " .. density .. "x"
+      local shiftX, shiftY = 8 - outerMinX, 8 - outerMinY
+      local canvasWidth = math.ceil(outerMaxX - outerMinX + 16) * density
+      local canvasHeight = math.ceil(outerMaxY - outerMinY + 16) * density
+      local window = scope:own(FieldWindowRenderer.new({
+        cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
+        manifest = FieldUiFixture.manifest(),
+      }))
+      local text = FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() })
+      local drawChrome = window.drawApplicationChrome
+      if type(drawChrome) ~= "function" then
+        error(app.name .. ": the window renderer must draw titled dismissible chrome", 0)
+      end
+      local function render(withChrome)
+        return renderToCanvas(scope, canvasWidth, canvasHeight, function()
+          lg.push("all")
+          lg.scale(density, density)
+          lg.translate(shiftX, shiftY)
+          lg.setColor(1, 0, 1, 1)
+          lg.rectangle("fill", box.x, box.y, box.width, box.height)
+          if withChrome then
+            drawChrome(window, box, 0, app.chrome, text)
+          else
+            window:drawApplicationFrame(box, 0)
+          end
+          lg.pop()
+        end)
+      end
+      local borderData = scope:own(render(false):newImageData())
+      local chromeData = scope:own(render(true):newImageData())
+      local function changedInk(rect)
+        local count = 0
+        for ly = math.floor(rect.y), math.ceil(rect.y + rect.height) - 1 do
+          for lx = math.floor(rect.x), math.ceil(rect.x + rect.width) - 1 do
+            local hx, hy = math.floor((lx + shiftX) * density), math.floor((ly + shiftY) * density)
+            local r0, g0, b0, a0 = borderData:getPixel(hx, hy)
+            local r1, g1, b1, a1 = chromeData:getPixel(hx, hy)
+            if math.abs(r1 - r0) + math.abs(g1 - g0) + math.abs(b1 - b0) + math.abs(a1 - a0) > 0.05 then
+              count = count + 1
+            end
+          end
+        end
+        return count
+      end
+      Assert.isTrue(changedInk(geometry.title) > 10, tag .. ": the title paints readable ink inside its region")
+      local dashInk = changedInk(geometry.dismiss)
+      if app.chrome.dismissible then
+        Assert.isTrue(dashInk > 5, tag .. ": the dismiss control paints its mark")
+      else
+        Assert.equal(dashInk, 0, tag .. ": the non-dismissible window paints no control mark")
+      end
+    end
+  end
+end
+
+-- Undecorated surfaces publish no window identity: Oak naming and the
+-- startup main menu resolve frame-free plans with no title metadata at
+-- any density.
+function T.undecorated_surfaces_publish_no_window_identity(scope)
+  local _ = scope
+  local naming = NamingInterface.withOverrides(nil)
+  local menu = MainMenuInterface.withOverrides(nil)
+  local menuView = {
+    globalActions = { { id = "new-game", kind = "new_game" } },
+    saves = { cards = {} },
+    focus = { region = "global", actionId = "new-game" },
+  }
+  for _, host in ipairs({ singleDisplay(320, 240), singleDisplay(1280, 720) }) do
+    local label = host.width .. "x" .. host.height
+    local namingPlan = naming.nativeLike(contextFor(host, "nativeLike", naming), {})
+    Assert.deepEqual(namingPlan.frames, {}, label .. ": naming publishes no outer frame")
+    Assert.isNil(namingPlan.chrome, label .. ": naming publishes no window identity")
+    local wideNaming = naming.wide(contextFor(host, "wide", naming), {})
+    Assert.deepEqual(wideNaming.frames, {}, label .. ": wide naming publishes no outer frame")
+    Assert.isNil(wideNaming.chrome, label .. ": wide naming publishes no window identity")
+    local menuPlan = menu.nativeLike(contextFor(host, "nativeLike", menu), menuView)
+    Assert.deepEqual(menuPlan.frames, {}, label .. ": the startup menu publishes no outer frame")
+    Assert.isNil(menuPlan.chrome, label .. ": the startup menu publishes no window identity")
   end
 end
 

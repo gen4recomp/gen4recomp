@@ -1,7 +1,7 @@
 -- Production-composed field Bag topology contract. A real field runtime
 -- owns the live Bag service and cursor: the Start Menu offers the Bag route
 -- once the source Bag flag is set and confirming it opens the Bag
--- application through the host fade. This journey proves a structural
+-- application over the retained menu. This journey proves a structural
 -- topology change preserves the semantic selection and that a pointer press
 -- held across the change cannot activate a moved target. Browse quantities,
 -- cursor memory, and action flows live in the bag actions integration
@@ -214,7 +214,7 @@ local function openBag(game, state)
   )
   navigateTo(game, state, BAG_ACTION)
   confirm(game)
-  game:advanceUntil("bag application launches through the host fade", function()
+  game:advanceUntil("bag application opens over the retained menu", function()
     return hostPhase(game) == FieldApplicationHost.PHASES.application
   end, 120)
   return bagView(game)
@@ -486,9 +486,9 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
     local view, plan = presentationOf(game, "on the native-like surface")
     Assert.equal(#plan.panes, 1, "the native-like composition shows only its interactive pane")
     Assert.isTrue(plan.panes[1].interactive, "the single native-like pane takes input")
-    Assert.isNil(plan.window, "the native-like fullscreen carries no window chrome")
-    Assert.isTrue(type(plan.coverage) == "table", "the native-like plan owns its coverage")
-    Assert.equal(#plan.coverage, 1, "the native-like fullscreen owns its target region")
+    Assert.isTrue(type(plan.frames) == "table", "the native-like plan carries its static frame list")
+    Assert.deepEqual(plan.frames, {}, "exact native coverage leaves no background to decorate")
+    Assert.isNil(plan.fadeCoverage, "the native-like plan owns no transition region")
     local content = plan.content
     Assert.isTrue(type(content) == "table", "the native-like plan carries its logical content")
     Assert.equal(content.heroVisible, false, "the native-like plan hides the hero pane")
@@ -538,8 +538,8 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
     )
     Assert.equal(
       wideInteractivePlacement.frame.x - (wideHeroPlacement.frame.x + wideHeroPlacement.frame.width),
-      8 * wideInteractivePlacement.scale,
-      "paired wide panes keep one eight logical-pixel gap"
+      0,
+      "paired wide panes touch with no gap"
     )
     Assert.equal(viewPocket(wideView), "medicine", "the wide composition preserves the pocket")
     Assert.equal(selectedKey(wideView), "POTION", "the wide composition preserves the selected item")
@@ -563,8 +563,8 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
     )
     Assert.equal(
       tallInteractivePlacement.frame.y - (tallHeroPlacement.frame.y + tallHeroPlacement.frame.height),
-      8 * tallInteractivePlacement.scale,
-      "paired tall panes keep one eight logical-pixel gap"
+      0,
+      "paired tall panes touch with no gap"
     )
     Assert.equal(viewPocket(bagView(game)), "medicine", "the tall composition preserves the pocket")
 
@@ -582,8 +582,7 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
       { x = 100, y = 300, width = 256, height = 192 },
       "interaction on the auxiliary surface"
     )
-    Assert.isTrue(type(dual.coverage) == "table", "the dual plan owns its coverage")
-    Assert.equal(#dual.coverage, 2, "the physical pair covers one region per surface")
+    Assert.isNil(dual.fadeCoverage, "the physical pair owns no transition region")
 
     game.runtime:resizePresentation(640, 480, oneDisplay(640, 480, false))
     game:step()

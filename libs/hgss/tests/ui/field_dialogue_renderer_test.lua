@@ -81,7 +81,7 @@ end
 -- The shared font assets: the fixture font carries three glyphs, so the text
 -- renderer creates three images (glyph atlas, semantic mask atlas, and focus
 -- strip) and three glyph quads ahead of the dialogue renderer's own strip
--- image and tile quads.
+-- images and tile quads.
 local function withTextRenderer(cache, lg)
   return FieldTextRenderer.new({ cacheFs = cache, graphics = lg })
 end
@@ -255,22 +255,22 @@ function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
 end
 
 -- The former nine-slice window is gone: the renderer owns only the frame
--- strip, creates no third slice source image, and draws the frame from the
+-- strips, creates no third slice source image, and draws the frame from the
 -- generated strip tiles.
 function T.no_nine_slice_assets_are_built()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 }, { 144, 16 } } })
   local renderer = FieldDialogueRenderer.new({
     cacheFs = uiCache(),
     manifest = MANIFEST,
     text = withTextRenderer(uiCache(), lg),
     graphics = lg,
   })
-  Assert.equal(#lg.images, 5, "the font atlases, frame strip, and continuation cursor are created")
+  Assert.equal(#lg.images, 6, "the font atlases, frame strips, and continuation cursor are created")
 
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
   local fieldScale = 1
   renderer:draw(controller, presentationAtFieldScale(fieldScale))
-  Assert.equal(#lg.images, 5, "drawing creates no slice image")
+  Assert.equal(#lg.images, 6, "drawing creates no slice image")
   renderer:release()
 end
 
@@ -346,7 +346,7 @@ end
 -- and repeated draws do not advance the controller-owned phase.
 function T.waiting_dialogue_draws_the_generated_cursor_phase_without_blinking()
   local lg = fakeGraphics({
-    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 32 }, { 48, 320 } },
+    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 32 }, { 144, 32 }, { 48, 320 } },
   })
   local cache = cursorCache()
   local text = withTextRenderer(cache, lg)
@@ -366,7 +366,7 @@ function T.waiting_dialogue_draws_the_generated_cursor_phase_without_blinking()
   local fieldScale = 1
   renderer:draw(controller, presentationAtFieldScale(fieldScale))
   local first = lg.draws[#lg.draws]
-  Assert.equal(first.image, lg.images[5], "the continuation uses the generated cursor atlas")
+  Assert.equal(first.image, lg.images[6], "the continuation uses the generated cursor atlas")
   local expected = cursorManifest().dialogueFrames.continueCursor.styles[3].phases[status.cursorPhase]
   Assert.deepEqual({ first.quad.x, first.quad.y, first.quad.w, first.quad.h }, {
     expected.x,
@@ -388,7 +388,7 @@ end
 -- into an arbitrary host rectangle without changing the generated phase quad.
 function T.compact_presentation_places_the_cursor_inside_its_window()
   local lg = fakeGraphics({
-    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 32 }, { 48, 320 } },
+    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 32 }, { 144, 32 }, { 48, 320 } },
   })
   local cache = cursorCache()
   local text = withTextRenderer(cache, lg)
@@ -411,7 +411,7 @@ function T.compact_presentation_places_the_cursor_inside_its_window()
   renderer:draw(controller, presentation)
   local cursor = lg.draws[#lg.draws]
   local expected = cursorManifest().dialogueFrames.continueCursor.styles[3].phases[status.cursorPhase]
-  Assert.equal(cursor.image, lg.images[5], "the compact presentation uses the generated cursor atlas")
+  Assert.equal(cursor.image, lg.images[6], "the compact presentation uses the generated cursor atlas")
   Assert.deepEqual({ cursor.quad.x, cursor.quad.y, cursor.quad.w, cursor.quad.h }, {
     expected.x,
     expected.y,
@@ -631,6 +631,65 @@ function T.focus_indicator_visibility_follows_renderer_policy()
   local disabledFocus, disabledLines = drawWithPolicy(true)
   Assert.equal(#disabledFocus, 0, "the disabled renderer suppresses focus-indicator drawing")
   Assert.isTrue(#disabledLines > 0, "disabling focus does not suppress dialogue content")
+end
+
+-- A borrowed window renderer stays caller-owned: standard dialogue draws
+-- through it, and releasing the dialogue renderer never releases it.
+function T.injected_window_renderer_is_borrowed_and_never_released()
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local borrowed = {
+    released = false,
+    windowCalls = 0,
+    drawWindow = function(self)
+      self.windowCalls = self.windowCalls + 1
+    end,
+    release = function(self)
+      self.released = true
+    end,
+  }
+  local renderer = FieldDialogueRenderer.new({
+    cacheFs = uiCache(),
+    manifest = MANIFEST,
+    text = withTextRenderer(uiCache(), lg),
+    graphics = lg,
+    windowRenderer = borrowed,
+  })
+  local controller = FieldDialogueFixture.openDialogue("AB", 0)
+  renderer:draw(controller, presentationAtFieldScale(1))
+  Assert.equal(borrowed.windowCalls, 1, "standard dialogue draws through the borrowed window renderer")
+  renderer:release()
+  Assert.isFalse(borrowed.released, "releasing the dialogue renderer never releases the borrowed owner")
+  renderer:release()
+  Assert.isFalse(borrowed.released, "repeat release still never releases the borrowed owner")
+end
+
+-- A construction failure after borrowing must clean only local resources:
+-- the caller's window owner survives a missing continuation cursor.
+function T.borrowed_window_survives_a_later_construction_failure()
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local cache = uiCache()
+  cache:remove(FieldUiFixture.CONTINUE_CURSOR_PATH)
+  local borrowed = {
+    released = false,
+    drawWindow = function() end,
+    release = function(self)
+      self.released = true
+    end,
+  }
+  local err = Assert.throws(function()
+    FieldDialogueRenderer.new({
+      cacheFs = cache,
+      manifest = MANIFEST,
+      text = withTextRenderer(uiCache(), lg),
+      graphics = lg,
+      windowRenderer = borrowed,
+    })
+  end)
+  Assert.isTrue(
+    Errors.is(err) and err.code == "FIELD_UI_CONTINUE_CURSOR_MISSING",
+    "raises FIELD_UI_CONTINUE_CURSOR_MISSING"
+  )
+  Assert.isFalse(borrowed.released, "a failed borrow construction never releases the caller-owned window")
 end
 
 -- A closed controller draws nothing and requires no presentation: the

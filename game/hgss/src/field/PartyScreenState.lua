@@ -24,7 +24,6 @@ PartyScreenState.__index = PartyScreenState
 ---@class PartyScreenState.Options
 ---@field service HgssMonService the live mon service
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
----@field windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
 ---@param opts PartyScreenState.Options
@@ -33,7 +32,6 @@ function PartyScreenState.new(opts)
   assert(type(opts) == "table", "the party screen requires options")
   local service = assert(opts.service, "the party screen requires the live mon service")
   assert(type(opts.measureDisplay) == "function", "the party screen requires the display facts")
-  assert(type(opts.windowState) == "table", "the party screen borrows its window memory")
   assert(
     type(service.partyCount) == "function" and service:partyCount() > 0,
     "the party screen requires a non-empty party"
@@ -56,7 +54,7 @@ function PartyScreenState.new(opts)
   local controller
   local session
   local built, buildErr = pcall(function()
-    session = ApplicationPresentation.new(PartyScreenInterface.withOverrides(opts.overrides), opts.windowState)
+    session = ApplicationPresentation.new(PartyScreenInterface.withOverrides(opts.overrides))
     controller = PartyScreenController.new({
       mode = "view",
       model = {

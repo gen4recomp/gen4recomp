@@ -1,6 +1,6 @@
 -- Parent-owned Naming Screen placement: one canonical 256x192 crop-0 pane
 -- on the auxiliary surface for genuine pairs, fullscreen for native-like,
--- and a shared draggable window for wide/tall. The child layout always
+-- and a static centered pane for wide/tall. The child layout always
 -- derives from the full canonical logical region, never the visible clip;
 -- the child itself carries no placement or scale.
 
@@ -67,7 +67,6 @@ local function contextFor(measured, configuration, interfaceTable)
     configuration = configuration,
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interfaceTable.nativeLike,
   }
 end
@@ -131,25 +130,13 @@ function T.tests.dual_case_hosts_naming_on_the_auxiliary_surface()
   )
 end
 
-function T.tests.wide_and_tall_cases_frame_naming_in_a_window()
-  local interfaces = namingInterface()
-  for _, case in ipairs({
-    { key = "wide", measured = singleDisplay(1280, 720) },
-    { key = "tall", measured = singleDisplay(500, 900) },
-  }) do
-    local plan = interfaces[case.key](contextFor(case.measured, case.key, interfaces), semanticView())
-    contentPane(plan, case.key)
-    Assert.isTrue(type(plan.window) == "table", "the " .. case.key .. " naming plan carries its window chrome")
-    Assert.equal(#plan.coverage, 0, "a naming window owns no fullscreen coverage " .. case.key)
-  end
-end
-
 function T.tests.native_like_case_owns_its_fullscreen_region()
   local interfaces = namingInterface()
   local plan = interfaces.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", interfaces), semanticView())
   contentPane(plan, "nativeLike")
-  Assert.isNil(plan.window, "fullscreen naming carries no window chrome")
-  Assert.isTrue(#plan.coverage > 0, "fullscreen naming owns its target region")
+  local untyped = plan --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.window, "fullscreen naming carries no window chrome")
+  Assert.isNil(untyped.fadeCoverage, "fullscreen naming names no transition region")
 end
 
 function T.tests.tiny_host_keeps_complete_canonical_content_without_a_fit_error()
@@ -195,7 +182,6 @@ function T.tests.missing_measurement_fails_without_a_partial_plan()
   Assert.throws(function()
     local incomplete = {
       configuration = "nativeLike",
-      windowPosition = { x = 0.5, y = 0.5 },
       nativeLikeInterface = interfaces.nativeLike,
     }
     interfaces.nativeLike(incomplete --[[@as ApplicationLayout.Context]], semanticView())
@@ -217,12 +203,11 @@ function T.tests.per_case_override_replaces_the_whole_pair()
     wide = function(_, _)
       return {
         panes = {},
+        frames = {},
         content = {},
         inputKey = "custom-wide",
         render = wideRender,
         mapInput = wideMap,
-        coverage = {},
-        backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
       }
     end,
   })
@@ -277,6 +262,25 @@ function T.tests.mapper_ignores_non_content_pointer_traffic()
     "scroll deltas are not editor input"
   )
   Assert.isNil(map({ type = "pointer_cancel", pointerId = "mouse" }, semanticView(), plan), "cancellation stays mute")
+end
+
+-- Wide/tall naming centers canonical content with no outer decoration:
+-- an empty frame list and no window chrome on any host.
+function T.tests.wide_and_tall_naming_centers_without_outer_decoration()
+  local interfaces = namingInterface()
+  for _, case in ipairs({
+    { key = "wide", measured = singleDisplay(1280, 720) },
+    { key = "tall", measured = singleDisplay(500, 900) },
+  }) do
+    local plan = interfaces[case.key](contextFor(case.measured, case.key, interfaces), semanticView())
+    local pane = contentPane(plan, case.key)
+    local placement = assert(pane.placement, "the naming pane carries its host placement " .. case.key)
+    Assert.equal(placement.logicalWidth, 256, "the naming pane is canonically wide " .. case.key)
+    Assert.equal(placement.logicalHeight, 192, "the naming pane is canonically tall " .. case.key)
+    Assert.deepEqual(plan.frames or "missing", {}, "naming publishes no outer frame " .. case.key)
+    local untyped = plan --[[@as table<string, unknown>]]
+    Assert.isNil(untyped.window, "naming carries no window chrome " .. case.key)
+  end
 end
 
 return T

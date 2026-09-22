@@ -355,7 +355,6 @@ function T.open_bag_stays_controllable_across_window_blur()
         signature = "field-state-input-test:" .. box.width .. "x" .. box.height,
       }
     end,
-    windowState = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
   })
   screen:updateFixed({})
   Assert.equal(screen:status().selected.item, "POKE_BALL", "setup browses the stocked pocket")

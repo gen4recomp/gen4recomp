@@ -3,7 +3,7 @@
 -- genuine world/auxiliary pair is dual; a near-4:3 single surface stays a
 -- fullscreen native surface across decorations (enter within 12 logical
 -- pixels per edge, retain within 14); anything else is a wide or tall
--- surface that frames the application in a draggable window. The band and
+-- surface that frames the application in a static centered box. The band and
 -- its hysteresis are one shared contract, not per-application heuristics.
 
 local Assert = require("tests.support.Assert")
@@ -49,7 +49,7 @@ local function measure(topology, width, height, pixelRatio)
   }
 end
 
-function T.tests.near_native_single_surfaces_stay_fullscreen_instead_of_windowing()
+function T.tests.near_native_single_surfaces_stay_fullscreen_instead_of_framing()
   local policy = sharedPolicy()
   for _, size in ipairs({
     { width = 640, height = 480 },
@@ -64,13 +64,13 @@ end
 function T.tests.far_surfaces_fall_to_wide_or_tall_by_aspect()
   local policy = sharedPolicy()
   local wide = policy.classify(measure(singleSurface(1920, 1080), 1920, 1080))
-  Assert.equal(wide, "wide", "a 16:9 host frames the application in a window")
+  Assert.equal(wide, "wide", "a 16:9 host frames the application in a static box")
   for _, size in ipairs({
     { width = 390, height = 844 },
     { width = 512, height = 512 },
   }) do
     local configuration = policy.classify(measure(singleSurface(size.width, size.height), size.width, size.height))
-    Assert.equal(configuration, "tall", size.width .. "x" .. size.height .. " frames the application in a window")
+    Assert.equal(configuration, "tall", size.width .. "x" .. size.height .. " frames the application in a static box")
   end
 end
 
@@ -96,11 +96,11 @@ function T.tests.native_classification_has_stable_hysteresis()
   Assert.equal(classifyAt(640, 458, held), "nativeLike", "an error inside the entry band stays native")
   -- 640x436 is a ~12.9 error: past entry, inside retain, so it stays native.
   Assert.equal(classifyAt(640, 436, held), "nativeLike", "an error inside the retain band stays native")
-  -- 640x430 is a ~14.9 error: past retain, so it leaves native for a window.
-  local windowed = classifyAt(640, 430, held)
-  Assert.isTrue(windowed == "wide" or windowed == "tall", "an error past the retain band leaves native")
+  -- 640x430 is a ~14.9 error: past retain, so it leaves native for a static frame.
+  local framed = classifyAt(640, 430, held)
+  Assert.isTrue(framed == "wide" or framed == "tall", "an error past the retain band leaves native")
   -- Back at a ~12.9 error without native history, the entry band refuses it.
-  Assert.equal(classifyAt(640, 436, windowed), windowed, "re-entry into native needs the entry band again")
+  Assert.equal(classifyAt(640, 436, framed), framed, "re-entry into native needs the entry band again")
 end
 
 local function selectionFor(topology, width, height, pixelRatio)
@@ -108,7 +108,7 @@ local function selectionFor(topology, width, height, pixelRatio)
   return policy.selectSurfaces(measure(topology, width, height, pixelRatio))
 end
 
-local function layoutContext(measurement, configuration, windowPosition, nativeLikeInterface)
+local function layoutContext(measurement, configuration, nativeLikeInterface)
   local policy = sharedPolicy()
   local selection = policy.selectSurfaces(measurement)
   return {
@@ -116,7 +116,6 @@ local function layoutContext(measurement, configuration, windowPosition, nativeL
     configuration = configuration,
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = windowPosition or { x = 0.5, y = 0.5 },
     nativeLikeInterface = nativeLikeInterface,
   }
 end
@@ -187,8 +186,9 @@ function T.tests.fullscreen_fits_from_ui_bounds_with_integer_pixels()
   Assert.equal(placement.pixelScale, 2, "640x480 fits the native surface at 2x")
   Assert.equal(placement.logicalWidth, 256, "the logical surface stays canonical")
   Assert.equal(placement.logicalHeight, 192, "the logical surface stays canonical")
-  Assert.equal(#geometry.coverage, 1, "fullscreen owns its target region")
-  Assert.isNil(geometry.window, "fullscreen carries no window")
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "fullscreen names no transition region")
+  Assert.deepEqual(geometry.frames, {}, "fullscreen carries no frame")
 end
 
 function T.tests.fullscreen_without_drawable_space_returns_an_empty_geometry()
@@ -203,69 +203,77 @@ function T.tests.fullscreen_without_drawable_space_returns_an_empty_geometry()
   local context = layoutContext(measure(topology, 100, 100), "nativeLike")
   local geometry = policy.fullscreen(context, { id = "content", width = 256, height = 192 })
   Assert.deepEqual(geometry.placements, {}, "occlusion publishes no panes")
-  Assert.deepEqual(geometry.coverage, {}, "occlusion publishes no coverage")
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "occlusion publishes no transition coverage")
 end
 
-function T.tests.windowed_frames_content_with_border_title_and_grab_rect()
+function T.tests.framed_static_box_carries_the_complete_rotated_outer_frame()
   local policy = sharedPolicy()
   local measurement = measure(singleSurface(1280, 720), 1280, 720)
   local context = layoutContext(measurement, "wide")
   local geometry =
-    assert(policy.windowed(context, { id = "content", width = 256, height = 192 }), "a 720p host frames a window")
-  local window = assert(geometry.window, "wide carries a window")
-  Assert.equal(window.outer.logicalWidth, 258, "the outer frame adds the 1px border on both sides")
-  Assert.equal(window.outer.logicalHeight, 206, "the outer frame adds border plus the 12px title strip")
+    assert(policy.framed(context, { id = "content", width = 256, height = 192 }), "a 720p host frames the content")
+  local frame = assert(geometry.frames, "wide carries its frame list")[1]
+  Assert.notNil(frame, "one outer frame decorates the pane")
+  Assert.equal(frame.placement.logicalWidth, 256, "the overlapped outer frame adds no side room")
+  Assert.equal(frame.placement.logicalHeight, 216, "the outer frame adds the 16px top and 8px bottom")
   Assert.deepEqual(
-    { window.body.logicalWidth, window.body.logicalHeight },
+    frame.contentBox,
+    { x = 0, y = 16, width = 256, height = 192 },
+    "the body starts inside the exterior insets"
+  )
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "a static frame owns no transition region")
+  local body = assert(geometry.placements["content"], "the framed pane places")
+  Assert.deepEqual(
+    { body.logicalWidth, body.logicalHeight },
     { 256, 192 },
     "the body keeps canonical content dimensions"
   )
-  Assert.deepEqual(geometry.coverage, {}, "a window owns no fullscreen coverage")
-  Assert.isTrue(window.grabRect.width > 0 and window.grabRect.height > 0, "the title strip grabs")
-  local bodyOriginX, bodyOriginY =
-    window.body.origin.x - window.outer.origin.x, window.body.origin.y - window.outer.origin.y
-  Assert.isTrue(math.abs(bodyOriginX / window.outer.scale - 1) < 1e-9, "the body starts past the left border")
-  Assert.isTrue(math.abs(bodyOriginY / window.outer.scale - 13) < 1e-9, "the body starts below the title strip")
+  Assert.near(
+    (body.origin.x - frame.placement.origin.x) / frame.placement.scale,
+    0,
+    1e-9,
+    "the body starts at the left frame edge through the overlap"
+  )
+  Assert.near(
+    (body.origin.y - frame.placement.origin.y) / frame.placement.scale,
+    16,
+    1e-9,
+    "the body starts below the top frame edge"
+  )
 end
 
-function T.tests.windowed_selects_physical_integer_scale_through_the_framebuffer_ratio()
-  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+function T.tests.framed_selects_physical_integer_scale_through_the_framebuffer_ratio()
   local policy = sharedPolicy()
-  local cases = {
-    { pixelRatio = 2, expectedScale = 5 },
-    { pixelRatio = 1.25, expectedScale = 3 },
-  }
-  for _, case in ipairs(cases) do
+  for _, case in ipairs({ { pixelRatio = 2 }, { pixelRatio = 1.25 } }) do
     local measurement = measure(singleSurface(1280, 720), 1280, 720, case.pixelRatio)
     local context = layoutContext(measurement, "wide")
     local geometry =
-      assert(policy.windowed(context, { id = "content", width = 256, height = 192 }), "a 720p host frames a window")
-    local window = assert(geometry.window, "wide carries a window")
-    Assert.equal(
-      window.outer.pixelScale,
-      case.expectedScale,
-      "ratio " .. case.pixelRatio .. " fits the 80 percent framebuffer in physical pixels"
+      assert(policy.framed(context, { id = "content", width = 256, height = 192 }), "a 720p host frames the content")
+    local frame = assert(geometry.frames, "wide carries its frame list")[1]
+    local outer = assert(frame and frame.placement, "the outer frame places")
+    Assert.isTrue(
+      outer.pixelScale ~= nil and outer.pixelScale >= 1 and outer.pixelScale % 1 == 0,
+      "ratio " .. case.pixelRatio .. " fits the complete frame at an integer physical scale"
     )
     Assert.near(
-      window.outer.scale,
-      case.expectedScale / case.pixelRatio,
+      outer.scale,
+      outer.pixelScale / case.pixelRatio,
       1e-9,
       "the host scale is the physical scale over the framebuffer ratio"
     )
-    local eighty = { x = 128, y = 72, width = 1024, height = 576 }
-    Assert.isTrue(
-      LayoutGeometry.contains(eighty, window.outer.frame),
-      "ratio " .. case.pixelRatio .. " stays inside the centered 80 percent bounds"
-    )
+    Assert.equal(outer.logicalWidth, 256, "the outer frame keeps its overlapped width")
+    Assert.equal(outer.logicalHeight, 216, "the outer frame keeps its overlapped height")
   end
 end
 
-function T.tests.windowed_falls_back_when_no_integer_frame_fits()
+function T.tests.framed_falls_back_when_no_integer_frame_fits()
   local policy = sharedPolicy()
   local measurement = measure(singleSurface(200, 150), 200, 150)
   local context = layoutContext(measurement, "wide")
   Assert.isNil(
-    policy.windowed(context, { id = "content", width = 256, height = 192 }),
+    policy.framed(context, { id = "content", width = 256, height = 192 }),
     "a tiny host needs the nativeLike fallback"
   )
 end
@@ -281,10 +289,11 @@ function T.tests.native_dual_fits_each_surface_independently()
   )
   Assert.notNil(geometry.placements["upper"], "the world pane places")
   Assert.notNil(geometry.placements["lower"], "the auxiliary pane places")
-  Assert.equal(#geometry.coverage, 2, "dual coverage owns one region per actual surface")
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "dual geometry names no transition region")
 end
 
-function T.tests.side_by_side_shares_one_scale_across_the_gap()
+function T.tests.side_by_side_shares_one_scale_with_no_gap()
   local policy = sharedPolicy()
   local measurement = measure(singleSurface(1280, 720), 1280, 720)
   local context = layoutContext(measurement, "wide")
@@ -295,7 +304,8 @@ function T.tests.side_by_side_shares_one_scale_across_the_gap()
   local upper = assert(geometry.placements["upper"], "the upper pane places")
   local lower = assert(geometry.placements["lower"], "the lower pane places")
   Assert.equal(upper.pixelScale, lower.pixelScale, "a pair never fits its panes independently")
-  Assert.equal(#geometry.coverage, 1, "a composed pair owns its single-display region")
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "a composed pair names no transition region")
 end
 
 function T.tests.stacked_returns_nil_when_the_envelope_cannot_fit()
@@ -306,6 +316,148 @@ function T.tests.stacked_returns_nil_when_the_envelope_cannot_fit()
     policy.stacked(context, { id = "upper", width = 256, height = 192 }, { id = "lower", width = 256, height = 192 }),
     "an unfittable envelope needs the nativeLike fallback"
   )
+end
+
+-- Static single-pane boxes fit the complete rotated outer frame
+-- (content plus the 0/16/0/8 exterior around the overlapped body)
+-- centered at integer scale with no remembered position
+-- position, title strip, or grab geometry.
+function T.tests.framed_single_pane_centers_the_complete_rotated_frame()
+  local policy = sharedPolicy()
+  for _, size in ipairs({ { width = 1280, height = 720 }, { width = 390, height = 844 } }) do
+    local measurement = measure(singleSurface(size.width, size.height), size.width, size.height)
+    local configuration = policy.classify(measurement)
+    local context = layoutContext(measurement, configuration)
+    local geometry =
+      assert(policy.framed(context, { id = "content", width = 256, height = 192 }), "a host frames the content")
+    local placement = assert(geometry.placements["content"], "the framed pane places")
+    Assert.equal(placement.logicalWidth, 256, "the framed body keeps its canonical width")
+    Assert.equal(placement.logicalHeight, 192, "the framed body keeps its canonical height")
+    Assert.isTrue(
+      placement.pixelScale ~= nil and placement.pixelScale >= 1,
+      "the framed body keeps an integer scale at or above 1x"
+    )
+    local frame = assert(geometry.frames, "framed geometry carries its frame list")[1]
+    Assert.notNil(frame, "one outer frame decorates the pane")
+    Assert.deepEqual(
+      frame.contentBox,
+      { x = 0, y = 16, width = 256, height = 192 },
+      "the content box sits inside the exterior insets"
+    )
+    local bodyPlacement = assert(geometry.placements["content"], "the framed pane places")
+    local crop = bodyPlacement.crop or { left = 0, right = 0, top = 0, bottom = 0 }
+    Assert.deepEqual(crop, { left = 0, right = 0, top = 0, bottom = 0 }, "decorated bodies never crop")
+    Assert.deepEqual(
+      bodyPlacement.visibleLogicalRect,
+      { x = 0, y = 0, width = 256, height = 192 },
+      "decorated bodies keep every source pixel visible"
+    )
+    local untyped = geometry --[[@as table<string, unknown>]]
+    Assert.isNil(untyped.window, "static frames carry no window state")
+    local first = geometry.placements["content"].frame
+    local second =
+      assert(policy.framed(context, { id = "content", width = 256, height = 192 }), "a second resolve places")
+    Assert.deepEqual(second.placements["content"].frame, first, "repeated resolves stay centered")
+  end
+end
+
+function T.tests.framed_returns_nil_when_no_complete_frame_fits()
+  local policy = sharedPolicy()
+  local measurement = measure(singleSurface(200, 150), 200, 150)
+  local context = layoutContext(measurement, "wide")
+  Assert.isNil(
+    policy.framed(context, { id = "content", width = 256, height = 192 }),
+    "a tiny host needs the nativeLike fallback"
+  )
+end
+
+-- Undecorated centering keeps canonical content at integer scale with no
+-- frame record for surfaces that publish no outer decoration.
+function T.tests.centered_pane_carries_no_decoration()
+  local policy = sharedPolicy()
+  local measurement = measure(singleSurface(1280, 720), 1280, 720)
+  local context = layoutContext(measurement, "wide")
+  local geometry =
+    assert(policy.centered(context, { id = "content", width = 256, height = 192 }), "a host centers the content")
+  local placement = assert(geometry.placements["content"], "the centered pane places")
+  Assert.equal(placement.logicalWidth, 256, "the centered body keeps its canonical width")
+  Assert.equal(placement.logicalHeight, 192, "the centered body keeps its canonical height")
+  Assert.deepEqual(geometry.frames or {}, {}, "centered geometry carries no frame")
+end
+
+-- Cover-or-frame never pairs crop with chrome: a placement whose visible
+-- clip already fills its target publishes with no frame, an underfilled
+-- target refits as a complete zero-crop decorated box, and a host below
+-- any complete frame keeps its constrained candidate instead of a clipped
+-- border.
+function T.tests.cover_or_frame_prefers_full_coverage_then_decoration()
+  local policy = sharedPolicy()
+  local native = { id = "content", width = 256, height = 192 }
+  local exact = layoutContext(measure(singleSurface(512, 384), 512, 384), "nativeLike")
+  local covered = policy.coverOrFrame(exact, native, {})
+  Assert.deepEqual(covered.frames, {}, "full target coverage publishes no frame")
+  local wide = layoutContext(measure(singleSurface(750, 560), 750, 560), "nativeLike")
+  local decorated = policy.coverOrFrame(wide, native, {})
+  local body = assert(decorated.placements["content"], "the underfilled pane refits")
+  Assert.deepEqual(
+    body.crop or { left = 0, right = 0, top = 0, bottom = 0 },
+    { left = 0, right = 0, top = 0, bottom = 0 },
+    "a visible frame never coexists with body crop"
+  )
+  local frame = assert(decorated.frames, "the refit owns its frame list")[1]
+  Assert.notNil(frame, "one outer frame decorates the refit pane")
+  Assert.equal(frame.placement.logicalWidth, 256, "the refit frame adds no side room")
+  Assert.equal(frame.placement.logicalHeight, 216, "the refit frame reserves the top and bottom")
+  Assert.deepEqual(
+    frame.contentBox,
+    { x = 0, y = 16, width = 256, height = 192 },
+    "the refit body starts inside the exterior insets"
+  )
+  local tiny = layoutContext(measure(singleSurface(200, 150), 200, 150), "nativeLike")
+  local constrained = policy.coverOrFrame(tiny, native, {})
+  Assert.deepEqual(constrained.frames, {}, "a host below any frame keeps no clipped chrome")
+  Assert.notNil(constrained.placements["content"], "the constrained host still places its body")
+end
+
+-- Same-display pairs share one integer scale with no synthetic gap: the
+-- lower pane starts exactly where the upper pane ends, and the common
+-- envelope is 512x192 horizontal or 256x384 vertical.
+function T.tests.paired_panes_are_edge_adjacent_with_a_common_envelope()
+  local policy = sharedPolicy()
+  local wide = layoutContext(measure(singleSurface(1280, 720), 1280, 720), "wide")
+  local side = assert(
+    policy.sideBySide(wide, { id = "upper", width = 256, height = 192 }, { id = "lower", width = 256, height = 192 }),
+    "a 720p host pairs two native panes"
+  )
+  local upper = assert(side.placements["upper"], "the upper pane places")
+  local lower = assert(side.placements["lower"], "the lower pane places")
+  Assert.near(upper.frame.x + upper.frame.width, lower.frame.x, 1e-6, "horizontal panes touch with no gap")
+  local wideEnvelope = assert(side.envelope, "the pair publishes its common envelope")
+  Assert.equal(wideEnvelope.logicalWidth, 512, "the horizontal envelope spans both panes")
+  Assert.equal(wideEnvelope.logicalHeight, 192, "the horizontal envelope keeps pane height")
+  local tall = layoutContext(measure(singleSurface(390, 844), 390, 844), "tall")
+  local stacked = assert(
+    policy.stacked(tall, { id = "upper", width = 256, height = 192 }, { id = "lower", width = 256, height = 192 }),
+    "a tall host stacks two native panes"
+  )
+  local top = assert(stacked.placements["upper"], "the top pane places")
+  local bottom = assert(stacked.placements["lower"], "the bottom pane places")
+  Assert.near(top.frame.y + top.frame.height, bottom.frame.y, 1e-6, "vertical panes touch with no gap")
+  local tallEnvelope = assert(stacked.envelope, "the stack publishes its common envelope")
+  Assert.equal(tallEnvelope.logicalWidth, 256, "the vertical envelope keeps pane width")
+  Assert.equal(tallEnvelope.logicalHeight, 384, "the vertical envelope spans both panes")
+end
+
+-- Geometry names no transition coverage and never a settled background
+-- contract: placement and frames are the whole geometry record.
+function T.tests.geometry_names_no_transition_coverage_and_no_settled_background()
+  local policy = sharedPolicy()
+  local measurement = measure(singleSurface(640, 480), 640, 480)
+  local geometry =
+    policy.fullscreen(layoutContext(measurement, "nativeLike"), { id = "content", width = 256, height = 192 })
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "geometry carries no transition coverage")
+  Assert.isNil(untyped.backgroundColor, "geometry carries no settled background color")
 end
 
 return T

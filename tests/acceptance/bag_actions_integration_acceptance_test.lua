@@ -227,7 +227,7 @@ local function openBag(game, state)
   )
   navigateTo(game, state, BAG_ACTION)
   confirm(game)
-  game:advanceUntil("bag application launches through the host fade", function()
+  game:advanceUntil("bag application opens over the retained menu", function()
     return hostPhase(game) == FieldApplicationHost.PHASES.application
   end, 120)
   return bagView(game)

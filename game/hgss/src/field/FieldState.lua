@@ -527,13 +527,10 @@ function FieldState:draw()
     "field runtime destination presentation acknowledgement required"
   )
   self.runtime:acknowledgeDestinationPresentation()
-  -- The field/application fade: the host-owned application fade covers
-  -- the surface being transitioned (the world viewport plus the Start Menu
-  -- placement frame), then the unrelated warp fade over the world viewport.
+  -- The retained Start Menu draws first and the foreground child second,
+  -- with the paused world beneath both; no application transition overlay
+  -- is painted. The unrelated warp fade over the world viewport follows.
   local hostStatus = self.runtime.applicationHost:status()
-  if hostStatus.fadeAlpha > 0 then
-    self:_drawApplicationFade(hostStatus.fadeAlpha)
-  end
   local transitionStatus
   if type(self.runtime.transition.presentationStatus) == "function" then
     transitionStatus = self.runtime.transition:presentationStatus()
@@ -556,9 +553,11 @@ function FieldState:draw()
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.
   self:_drawFieldAttachedUi(resources, hostStatus, alpha)
-  -- The one active application surface: the Start Menu through its
-  -- resolved presentation plan, or the field application owned by the
-  -- presentation dispatch; never more than one.
+  -- Each present application surface draws in order: the retained Start
+  -- Menu through its resolved presentation plan, then the foreground
+  -- field application owned by the presentation dispatch. The retained
+  -- menu stays visible behind the child; child pixels cover menu pixels
+  -- only where the child's own panes and frames draw.
   if hostStatus.menu then
     -- The icon presentation draws the gender-conditional Bag variant: the
     -- controller status is gender-agnostic, so the draw site attaches the
@@ -571,7 +570,8 @@ function FieldState:draw()
     assert(gender == 0 or gender == 1, "the start menu trainer gender is unsupported")
     menuPresentation.trainerGender = gender == 0 and "male" or "female"
     resources:drawStartMenu(menuPresentation --[[@as table<string, unknown>]])
-  elseif hostStatus.application then
+  end
+  if hostStatus.application then
     resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
   end
   local presentation = self.runtime.menuHost:presentation()
@@ -588,7 +588,10 @@ function FieldState:draw()
   if starter ~= nil and starter:isActive() then
     local ready = type(starter.isPresentationReady) ~= "function" or starter:isPresentationReady()
     if ready then
-      starter:drawPresentation(assert(resources.textRenderer, "field text renderer is unavailable"))
+      starter:drawPresentation(
+        assert(resources.textRenderer, "field text renderer is unavailable"),
+        assert(resources.windowRenderer, "field presentation owns no window renderer")
+      )
     end
   end
   if self.development and self._developmentOverlayVisible then
@@ -733,44 +736,6 @@ function FieldState:_drawEntryCoverIfNeeded(width, height)
   local lg = love.graphics
   lg.setColor(0, 0, 0, coefficient / 16)
   lg.rectangle("fill", 0, 0, width, height)
-end
-
--- The application fade coverage: the world viewport plus the Start Menu
--- plan coverage as a set of non-overlapping rectangles, so the union of
--- separated surfaces is painted once each and the gap between them never
--- is. The world rect is always painted; each coverage region contributes
--- only the strips outside the regions already painted (a contained region
--- adds nothing, so no region is alpha-doubled).
----@param world ScreenTopology.Rectangle
----@param coverage ScreenTopology.Rectangle[]
----@return ScreenTopology.Rectangle[]
-local function fadeRects(world, coverage)
-  local rects = { world }
-  for _, region in ipairs(coverage) do
-    rects = rectUnion(rects, region)
-  end
-  return rects
-end
-
--- The application fade: the union of the world viewport and the Start Menu
--- plan coverage, so on a dual-display topology the auxiliary surface region
--- goes black with the world and no menu surface can stay visible while only
--- the world viewport fades. A windowed plan owns no coverage, so settled
--- windows leave the paused world visible outside themselves. Disjoint
--- surfaces paint as separate rectangles (the gap between them stays
--- untouched), and overlapping regions are painted once, never twice.
----@param alpha number
-function FieldState:_drawApplicationFade(alpha)
-  local lg = love.graphics
-  local world = self.runtime.viewport.worldViewport
-  local coverage =
-    assert(self.runtime.applicationHost, "the application fade requires the application host"):menuCoverage()
-  lg.setColor(0, 0, 0, alpha)
-  for _, rect in
-    ipairs(fadeRects(world, coverage --[[@as ScreenTopology.Rectangle[] ]]))
-  do
-    lg.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-  end
 end
 
 -- The developer overlay: map identity, the player's field state, the

@@ -96,6 +96,135 @@ function FieldDialogueTheme.frameTilePlacements(box)
   }
 end
 
+-- Application chrome overlaps the innermost 8px frame band onto the content
+-- on every edge instead of reserving the whole nominal frame outside it:
+-- nominal 8/24/8/16 minus the overlap leaves 0/16/0/8 exterior room.
+local APPLICATION_FRAME_OVERLAP = 8
+local NOMINAL_FRAME = { left = 8, top = 24, right = 8, bottom = 16 }
+
+-- Exterior room the application frame reserves outside the content box:
+-- the whole inner 8px band overlaps body pixels, so only the remaining
+-- 0 left, 16 top, 0 right, 8 bottom stay outside the application.
+---@return { left: integer, top: integer, right: integer, bottom: integer }
+function FieldDialogueTheme.applicationFrameInsets()
+  return {
+    left = NOMINAL_FRAME.left - APPLICATION_FRAME_OVERLAP,
+    top = NOMINAL_FRAME.top - APPLICATION_FRAME_OVERLAP,
+    right = NOMINAL_FRAME.right - APPLICATION_FRAME_OVERLAP,
+    bottom = NOMINAL_FRAME.bottom - APPLICATION_FRAME_OVERLAP,
+  }
+end
+
+-- Window chrome geometry shared by chrome drawing and dismiss-control hit
+-- testing: the title region and the dismiss control in the caller's
+-- frame-local reference space (the same space as the content box). Both
+-- live in the exterior top bar above the content box, so titles and
+-- controls never move content or affect scale. The title keeps a generous
+-- 32px left margin from the outer edge; the dismiss control is a roughly
+-- 24px hit target with at least 8px corner margin on the right.
+local CHROME_TITLE_LEFT_MARGIN = 32
+local CHROME_DISMISS_WIDTH = 24
+local CHROME_CORNER_MARGIN = 8
+
+---@class FieldDialogueTheme.ChromeGeometry
+---@field title FieldDialogueTheme.Rect
+---@field dismiss FieldDialogueTheme.Rect
+
+---@param box FieldDialogueTheme.Rect the target content box
+---@return FieldDialogueTheme.ChromeGeometry frame-local title and dismiss rectangles
+function FieldDialogueTheme.applicationChromeGeometry(box)
+  assert(
+    type(box) == "table" and box.x and box.y and box.width and box.height,
+    "applicationChromeGeometry requires the content box"
+  )
+  assert(
+    type(box.x) == "number" and type(box.y) == "number" and type(box.width) == "number" and type(box.height) == "number",
+    "applicationChromeGeometry requires numeric box geometry"
+  )
+  assert(
+    box.width > 0 and box.height > 0 and box.width == math.floor(box.width) and box.height == math.floor(box.height),
+    "applicationChromeGeometry requires positive integral content dimensions"
+  )
+  local insets = FieldDialogueTheme.applicationFrameInsets()
+  local barY = box.y - insets.top
+  local barHeight = insets.top
+  local outerLeft = box.x + insets.left
+  local outerRight = box.x + box.width - insets.right
+  local dismiss = {
+    x = outerRight - CHROME_CORNER_MARGIN - CHROME_DISMISS_WIDTH,
+    y = barY,
+    width = CHROME_DISMISS_WIDTH,
+    height = barHeight,
+  }
+  local title = {
+    x = outerLeft + CHROME_TITLE_LEFT_MARGIN,
+    y = barY,
+    width = dismiss.x - (outerLeft + CHROME_TITLE_LEFT_MARGIN),
+    height = barHeight,
+  }
+  assert(
+    title.width > 0,
+    "applicationChromeGeometry requires room for the title between the left margin and the dismiss control"
+  )
+  return { title = title, dismiss = dismiss }
+end
+
+-- Rotated application-frame tile targets derived from the audited
+-- standard tilemap: the source composition runs around the content box
+-- inset by the 8px application overlap, expands to 8x8 instances, then
+-- the whole composition rotates so source right becomes target top,
+-- source left becomes target bottom, source top becomes target left,
+-- and source bottom becomes target right. The inner band therefore lands
+-- on body pixels while only the 0/16/0/8 exterior stays outside the
+-- application. Returns tile identities with target positions; drawing
+-- and artwork rotation stay with the frame renderer.
+---@param box FieldDialogueTheme.Rect the target content box
+---@return { tile: integer, x: number, y: number }[]
+function FieldDialogueTheme.applicationFrameTilePlacements(box)
+  assert(
+    type(box) == "table" and box.x and box.y and box.width and box.height,
+    "applicationFrameTilePlacements requires the content box"
+  )
+  assert(
+    type(box.x) == "number" and type(box.y) == "number" and type(box.width) == "number" and type(box.height) == "number",
+    "applicationFrameTilePlacements requires numeric box geometry"
+  )
+  assert(
+    box.width > 0 and box.height > 0 and box.width == math.floor(box.width) and box.height == math.floor(box.height),
+    "applicationFrameTilePlacements requires positive integral content dimensions"
+  )
+  assert(box.width % 8 == 0 and box.height % 8 == 0, "applicationFrameTilePlacements requires 8px-compatible content")
+  assert(
+    box.width > 2 * APPLICATION_FRAME_OVERLAP and box.height > 2 * APPLICATION_FRAME_OVERLAP,
+    "applicationFrameTilePlacements requires room for the 8px overlap on every edge"
+  )
+  local frameBox = {
+    x = box.x + APPLICATION_FRAME_OVERLAP,
+    y = box.y + APPLICATION_FRAME_OVERLAP,
+    width = box.width - 2 * APPLICATION_FRAME_OVERLAP,
+    height = box.height - 2 * APPLICATION_FRAME_OVERLAP,
+  }
+  local targetOuterX = frameBox.x - NOMINAL_FRAME.left
+  local targetOuterY = frameBox.y - NOMINAL_FRAME.top
+  local sourceBox = { x = 16, y = 8, width = frameBox.height, height = frameBox.width }
+  local sourceOuterWidth = sourceBox.width + 16 + 24
+  local placements = {}
+  for _, entry in ipairs(FieldDialogueTheme.frameTilePlacements(sourceBox)) do
+    local countX = entry.spanX or 1
+    local countY = entry.spanY or 1
+    for ix = 0, countX - 1 do
+      for iy = 0, countY - 1 do
+        local sx = entry.x + ix * 8
+        local sy = entry.y + iy * 8
+        local tx = targetOuterX + sy
+        local ty = targetOuterY + (sourceOuterWidth - sx - 8)
+        placements[#placements + 1] = { tile = entry.tile, x = tx, y = ty }
+      end
+    end
+  end
+  return placements
+end
+
 -- Reference-to-screen mapping for one viewport. The canonical 256x192
 -- surface is scaled by the resolved field pixel scale used for world
 -- presentation —

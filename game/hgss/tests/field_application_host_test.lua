@@ -108,7 +108,7 @@ local function readablePlacement(game)
       return assert(pane.placement, "the body pane must carry its placement")
     end
   end
-  error("the windowed plan must carry an interactive body pane", 0)
+  error("the framed plan must carry an interactive body pane", 0)
 end
 
 local function findMenuAction(game, id)
@@ -142,11 +142,11 @@ local function activateActionById(game, id)
   game:step()
 end
 
--- The per-phase disposal matrix: runtime disposal in every application
--- phase releases the modal before the save attempt and closes cleanly. The
--- production Trainer Card destination carries the non-closed phases; the
--- exactly-once controller disposal is the host-unit contract, not this
--- composition's.
+-- The per-phase disposal matrix: runtime disposal in every settled
+-- application phase releases the modal before the save attempt and closes
+-- cleanly. The production Trainer Card destination carries the non-closed
+-- phases; the exactly-once controller disposal is the host-unit contract,
+-- not this composition's.
 function T.tests.runtime_disposal_in_every_application_phase_releases_once()
   local cases = {
     {
@@ -157,31 +157,11 @@ function T.tests.runtime_disposal_in_every_application_phase_releases_once()
       end,
     },
     {
-      phase = "fading_out",
-      walk = function(game)
-        openMenu(game)
-        confirmAction(game)
-        advanceToPhase(game, "fading_out", 8)
-      end,
-    },
-    {
       phase = "application",
       walk = function(game)
         openMenu(game)
         confirmAction(game)
-        advanceToPhase(game, "application", 64)
-      end,
-    },
-    {
-      phase = "fading_in",
-      walk = function(game)
-        openMenu(game)
-        confirmAction(game)
-        advanceToPhase(game, "application", 64)
-        game.runtime:pressCancel()
-        game:step()
-        game.runtime:releaseCancel()
-        advanceToPhase(game, "fading_in", 64)
+        advanceToPhase(game, "application", 16)
       end,
     },
   }
@@ -409,7 +389,7 @@ function T.tests.resize_cancels_an_active_menu_pointer_capture()
     game:step()
     Assert.equal(
       game.runtime.applicationHost:status().phase,
-      "fading_out",
+      "application",
       "the fresh press after the resize must activate the slot"
     )
   end, debug.traceback)
@@ -498,12 +478,11 @@ function T.tests.normal_menu_presents_only_icon_backed_visual_actions()
 end
 
 -- Presentation changes must not change application lifetime: one modal input
--- lifetime spans menu, child, and return; both fades keep their twelve-tick
--- cadence; the modal never leaks ticks into world simulation; the published
--- plan owns drawing and input together, with fullscreen matte on a native
--- host and an empty coverage on a windowed host that leaves the paused
--- world visible outside itself.
-function T.tests.menu_child_return_keeps_one_lifetime_twelve_tick_fades_and_plan_coverage()
+-- lifetime spans menu, child, and return; the modal never leaks ticks into
+-- world simulation; the published plan owns drawing and input together,
+-- with no transition coverage on either a native host or a static framed
+-- host that leaves the paused world visible outside itself.
+function T.tests.menu_child_return_keeps_one_lifetime_and_refreshes_the_plan()
   local game = bootGame()
   local ok, err = xpcall(function()
     local runtime = game.runtime
@@ -537,10 +516,7 @@ function T.tests.menu_child_return_keeps_one_lifetime_twelve_tick_fades_and_plan
     Assert.equal(begun, 1, "opening the menu must begin the modal input lifetime once")
     local hostStatus = runtime.applicationHost:status()
     local plan = assert(hostStatus.menu.presentation, "the open menu must publish its presentation plan")
-    Assert.isTrue(
-      (plan.coverage ~= nil and #plan.coverage >= 1) or plan.window == nil,
-      "a fullscreen native plan must own its target region"
-    )
+    Assert.isNil(plan.fadeCoverage, "a fullscreen native plan owns no transition region")
     local session = assert(runtime.session, "the field session must exist")
     local playerX, playerZ = session.player.fieldX, session.player.fieldZ
     local edge = "modality-probe:south"
@@ -562,14 +538,12 @@ function T.tests.menu_child_return_keeps_one_lifetime_twelve_tick_fades_and_plan
     game:step()
 
     activateActionById(game, "vanilla.trainer_card")
-    Assert.equal(phase(), "fading_out", "launching a destination must start the fade-out")
-    Assert.equal(stepTo("application", 16, "the fade-out must reach the child"), 12, "the fade-out keeps twelve ticks")
+    Assert.equal(phase(), "application", "launching a destination must layer the child on the launch tick")
     Assert.equal(begun, 1, "the child must not begin a second input lifetime")
     game.runtime:pressCancel()
     game:step()
     game.runtime:releaseCancel()
-    Assert.equal(phase(), "fading_in", "closing the child must start the fade-in")
-    Assert.equal(stepTo("menu", 16, "the fade-in must return to the menu"), 12, "the fade-in keeps twelve ticks")
+    Assert.equal(phase(), "menu", "closing the child must publish the refreshed menu on the close tick")
     Assert.equal(
       runtime.applicationHost:status().menu.selectedPosition,
       4,
@@ -585,10 +559,10 @@ function T.tests.menu_child_return_keeps_one_lifetime_twelve_tick_fades_and_plan
     openMenu(game)
     local wide = runtime.applicationHost:status()
     local widePlan = assert(wide.menu.presentation, "the wide host must publish its presentation plan")
-    Assert.notNil(widePlan.window, "a wide host must frame the menu in a window")
-    Assert.equal(#(widePlan.coverage or {}), 0, "a window must not clear pixels outside itself")
+    Assert.equal(#assert(widePlan.frames, "a wide host must frame the menu"), 1, "one static box frames the menu")
+    Assert.equal(#(widePlan.fadeCoverage or {}), 0, "a static frame owns no transition region")
     pressMenuEdge(game)
-    stepTo("closed", 16, "the windowed menu must close")
+    stepTo("closed", 16, "the framed menu must close")
   end, debug.traceback)
   game:close()
   if not ok then
@@ -598,10 +572,10 @@ end
 
 -- The Trainer Card follows the shared interface policy instead of the
 -- field camera: on a wide host it owns one source-sized content pane in a
--- draggable window whose position survives a close/reopen cycle, a field
--- viewport refit keeps its logical content and input geometry stable, a
--- physical pair hosts it on the auxiliary surface without a window, and
--- closing reports exactly one result.
+-- static framed box with no position memory, a field viewport refit keeps
+-- its logical content and input geometry stable, a physical pair hosts it
+-- on the auxiliary surface without a frame, and closing reports exactly
+-- one result.
 function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
   local game = bootGame()
   local ok, err = xpcall(function()
@@ -627,13 +601,7 @@ function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
       game.runtime:pressCancel()
       game:step()
       game.runtime:releaseCancel()
-      Assert.equal(runtime.applicationHost:status().phase, "fading_in", "closing the card must start the fade-in")
-      local ticks = 0
-      while runtime.applicationHost:status().phase ~= "menu" and ticks < 16 do
-        game:step()
-        ticks = ticks + 1
-      end
-      Assert.equal(runtime.applicationHost:status().phase, "menu", "the close must return to the menu")
+      Assert.equal(runtime.applicationHost:status().phase, "menu", "closing the card must return to the menu")
     end
     ensureTouchPlacement(game, 1280, 720)
     local plan = assert(openCard().presentation, "the open card must publish its presentation plan")
@@ -643,28 +611,36 @@ function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
     local placement = assert(plan.panes[1].placement, "the content pane must carry its placement")
     Assert.equal(placement.logicalWidth, 256, "the card content stays source-sized")
     Assert.equal(placement.logicalHeight, 192, "the card content stays source-sized")
-    local window = assert(plan.window, "the wide card must own its draggable window")
-    local grab = assert(window.grabRect, "the window must carry its host grab strip")
-    local outerBefore = { x = window.outer.frame.x, y = window.outer.frame.y }
-    local startX, startY = grab.x + grab.width / 2, grab.y + grab.height / 2
+    local frame =
+      assert(assert(plan.frames, "the wide card must own its static frame")[1], "one outer frame decorates the card")
+    local outerBefore = { x = frame.placement.frame.x, y = frame.placement.frame.y }
+    -- A press on the decorative frame border is application interior: it
+    -- moves nothing and closes nothing.
+    local startX, startY = frame.placement.frame.x + 4, frame.placement.frame.y + 4
     runtime.input:pointerDown("touch:1", startX, startY)
     game:step()
     runtime.input:pointerMove("touch:1", startX + 120, startY + 60)
     game:step()
     runtime.input:pointerUp("touch:1", startX + 120, startY + 60)
     game:step()
-    local moved =
-      assert(runtime.applicationHost:status().application.presentation, "the card must keep its plan after the drag")
-    Assert.equal(runtime.applicationHost:status().phase, "application", "the title drag must not close the card")
-    local movedOuter = assert(moved.window, "the card must stay windowed after the drag").outer.frame
+    local settled = assert(
+      runtime.applicationHost:status().application.presentation,
+      "the card must keep its plan after the frame press"
+    )
+    Assert.equal(runtime.applicationHost:status().phase, "application", "a frame press must not close the card")
+    local settledOuter = assert(settled.frames, "the card must stay framed after the press")[1].placement.frame
+    Assert.deepEqual(
+      { x = settledOuter.x, y = settledOuter.y },
+      { x = outerBefore.x, y = outerBefore.y },
+      "static frames never move: the frame press changes no geometry"
+    )
     closeCard()
     local reopened = assert(openCard().presentation, "the reopened card must publish its plan")
-    local reopenedOuter = assert(reopened.window, "the reopened card must own its window").outer.frame
-    Assert.equal(reopenedOuter.x, movedOuter.x, "the drag position survives the reopen")
-    Assert.equal(reopenedOuter.y, movedOuter.y, "the drag position survives the reopen")
-    Assert.isTrue(
-      reopenedOuter.x ~= outerBefore.x or reopenedOuter.y ~= outerBefore.y,
-      "the drag must have moved the window"
+    local reopenedOuter = assert(reopened.frames, "the reopened card must own its frame")[1].placement.frame
+    Assert.deepEqual(
+      { x = reopenedOuter.x, y = reopenedOuter.y },
+      { x = outerBefore.x, y = outerBefore.y },
+      "no position memory survives the reopen: the frame recenters deterministically"
     )
     -- a field viewport refit (which drives field zoom on the old path)
     -- keeps the card's logical content and input geometry stable
@@ -679,7 +655,7 @@ function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
       256,
       "the refit keeps source-sized content"
     )
-    -- a physical pair hosts the card on the auxiliary surface with no window
+    -- a physical pair hosts the card on the auxiliary surface with no outer frame
     game.runtime:resizePresentation(
       800,
       600,
@@ -698,7 +674,7 @@ function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
     game:step()
     local dual =
       assert(runtime.applicationHost:status().application.presentation, "the card must keep its plan on the pair")
-    Assert.isNil(dual.window, "the auxiliary card needs no window")
+    Assert.deepEqual(dual.frames, {}, "the auxiliary card needs no frame")
     local dualFrame = assert(dual.panes[1].placement, "the dual pane must carry its placement").frame
     Assert.isTrue(
       dualFrame.x >= 100
@@ -712,6 +688,104 @@ function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
     closeCard()
     openCard()
     closeCard()
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Launching a destination layers it directly over the still-open Start
+-- Menu: the launch tick publishes both the retained menu and the child
+-- with no fade state between them.
+function T.tests.launching_a_destination_layers_it_over_the_retained_menu_immediately()
+  local game = bootGame()
+  local ok, err = xpcall(function()
+    local runtime = game.runtime
+    ensureTouchPlacement(game, 640, 480)
+    openMenu(game)
+    activateActionById(game, "vanilla.trainer_card")
+    Assert.equal(
+      runtime.applicationHost:status().phase,
+      "application",
+      "launch must layer the child on the launch tick with no fade state"
+    )
+    local layered = runtime.applicationHost:status()
+    Assert.notNil(layered.menu, "the retained menu stays published under the child")
+    Assert.notNil(layered.menu.presentation, "the retained menu stays drawable while the child owns input")
+    Assert.notNil(layered.application, "the child publishes on the launch tick")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- While the child owns input the retained menu stays live but covered: a
+-- resize re-resolves its plan against the new display facts, and child
+-- input never moves its selection.
+function T.tests.the_retained_menu_reflows_under_the_child_but_takes_no_child_input()
+  local game = bootGame()
+  local ok, err = xpcall(function()
+    local runtime = game.runtime
+    ensureTouchPlacement(game, 640, 480)
+    openMenu(game)
+    activateActionById(game, "vanilla.trainer_card")
+    Assert.equal(runtime.applicationHost:status().phase, "application", "the child must layer over the retained menu")
+    local beforeFrame = readablePlacement(game).frame
+    local selected = runtime.applicationHost:status().menu.selectedPosition
+    runtime:resizePresentation(1280, 720, touchTopology(1280, 720))
+    game:step()
+    local layered = runtime.applicationHost:status()
+    Assert.equal(layered.phase, "application", "the child stays open across the resize")
+    Assert.notNil(layered.menu.presentation, "the retained menu must re-resolve its plan under the child")
+    local afterFrame = readablePlacement(game).frame
+    Assert.isTrue(
+      afterFrame.x ~= beforeFrame.x or afterFrame.y ~= beforeFrame.y,
+      "the retained menu plan must reflect the new display measurement"
+    )
+    local edge = "retained-menu-isolation:south"
+    runtime.input:pressDirection("south", edge)
+    game:step()
+    runtime.input:releaseDirection(edge)
+    game:step()
+    Assert.equal(
+      runtime.applicationHost:status().menu.selectedPosition,
+      selected,
+      "child input must never move the retained menu"
+    )
+    Assert.equal(runtime.applicationHost:status().phase, "application", "child input must not disturb the child")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Closing the child publishes the refreshed menu on the same tick: no
+-- blank interval, the remembered selection restored, the one modal input
+-- lifetime unbroken.
+function T.tests.closing_the_child_returns_to_a_fresh_menu_on_the_same_tick()
+  local game = bootGame()
+  local ok, err = xpcall(function()
+    local runtime = game.runtime
+    ensureTouchPlacement(game, 640, 480)
+    openMenu(game)
+    activateActionById(game, "vanilla.trainer_card")
+    Assert.equal(runtime.applicationHost:status().phase, "application", "the child must layer over the retained menu")
+    game.runtime:pressCancel()
+    game:step()
+    game.runtime:releaseCancel()
+    Assert.equal(
+      runtime.applicationHost:status().phase,
+      "menu",
+      "the close must publish the refreshed menu on the close tick"
+    )
+    Assert.equal(
+      runtime.applicationHost:status().menu.selectedPosition,
+      4,
+      "the return must remember the launched selection"
+    )
   end, debug.traceback)
   game:close()
   if not ok then

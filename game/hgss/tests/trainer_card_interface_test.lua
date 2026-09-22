@@ -2,8 +2,8 @@
 -- matched plans over the canonical 256x192 card surface. Dual takes the
 -- auxiliary fullscreen and nativeLike the single-surface fullscreen, both
 -- with the default four-edge crop budget guarded by the protected text
--- rect; wide and tall frame the card in a shared draggable window with
--- zero crop and a native-like fallback below 1x. Input forwards the
+-- rect; wide and tall center the card in a static framed box with zero
+-- crop and a native-like fallback below 1x. Input forwards the
 -- existing semantic events and discards pointer content, so outside clicks
 -- never close the card.
 
@@ -62,7 +62,6 @@ local function contextFor(m, configuration)
   return {
     measurement = m,
     configuration = configuration,
-    windowPosition = { x = 0.5, y = 0.5 },
   }
 end
 
@@ -83,28 +82,8 @@ function T.native_like_exact_fit_stays_doubled_without_crop()
   Assert.equal(plan.inputKey, "trainer-card", "the plan names its input geometry")
 end
 
-function T.native_like_near_fit_crops_margins_with_protected_text()
-  local plan = TrainerCardInterface.nativeLike(contextFor(singleDisplay(750, 560), "nativeLike"), {})
-  local placement = assert(plan.panes[1].placement, "the card pane carries its placement")
-  Assert.equal(placement.pixelScale, 3, "the near-fit host uses triple pixels")
-  Assert.deepEqual(placement.crop, { left = 3, right = 3, top = 3, bottom = 3 }, "near fits crop margins only")
-  local clip = assert(placement.clipRect, "the cropped placement carries its visible clip")
-  local function insideClip(lx, ly)
-    local hx = placement.origin.x + lx * placement.scale
-    local hy = placement.origin.y + ly * placement.scale
-    return hx >= clip.x and hy >= clip.y and hx < clip.x + clip.width and hy < clip.y + clip.height
-  end
-  for _, anchor in ipairs({ { 16, 24 }, { 136, 24 }, { 16, 48 }, { 240, 24 }, { 112, 24 }, { 240, 128 } }) do
-    Assert.isTrue(
-      insideClip(anchor[1], anchor[2]),
-      string.format("protected anchor (%d,%d) stays visible", anchor[1], anchor[2])
-    )
-  end
-end
-
 function T.dual_display_takes_the_auxiliary_fullscreen()
   local plan = TrainerCardInterface.dualDisplay(contextFor(translatedPair(), "dualDisplay"), {})
-  Assert.isNil(plan.window, "the auxiliary card needs no window")
   Assert.equal(#plan.panes, 1, "the auxiliary card shows one content pane")
   local frame = assert(plan.panes[1].placement, "the card pane carries its placement").frame
   Assert.isTrue(
@@ -114,7 +93,7 @@ function T.dual_display_takes_the_auxiliary_fullscreen()
 end
 
 local function assertNoCrop(placement, what)
-  -- The crop budget is an optional placement field: window bodies carry
+  -- The crop budget is an optional placement field: framed bodies carry
   -- no crop record, which is the zero-crop case.
   Assert.deepEqual(
     placement.crop or { left = 0, right = 0, top = 0, bottom = 0 },
@@ -123,19 +102,24 @@ local function assertNoCrop(placement, what)
   )
 end
 
-function T.wide_and_tall_frame_a_zero_crop_window()
+function T.wide_and_tall_center_a_static_framed_box()
   local wide = TrainerCardInterface.wide(contextFor(singleDisplay(1280, 720), "wide"), {})
-  local window = assert(wide.window, "the wide card owns its draggable window")
-  Assert.isTrue(window.outer ~= nil and window.body ~= nil, "the window carries its outer and body placements")
-  assertNoCrop(assert(wide.panes[1].placement, "the card pane carries its placement"), "windows never crop")
+  local wideFrame = assert(wide.frames, "the wide card owns its static frame")[1]
+  Assert.notNil(wideFrame, "one outer frame decorates the wide pane")
+  Assert.deepEqual(
+    wideFrame.contentBox,
+    { x = 0, y = 16, width = 256, height = 192 },
+    "the wide content box sits inside the exterior insets"
+  )
+  assertNoCrop(assert(wide.panes[1].placement, "the card pane carries its placement"), "static frames never crop")
   local tall = TrainerCardInterface.tall(contextFor(singleDisplay(600, 1000), "tall"), {})
-  Assert.isTrue(tall.window ~= nil, "the tall card owns its draggable window")
-  assertNoCrop(assert(tall.panes[1].placement, "the tall pane carries its placement"), "tall windows never crop")
+  Assert.equal(#tall.frames, 1, "the tall card owns its static frame")
+  assertNoCrop(assert(tall.panes[1].placement, "the tall pane carries its placement"), "tall frames never crop")
 end
 
-function T.small_windowed_hosts_fall_back_to_native_like()
+function T.small_framed_hosts_fall_back_to_native_like()
   local plan = TrainerCardInterface.wide(contextFor(singleDisplay(200, 150), "wide"), {})
-  Assert.isNil(plan.window, "the fallback interface is a fullscreen, not a window")
+  Assert.deepEqual(plan.frames, {}, "the fallback interface is a fullscreen, not a frame")
   Assert.equal(plan.inputKey, "trainer-card", "the fallback keeps the card input geometry")
   Assert.equal(#plan.panes, 1, "the fallback shows its single content pane")
 end
@@ -196,6 +180,16 @@ function T.map_input_discards_pointer_content_and_forwards_semantics()
   Assert.isTrue(map(cancel, {}, plan) == cancel, "the semantic close edge reaches the controller")
 end
 
+function T.an_outside_press_maps_to_a_terminal_dismiss()
+  local plan = TrainerCardInterface.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike"), {})
+  local map = assert(plan.mapInput, "the plan carries its input mapper")
+  Assert.deepEqual(
+    map({ type = "pointer_down", pointerId = "touch:1", outside = true }, {}, plan),
+    { type = "dismiss" },
+    "an outside press dismisses the card while body taps stay inert"
+  )
+end
+
 function T.case_override_replaces_one_complete_interface()
   local wide = {
     panes = {},
@@ -205,8 +199,7 @@ function T.case_override_replaces_one_complete_interface()
     mapInput = function(_, _, _)
       return nil
     end,
-    coverage = {},
-    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+    frames = {},
   }
   local function customWide(_, _)
     return wide
@@ -224,8 +217,52 @@ function T.unknown_override_cases_and_non_functions_fail()
     TrainerCardInterface.withOverrides({ sideways = function(_, _) end })
   end)
   Assert.throws(function()
-    TrainerCardInterface.withOverrides({ wide = "windowed" })
+    TrainerCardInterface.withOverrides({ wide = "framed" })
   end)
+end
+
+-- A genuinely fullscreen fit publishes no frame: the 512x384 host covers
+-- the canonical card at exactly 2x with no visible background left, so no
+-- decoration is resolved.
+function T.fullscreen_cover_publishes_no_frame()
+  local plan = TrainerCardInterface.nativeLike(contextFor(singleDisplay(512, 384), "nativeLike"), {})
+  local placement = assert(plan.panes[1].placement, "the card pane carries its placement")
+  Assert.deepEqual(
+    placement.crop or { left = 0, right = 0, top = 0, bottom = 0 },
+    { left = 0, right = 0, top = 0, bottom = 0 },
+    "exact covers never crop"
+  )
+  Assert.deepEqual(plan.frames, {}, "a covering fit carries no frame")
+end
+
+-- A near fit that cannot cover the target never mixes crop with chrome:
+-- the 750x560 host misses fullscreen by a 750x558 clip, so the card
+-- refits as an uncropped decorated box with complete chrome room.
+function T.underfilled_native_like_refits_an_uncropped_decorated_box()
+  local plan = TrainerCardInterface.nativeLike(contextFor(singleDisplay(750, 560), "nativeLike"), {})
+  local placement = assert(plan.panes[1].placement, "the card pane carries its placement")
+  Assert.equal(placement.pixelScale, 2, "the decorated box keeps integer magnification")
+  Assert.deepEqual(
+    placement.crop or { left = 0, right = 0, top = 0, bottom = 0 },
+    { left = 0, right = 0, top = 0, bottom = 0 },
+    "a visible frame never coexists with body crop"
+  )
+  Assert.deepEqual(
+    placement.visibleLogicalRect,
+    { x = 0, y = 0, width = 256, height = 192 },
+    "the decorated body keeps every source pixel visible"
+  )
+  local frame = assert(plan.frames, "the underfilled card owns its frame list")[1]
+  Assert.notNil(frame, "one outer frame decorates the refit pane")
+  local outer = assert(frame.placement, "the frame carries its outer placement")
+  Assert.equal(outer.logicalWidth, 256, "the refit frame adds no side room")
+  Assert.equal(outer.logicalHeight, 216, "the refit frame reserves the 16px top and 8px bottom")
+  Assert.deepEqual(outer.clipRect, outer.frame, "the refit frame is never clipped to fit")
+  Assert.deepEqual(
+    frame.contentBox,
+    { x = 0, y = 16, width = 256, height = 192 },
+    "the refit body starts inside the exterior insets"
+  )
 end
 
 function T.missing_measurement_fails_without_a_partial_plan()
@@ -236,7 +273,6 @@ function T.missing_measurement_fails_without_a_partial_plan()
     configuration = "nativeLike",
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interfaces.nativeLike,
   }
   Assert.throws(function()

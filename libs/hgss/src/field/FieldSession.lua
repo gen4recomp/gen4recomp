@@ -680,7 +680,11 @@ function FieldSession:updateFixed(inputSnapshot)
     local wasApplication = status and status.phase == "application"
     self.applicationHost:updateFixed(uiEvents)
     local afterStatus = self.applicationHost.status and self.applicationHost:status() or nil
-    if wasApplication and afterStatus and afterStatus.phase == "fading_in" then
+    local afterPhase = afterStatus and afterStatus.phase
+    -- A completed child returns to a refreshed menu or to the field on the
+    -- same tick; either successful return resumes field obligations, while
+    -- the terminal failure state queues nothing.
+    if wasApplication and (afterPhase == "menu" or afterPhase == "closed") then
       self:onChildApplicationResume()
     end
     self:_advanceTick()

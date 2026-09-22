@@ -35,7 +35,6 @@ local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 ---@field scrollOffset number logical scroll offset retained across layouts
 ---@field _measurement DisplayMeasurement|nil fixed facts for direct unit invocation
 ---@field _displayContext DisplayContext|nil shared actual-display owner from the product route
----@field _windowState table<string, { x: number, y: number }> borrowed normalized window memory
 ---@field _session ApplicationPresentation|nil the per-open presentation session
 ---@field _disposed boolean
 local MainMenuState = {}
@@ -162,7 +161,6 @@ function MainMenuState.new(options)
     saves = {},
     catalogError = nil,
     scrollOffset = 0,
-    _windowState = {},
     _disposed = false,
   }, MainMenuState)
   if options.displayMeasurement ~= nil then
@@ -179,7 +177,7 @@ function MainMenuState.new(options)
   local overrides = options.overrides --[[@as table<string, unknown>|nil]]
   local session
   local built, buildErr = pcall(function()
-    session = ApplicationPresentation.new(MainMenuInterface.withOverrides(overrides), self._windowState)
+    session = ApplicationPresentation.new(MainMenuInterface.withOverrides(overrides))
   end)
   if not built then
     error(buildErr, 0)

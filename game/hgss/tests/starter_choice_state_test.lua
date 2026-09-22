@@ -322,10 +322,6 @@ local function defaultBox()
   }
 end
 
-local function displayMemory()
-  return { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } }
-end
-
 local function hostStatus(host)
   return host:status()
 end
@@ -424,7 +420,6 @@ function T.blocking_task_publishes_exactly_the_selected_candidate()
     cacheFs = readyCacheFs(),
     frameIndex = 3,
     measureDisplay = defaultBox,
-    windowState = displayMemory(),
   })
   local ctx = taskCtx(service, TRIO, host)
   local state = task.create({ node = { op = "choose_starter" } }, ctx)
@@ -481,7 +476,6 @@ function T.open_close_and_reresolve_follow_the_task_contract_without_gpu()
     cacheFs = readyCacheFs(),
     frameIndex = 3,
     measureDisplay = defaultBox,
-    windowState = displayMemory(),
   })
   Assert.isFalse(host:isActive(), "the host starts idle")
 
@@ -546,7 +540,6 @@ local function openTrio(StarterChoiceState, catalog, service, cacheFs)
     cacheFs = cacheFs,
     frameIndex = 3,
     measureDisplay = defaultBox,
-    windowState = displayMemory(),
   })
   host:open(0, {
     service:buildStarter("CHIKORITA"),
@@ -749,7 +742,6 @@ function T.remeasured_display_reprojects_hit_testing_without_reselecting()
     measureDisplay = function()
       return cell.box
     end,
-    windowState = displayMemory(),
   })
   host:open(0, {
     service:buildStarter("CHIKORITA"),
@@ -874,7 +866,6 @@ function T.player_frame_choice_reaches_presentation_unchanged()
     cacheFs = readyCacheFs(),
     frameIndex = 5,
     measureDisplay = defaultBox,
-    windowState = displayMemory(),
   })
   host:open(0, {
     service:buildStarter("CHIKORITA"),
@@ -954,7 +945,6 @@ function T.compact_display_preserves_clocks_observations_and_single_publication(
     measureDisplay = function()
       return cellA.box
     end,
-    windowState = displayMemory(),
   })
   local hostB = StarterChoiceState.new({
     catalog = catalog,
@@ -963,7 +953,6 @@ function T.compact_display_preserves_clocks_observations_and_single_publication(
     measureDisplay = function()
       return cellB.box
     end,
-    windowState = displayMemory(),
   })
   local ctxA = taskCtx(serviceA, TRIO, hostA)
   local stateA = task.create({ node = { op = "choose_starter" } }, ctxA)
@@ -1041,7 +1030,6 @@ function T.compact_logical_input_dispatches_portrait_primary_and_guarded_back()
     measureDisplay = function()
       return cell.box
     end,
-    windowState = displayMemory(),
   })
   local first = service:buildStarter("CHIKORITA")
   local second = service:buildStarter("TOTODILE")
@@ -1094,7 +1082,6 @@ function T.reflow_with_a_held_press_cancels_before_release()
     measureDisplay = function()
       return cell.box
     end,
-    windowState = displayMemory(),
   })
   host:open(0, {
     service:buildStarter("CHIKORITA"),
@@ -1136,7 +1123,6 @@ function T.failing_resolvers_publish_no_partial_plan()
     cacheFs = readyCacheFs(),
     frameIndex = 3,
     measureDisplay = defaultBox,
-    windowState = displayMemory(),
     overrides = {
       wide = function()
         error("starter resolver failure probe", 0)
@@ -1165,7 +1151,6 @@ function T.input_before_open_fails_and_cancel_after_close_is_safe()
     cacheFs = readyCacheFs(),
     frameIndex = 3,
     measureDisplay = defaultBox,
-    windowState = displayMemory(),
   })
   Assert.isFalse(pcall(host.handleInput, host, {}), "input with no open choice fails instead of vanishing")
   host:open(0, {
@@ -1178,6 +1163,86 @@ function T.input_before_open_fails_and_cancel_after_close_is_safe()
   host:dispose()
   host:cancelPointerCapture()
   Assert.isFalse(host:isActive(), "disposal after close stays idle")
+end
+
+-- Draw-time borrowing: the modal threads the field-owned window renderer
+-- into the render resources untouched, and drawing without one fails
+-- before any surface draws.
+function T.drawing_borrows_the_field_window_renderer_through_render_resources()
+  local StarterChoiceState = requireState()
+  local state = StarterChoiceState.new({
+    catalog = {},
+    cacheFs = {},
+    frameIndex = 2,
+    measureDisplay = function()
+      return {}
+    end,
+  })
+  state._controller = {
+    snapshot = function()
+      return {
+        selection = 0,
+        selectionState = "null",
+        transition = "idle",
+        direction = nil,
+        done = false,
+        result = nil,
+      }
+    end,
+  }
+  state._presentation = {
+    isReady = function()
+      return true
+    end,
+  }
+  state._candidates = {}
+  state._names = {}
+  local seen = {}
+  local plan = {
+    panes = {},
+    frames = {},
+    content = {},
+    inputKey = "starter-borrow-probe",
+    render = function(resources)
+      seen[#seen + 1] = resources
+    end,
+    mapInput = function()
+      return nil
+    end,
+  }
+  state._session = {
+    resolve = function() end,
+    plan = function()
+      return plan
+    end,
+  }
+  local text = { drawLine = function() end }
+  local previousLove = rawget(_G, "love")
+  rawset(_G, "love", {
+    graphics = {
+      push = function() end,
+      pop = function() end,
+    },
+  })
+  local ok, err = pcall(function()
+    local missingErr = Assert.throws(function()
+      state:drawPresentation(text)
+    end, "drawing without the field renderer fails instead of drawing")
+    Assert.isTrue(
+      tostring(missingErr):find("window renderer", 1, true) ~= nil,
+      "the state names the missing borrower: " .. tostring(missingErr)
+    )
+    Assert.equal(#seen, 0, "no surface draws without the borrowed renderer")
+    local borrowed = { drawApplicationFrame = function() end }
+    state:drawPresentation(text, borrowed)
+    Assert.equal(#seen, 1, "the borrowed draw reaches the render callback")
+    Assert.isTrue(seen[1].windowRenderer == borrowed, "the render lends the field renderer untouched")
+    Assert.isTrue(seen[1].text == text, "the render keeps its text provider beside the borrower")
+  end)
+  rawset(_G, "love", previousLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return { tests = T }

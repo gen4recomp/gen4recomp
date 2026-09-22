@@ -35,7 +35,6 @@ BagScreenState.__index = BagScreenState
 ---@field manifest table<string, unknown> the validated bag presentation manifest
 ---@field heroGender "male"|"female" the profile-selected hero backdrop
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
----@field windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
 ---@param opts BagScreenState.Options
@@ -54,7 +53,6 @@ function BagScreenState.new(opts)
   local heroGender = assert(opts.heroGender, "the bag screen requires the hero gender")
   assert(heroGender == "male" or heroGender == "female", "the hero gender selects its backdrop")
   assert(type(opts.measureDisplay) == "function", "the bag screen requires the display facts")
-  assert(type(opts.windowState) == "table", "the bag screen borrows its window memory")
   local self = setmetatable({
     _service = service,
     _cursor = cursor,
@@ -91,7 +89,7 @@ function BagScreenState.new(opts)
   local controller
   local session
   local built, buildErr = pcall(function()
-    session = ApplicationPresentation.new(BagInterface.withOverrides(opts.overrides, manifest), opts.windowState)
+    session = ApplicationPresentation.new(BagInterface.withOverrides(opts.overrides, manifest))
     controller = BagController.new({
       model = { refresh = refreshModel },
       cursor = cursor,

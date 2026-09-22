@@ -1,8 +1,8 @@
 -- Leaf adaptation for the field party screen: four display cases resolve
 -- complete matched plans over one canonical 256x192 pane. DualDisplay
 -- takes the auxiliary fullscreen and nativeLike the single-surface
--- fullscreen, both uncropped; wide and tall frame the pane in a shared
--- draggable window with a native-like fallback below 1x. The content is
+-- fullscreen, both uncropped; wide and tall center the pane in a static
+-- framed box with a native-like fallback below 1x. The content is
 -- the canonical compact grid; render and input callbacks match.
 
 local Assert = require("tests.support.Assert")
@@ -66,7 +66,6 @@ local function contextFor(measured, configuration, interfaceTable)
     configuration = configuration,
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interfaceTable.nativeLike,
   }
 end
@@ -115,7 +114,6 @@ function T.native_like_resolves_uncropped_fullscreen()
   local plan = interfaces.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", interfaces), view(true))
   singlePane(plan, "nativeLike")
   checkContent(plan, true, "nativeLike")
-  Assert.isNil(plan.window, "a fullscreen plan carries no window")
   local sealed = interfaces.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", interfaces), view(false))
   checkContent(sealed, false, "sealed nativeLike")
 end
@@ -132,23 +130,28 @@ function T.dual_display_takes_the_auxiliary_fullscreen()
   )
 end
 
-function T.wide_and_tall_frame_a_draggable_window()
+function T.wide_and_tall_center_a_static_framed_box()
   local interfaces = partyInterface()
   local wide = interfaces.wide(contextFor(singleDisplay(1280, 720), "wide", interfaces), view(true))
   singlePane(wide, "wide")
   checkContent(wide, true, "wide")
-  local window = assert(wide.window, "a wide host frames the party in a window")
-  assert(window.outer and window.body and window.grabRect, "the window carries its chrome records")
+  local wideFrame = assert(wide.frames, "a wide host frames the party")[1]
+  Assert.notNil(wideFrame, "one outer frame decorates the wide pane")
+  Assert.deepEqual(
+    wideFrame.contentBox,
+    { x = 0, y = 16, width = 256, height = 192 },
+    "the wide content box sits inside the exterior insets"
+  )
   local tall = interfaces.tall(contextFor(singleDisplay(600, 1000), "tall", interfaces), view(true))
   singlePane(tall, "tall")
-  assert(tall.window, "a tall host frames the party in a window")
+  Assert.equal(#tall.frames, 1, "a tall host frames the party in a static box")
 end
 
-function T.small_windowed_hosts_fall_back_to_native_like()
+function T.small_framed_hosts_fall_back_to_native_like()
   local interfaces = partyInterface()
   local plan = interfaces.wide(contextFor(singleDisplay(200, 150), "wide", interfaces), view(true))
   singlePane(plan, "small wide")
-  Assert.isNil(plan.window, "a window that cannot fit falls back to fullscreen")
+  Assert.deepEqual(plan.frames, {}, "a frame that cannot fit falls back to fullscreen")
 end
 
 function T.equivalent_measurements_resolve_the_same_geometry()
@@ -207,12 +210,13 @@ function T.render_invokes_the_borrowed_renderer_with_plan_and_icons()
   Assert.equal(graphics:pushDepth(), 0, "the render scope restores the graphics stack")
 end
 
-function T.map_input_drops_outside_points_and_forwards_the_rest()
+function T.map_input_turns_outside_points_into_dismiss_and_forwards_the_rest()
   local interfaces = partyInterface()
   local plan = interfaces.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", interfaces), view(true))
-  Assert.isNil(
+  Assert.deepEqual(
     plan.mapInput({ type = "pointer_down", pointerId = "p", outside = true }, view(true), plan),
-    "outside points never reach the controller"
+    { type = "dismiss" },
+    "an outside press dismisses instead of unwinding nested party state"
   )
   local event = { type = "pointer_down", pointerId = "p", x = 10, y = 10 }
   Assert.isTrue(
@@ -230,8 +234,7 @@ function T.case_override_replaces_one_complete_interface()
     mapInput = function()
       return nil
     end,
-    coverage = {},
-    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+    frames = {},
   }
   local function customWide(_, _)
     return replacement
@@ -252,7 +255,7 @@ function T.unknown_override_cases_and_non_functions_fail()
     })
   end, "unknown override cases fail at composition")
   Assert.throws(function()
-    partyInterface({ wide = "windowed" })
+    partyInterface({ wide = "framed" })
   end, "non-function overrides fail at composition")
 end
 
@@ -268,7 +271,6 @@ function T.missing_measurement_fails_without_a_partial_plan()
   Assert.throws(function()
     local incomplete = {
       configuration = "nativeLike",
-      windowPosition = { x = 0.5, y = 0.5 },
       nativeLikeInterface = interfaces.nativeLike,
     }
     interfaces.nativeLike(incomplete --[[@as ApplicationLayout.Context]], view(true))

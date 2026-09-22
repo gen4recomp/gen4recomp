@@ -223,6 +223,15 @@ function MainMenuRenderer:draw(view, plan)
   local red, green, blue, alpha = graphics.getColor()
   local lineWidth = graphics.getLineWidth()
   local background = self.background
+  -- The startup surface has no paused field beneath it: paint the leaf-owned
+  -- host background regions before the logical content.
+  local content = assert(plan.content, "the menu plan carries its logical content")
+  local hostBackgrounds = assert(content.hostBackgrounds, "the menu content carries its host backgrounds")
+  graphics.setColor(0, 0, 0, 1)
+  for _, rect in ipairs(hostBackgrounds) do
+    graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  end
+  graphics.setColor(red, green, blue, alpha)
   LogicalSurface.draw(graphics, placement, function()
     local ok, err = xpcall(function()
       -- The menu owns exactly its logical viewport: fill it, never clear

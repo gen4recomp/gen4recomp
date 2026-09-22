@@ -97,6 +97,21 @@ function T.tests.construction_copies_the_required_fields()
   Assert.equal(status.trainerId, 0)
 end
 
+function T.tests.a_dismiss_edge_records_one_close_result()
+  local controller = fixture()
+  Assert.isTrue(controller:status().open, "the card starts open")
+  controller:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(controller:takeResult(), { kind = "close" }, "dismiss closes exactly like cancel")
+  Assert.equal(controller:takeResult(), nil, "the close result is delivered exactly once")
+  Assert.isFalse(controller:status().open, "the card is closed")
+end
+
+function T.tests.dismiss_ends_the_batch_so_later_input_cannot_reopen_the_card()
+  local controller = fixture()
+  controller:updateFixed({ { type = "dismiss" }, { type = "confirm" } })
+  Assert.deepEqual(controller:takeResult(), { kind = "close" }, "only the terminal close survives the batch")
+end
+
 function T.tests.a_cancel_edge_records_one_close_result()
   local controller = fixture()
   controller:updateFixed({ { type = "cancel" } })

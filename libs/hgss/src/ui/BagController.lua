@@ -1055,6 +1055,11 @@ function BagController:updateFixed(uiInput)
       self:_confirm()
     elseif event.type == "cancel" then
       self:_cancel()
+    elseif event.type == "dismiss" then
+      -- Terminal outside dismissal: close immediately without unwinding
+      -- nested action/toss/move/overlay state through _cancel.
+      self._result = { kind = "closed" }
+      self._closed = true
     elseif event.type == "menu" then
       self:_info()
     elseif event.type == "pointer_down" then

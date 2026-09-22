@@ -268,14 +268,16 @@ end
 
 local function drawOrderState(starterActive)
   local events = {}
+  local starterDraws = {}
   local starter
   if starterActive then
     starter = {
       isActive = function()
         return true
       end,
-      drawPresentation = function()
+      drawPresentation = function(_, text, windowRenderer)
         events[#events + 1] = "starter"
+        starterDraws[#starterDraws + 1] = { text = text, windowRenderer = windowRenderer }
       end,
     }
   end
@@ -329,6 +331,7 @@ local function drawOrderState(starterActive)
     textRenderer = {},
     presentationResources = {
       textRenderer = {},
+      windowRenderer = {},
       renderer = { draw = function() end },
     },
   }, FieldState)
@@ -338,7 +341,7 @@ local function drawOrderState(starterActive)
   state._drawScriptScreenFadeIfNeeded = function()
     events[#events + 1] = "script_fade"
   end
-  return state, events
+  return state, events, starterDraws
 end
 
 function T.world_parts_refresh_replaced_scene_neighbor_and_actor_draws()
@@ -493,9 +496,14 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
 end
 
 function T.active_starter_presentation_is_drawn_after_the_script_fade()
-  local state, events = drawOrderState(true)
+  local state, events, starterDraws = drawOrderState(true)
   state:draw()
   Assert.deepEqual(events, { "script_fade", "starter" }, "the chooser owns the top application layer")
+  Assert.equal(#starterDraws, 1, "the active chooser draws once")
+  Assert.isTrue(
+    starterDraws[1].windowRenderer == state.presentationResources.windowRenderer,
+    "the chooser draws through the field-owned window renderer"
+  )
 end
 
 function T.inactive_starter_preserves_the_script_fade_as_the_final_cover()

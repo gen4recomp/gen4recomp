@@ -13,16 +13,15 @@
 -- input. Graphics resources are prepared after the chooser opens and
 -- realized in bounded steps per host update; the first visible draw sees
 -- a fully realized scene. The presentation borrows the field graphics
--- backend through its own renderer wrapper and releases its owned resources
+-- backend through its own renderer wrapper and the field-owned window
+-- primitive through its draw arguments, and releases its owned resources
 -- exactly once on dispose.
 
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
-local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
-local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local Matrix4 = require("libs.math.src.Matrix4")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
@@ -38,7 +37,6 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _machineTarget table<string, unknown>? owned source-sized machine raster once first drawn
 ---@field _pool GpuAssetPool? GPU mesh/image owner once preparation starts
 ---@field _renderer FieldRenderer? field renderer wrapper once preparation finishes
----@field _window table<string, unknown>? shared HGSS window primitive once preparation finishes
 ---@field _ready boolean preparation completed and the scene is drawable
 ---@field _disposed boolean
 ---@field _prepareQueue table<string, unknown>? borrowed preparation queue while preparation runs
@@ -169,7 +167,6 @@ function StarterChoicePresentation.new(opts)
     _machineTarget = nil,
     _pool = nil,
     _renderer = nil,
-    _window = nil,
     _ready = false,
     _disposed = false,
     _prepareQueue = nil,
@@ -684,15 +681,6 @@ local function stubInstance()
   return instance --[[@as ModelInstance]]
 end
 
--- A window primitive stand-in for compositions without the generated
--- field-UI manifest. It paints no frame and releases nothing.
-local function stubWindow()
-  local window = {}
-  function window:drawWindow() end
-  function window:release() end
-  return window
-end
-
 -- A prepared payload carries upload buffers exactly when it came from the
 -- real preparation worker. Queues without a worker hand back bare records;
 -- those resolve to stand-in entries that keep the assembly shape.
@@ -1039,13 +1027,6 @@ function StarterChoicePresentation:_finishPreparation()
     end
   end
   self._portraitQuads = quads
-  local uiManifest = self._cacheFs:loadLua(FieldUiAssetCache.manifestPath())
-  if uiManifest == nil then
-    self._window = stubWindow()
-  else
-    assert(FieldUiAssetCache.validateManifest(uiManifest), "starter field-UI manifest is invalid")
-    self._window = FieldWindowRenderer.new({ cacheFs = self._cacheFs, manifest = uiManifest, graphics = graphics })
-  end
   local fogTable = {}
   for index = 1, 32 do
     fogTable[index] = 0
@@ -1444,15 +1425,14 @@ end
 ---@param message table<string, unknown> prepared message record ({ lines })
 ---@param text table<string, unknown> text provider ({ drawLineWithColorVariants })
 ---@param background table<string, unknown> glyph background role for these lines
-function StarterChoicePresentation:_drawMessageLines(region, message, text, background)
+---@param windowRenderer table<string, unknown> field-borrowed window primitive for the framed message
+function StarterChoicePresentation:_drawMessageLines(region, message, text, background, windowRenderer)
   if region.framed then
     local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
     local info = textColors.infoBackground
-    assert(self._window, "starter presentation owns no window primitive"):drawWindow(
-      region.box,
-      self._frameIndex,
-      { info.r / 255, info.g / 255, info.b / 255, 1 }
-    )
+    assert(windowRenderer ~= nil, "starter message drawing borrows the field window renderer")
+    assert(type(windowRenderer.drawWindow) == "function", "starter message drawing borrows the field window renderer")
+    windowRenderer:drawWindow(region.box, self._frameIndex, { info.r / 255, info.g / 255, info.b / 255, 1 })
   end
   local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
   for index, line in ipairs(assert(message.lines, "starter message carries its prepared lines")) do
@@ -1609,6 +1589,45 @@ function StarterChoicePresentation:_drawInfoPortrait(snapshot)
   graphics.draw(atlas, quad, portrait.x, portrait.y)
 end
 
+-- Draws every published outer application frame through the already-owned
+-- window primitive with the player-owned frame choice, after content.
+-- The masked inner band overlaps body pixels, so chrome paints over the
+-- panes it decorates. A titled plan draws its window identity through the
+-- borrowed field text provider; a plan without window identity keeps the
+-- border-only draw. Unframed plans draw nothing extra and never touch
+-- the primitive.
+---@param graphics table<string, unknown> host graphics namespace
+---@param plan ApplicationPlan the resolved plan
+---@param windowRenderer table<string, unknown>? field-borrowed window primitive; required when the plan carries frames
+---@param text table<string, unknown>? borrowed field text provider for titled plans
+function StarterChoicePresentation:_drawOuterFrames(graphics, plan, windowRenderer, text)
+  local frames = assert(plan and plan.frames, "starter outer-frame drawing requires the resolved plan frames")
+  if #frames == 0 then
+    return
+  end
+  assert(
+    windowRenderer ~= nil and type(windowRenderer.drawApplicationFrame) == "function",
+    "starter outer-frame drawing borrows the field window renderer"
+  )
+  local chrome = plan.chrome
+  if chrome ~= nil then
+    assert(
+      windowRenderer.drawApplicationChrome ~= nil and text ~= nil and type(text.drawText) == "function",
+      "starter outer-frame drawing borrows the field text provider for window identity"
+    )
+  end
+  for _, frame in ipairs(frames) do
+    LogicalSurface.draw(graphics, assert(frame.placement, "the starter outer frame carries its placement"), function()
+      local contentBox = assert(frame.contentBox, "the starter outer frame carries its content box")
+      if chrome ~= nil then
+        windowRenderer:drawApplicationChrome(contentBox, self._frameIndex, chrome, text)
+      else
+        windowRenderer:drawApplicationFrame(contentBox, self._frameIndex)
+      end
+    end)
+  end
+end
+
 ---@param plan ApplicationPlan the resolved native plan
 ---@param id string the pane identity to locate
 ---@return table<string, unknown> placement of the named pane
@@ -1630,7 +1649,8 @@ end
 ---@param view { candidates: table<string, unknown>[], names: string[] }
 ---@param text table<string, unknown> text provider ({ drawLineWithColorVariants })
 ---@param plan ApplicationPlan the resolved native plan
-function StarterChoicePresentation:drawNative(snapshot, view, text, plan)
+---@param windowRenderer table<string, unknown> field-borrowed window primitive for framed surfaces
+function StarterChoicePresentation:drawNative(snapshot, view, text, plan, windowRenderer)
   local _ = view
   assert(type(snapshot) == "table", "starter presentation draw requires the controller snapshot")
   assert(
@@ -1654,7 +1674,8 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan)
       surfaces.machine.prompt,
       promptText,
       text,
-      transparentBackground(textColors.machineBackground)
+      transparentBackground(textColors.machineBackground),
+      windowRenderer
     )
   end)
   LogicalSurface.draw(graphics, infoPlacement, function()
@@ -1664,7 +1685,7 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan)
     if portraitVisible(snapshot) then
       self:_drawInfoPortrait(snapshot)
     end
-    self:_drawMessageLines(surfaces.info.message, infoText, text, textColors.infoBackground)
+    self:_drawMessageLines(surfaces.info.message, infoText, text, textColors.infoBackground, windowRenderer)
   end)
   local timing = self._manifest.scene.timing
   LogicalSurface.draw(graphics, infoPlacement, function()
@@ -1673,6 +1694,7 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan)
   LogicalSurface.draw(graphics, machinePlacement, function()
     self:_drawFade(self._machineFade / timing.machineFadeTicks)
   end)
+  self:_drawOuterFrames(graphics, plan, windowRenderer, text)
   graphics.setColor(1, 1, 1, 1)
 end
 
@@ -1708,22 +1730,19 @@ end
 ---@param copy string action copy
 ---@param text table<string, unknown> text provider ({ drawText, textWidth })
 ---@param enabled boolean
-function StarterChoicePresentation:_drawCompactAction(box, copy, text, enabled)
+---@param windowRenderer table<string, unknown> field-borrowed window primitive for the action box
+function StarterChoicePresentation:_drawCompactAction(box, copy, text, enabled, windowRenderer)
   local width = assert(text.textWidth, "starter compact actions require the generated font metrics")(text, copy)
+  assert(
+    windowRenderer ~= nil and type(windowRenderer.drawWindow) == "function",
+    "starter action drawing borrows the field window renderer"
+  )
   if enabled then
     local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
     local info = textColors.infoBackground
-    assert(self._window, "starter presentation owns no window primitive"):drawWindow(
-      box,
-      self._frameIndex,
-      { info.r / 255, info.g / 255, info.b / 255, 1 }
-    )
+    windowRenderer:drawWindow(box, self._frameIndex, { info.r / 255, info.g / 255, info.b / 255, 1 })
   else
-    assert(self._window, "starter presentation owns no window primitive"):drawWindow(
-      box,
-      self._frameIndex,
-      COMPACT_DISABLED_FILL
-    )
+    windowRenderer:drawWindow(box, self._frameIndex, COMPACT_DISABLED_FILL)
   end
   assert(text.drawText, "starter compact actions require text drawing")(
     text,
@@ -1744,7 +1763,8 @@ end
 ---@param view { candidates: table<string, unknown>[], names: string[] }
 ---@param text table<string, unknown> text provider
 ---@param plan ApplicationPlan the resolved compact plan
-function StarterChoicePresentation:drawCompact(snapshot, view, text, plan)
+---@param windowRenderer table<string, unknown> field-borrowed window primitive for framed surfaces
+function StarterChoicePresentation:drawCompact(snapshot, view, text, plan, windowRenderer)
   local _ = view
   assert(type(snapshot) == "table", "starter presentation draw requires the controller snapshot")
   assert(self._ready, "starter presentation is not prepared")
@@ -1763,7 +1783,8 @@ function StarterChoicePresentation:drawCompact(snapshot, view, text, plan)
       { box = COMPACT_MESSAGE, textOrigin = { x = COMPACT_MESSAGE.x, y = COMPACT_MESSAGE.y }, framed = true },
       infoText,
       text,
-      textColors.infoBackground
+      textColors.infoBackground,
+      windowRenderer
     )
     graphics.setColor(1, 1, 1, 1)
     for index, origin in ipairs(COMPACT_PORTRAITS) do
@@ -1778,10 +1799,11 @@ function StarterChoicePresentation:drawCompact(snapshot, view, text, plan)
     graphics.rectangle("fill", focus.x, focus.y, 1, focus.height)
     graphics.rectangle("fill", focus.x + focus.width - 1, focus.y, 1, focus.height)
     local backEnabled = snapshot.selectionState == "confirm" and snapshot.transition == "idle"
-    self:_drawCompactAction(COMPACT_PRIMARY, primaryCopy(snapshot), text, true)
-    self:_drawCompactAction(COMPACT_BACK, "BACK", text, backEnabled)
+    self:_drawCompactAction(COMPACT_PRIMARY, primaryCopy(snapshot), text, true, windowRenderer)
+    self:_drawCompactAction(COMPACT_BACK, "BACK", text, backEnabled, windowRenderer)
     self:_drawFade(machineAlpha)
   end)
+  self:_drawOuterFrames(graphics, plan, windowRenderer, text)
   graphics.setColor(1, 1, 1, 1)
 end
 
@@ -1791,10 +1813,6 @@ function StarterChoicePresentation:_releaseGpu()
   self._machineTarget = nil
   if target ~= nil then
     target:release()
-  end
-  if self._window ~= nil then
-    self._window:release()
-    self._window = nil
   end
   if self._renderer ~= nil then
     self._renderer:release()

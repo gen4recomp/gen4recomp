@@ -1,13 +1,12 @@
--- FieldState's draw order: world, field/application fade, dialogue or
--- signpost attached to the world surface, the one active Start Menu or
--- Trainer Card application surface, then the developer HUD. Only the one
--- active modal surface is drawn: a menu phase never draws the card surface
--- or the world-attached dialogue/signpost, and an application phase never
--- draws the menu. The application fade covers the surface being transitioned
--- (the world viewport plus the Start Menu plan coverage), so an auxiliary
--- menu surface can never stay visible while only the world viewport goes
--- black. The Start Menu surface renders through its resolved presentation
--- plan -- the same plan pointer input maps through.
+-- FieldState's draw order: world, the retained Start Menu surface, the
+-- foreground child application surface, then the developer HUD.
+-- Dialogue or signpost attached to the world surface yield to modal
+-- application surfaces (the session's at-most-one-owner assert guarantees
+-- they cannot be modal underneath the menu). No host-owned transition
+-- overlay is ever painted: the menu draws first through its resolved
+-- presentation plan -- the same plan pointer input maps through -- and
+-- the child draws second, covering menu pixels only where its own panes
+-- and frames draw.
 
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
@@ -28,23 +27,6 @@ local function worldTopology()
     rect = { x = 0, y = 0, width = 640, height = 480 },
     touch = false,
     role = "world",
-  })
-end
-
--- A dual-display topology (world left, auxiliary right) whose placement
--- record lies outside the world viewport, so the application fade's union
--- coverage is observable.
-local function dualTopology()
-  return ScreenTopology.dualDisplay({
-    id = "primary",
-    rect = { x = 0, y = 0, width = 256, height = 192 },
-    touch = false,
-    role = "world",
-  }, {
-    id = "auxiliary",
-    rect = { x = 256, y = 0, width = 256, height = 192 },
-    touch = false,
-    role = "auxiliary",
   })
 end
 
@@ -85,14 +67,13 @@ end
 -- recording into the sink, a fake runtime carrying every field draw touches,
 -- and the topology provider under test. The player visual record is
 -- invisible, so the actor assembly never touches a real asset provider.
----@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, development?: boolean, topology?: ScreenTopology, worldViewport?: table, menuCoverage?: table }
+---@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, development?: boolean, topology?: ScreenTopology, worldViewport?: table }
 ---@return FieldState state
 ---@return table[] sink
 local function drawableState(options)
   local sink = {}
   local topology = options.topology or worldTopology()
   local worldViewport = options.worldViewport or { x = 0, y = 0, width = 640, height = 480 }
-  local menuCoverage = options.menuCoverage or {}
   local viewport = FieldViewport.new(640, 480, { mode = "expanded" })
   viewport.worldViewport = worldViewport
   local runtime = {
@@ -152,13 +133,6 @@ local function drawableState(options)
     applicationHost = {
       status = function()
         return options.hostStatus
-      end,
-      menuCoverage = function()
-        local copied = {}
-        for _, rect in ipairs(menuCoverage) do
-          copied[#copied + 1] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
-        end
-        return copied
       end,
     },
     menuHost = {
@@ -249,8 +223,7 @@ end
 -- Idle field: the world draws first, then the open dialogue attached to the
 -- world surface, then the developer HUD. No fade, no application surface.
 function T.draw_orders_world_then_dialogue_then_hud_when_the_field_is_idle()
-  local state, sink =
-    drawableState({ hostStatus = { phase = "closed", fadeAlpha = 0 }, dialogueModal = true, development = true })
+  local state, sink = drawableState({ hostStatus = { phase = "closed" }, dialogueModal = true, development = true })
   -- The developer overlay starts hidden; F3 reveals it so the HUD position
   -- in the draw order stays observable.
   state:keypressed("f3")
@@ -289,7 +262,7 @@ end
 -- drawn after the world, before the HUD, with the session render alpha for
 -- wipe interpolation.
 function T.draw_orders_world_then_signpost_then_hud_when_the_signpost_is_modal()
-  local state, sink = drawableState({ hostStatus = { phase = "closed", fadeAlpha = 0 }, signpostModal = true })
+  local state, sink = drawableState({ hostStatus = { phase = "closed" }, signpostModal = true })
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
     state:draw()
@@ -332,11 +305,10 @@ function T.menu_phase_draws_only_the_start_menu_surface_through_its_plan()
     mapInput = function()
       return nil
     end,
-    coverage = { { x = 0, y = 0, width = 640, height = 480 } },
-    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+    frames = {},
   }
   local state, sink = drawableState({
-    hostStatus = { phase = "menu", fadeAlpha = 0, menu = menuStatus },
+    hostStatus = { phase = "menu", menu = menuStatus },
     dialogueModal = true,
     signpostModal = true,
   })
@@ -349,28 +321,51 @@ function T.menu_phase_draws_only_the_start_menu_surface_through_its_plan()
     error(err, 0)
   end
 
-  Assert.deepEqual(labels(sink), { "world", "rect", "menu" })
-  local matteCall = sink[2]
-  Assert.deepEqual(
-    { matteCall[6], matteCall[7], matteCall[8], matteCall[9], matteCall[10] },
-    { "fill", 0, 0, 640, 480 },
-    "the fullscreen plan owns its target region before the menu draws"
-  )
-  local menuCall = sink[3]
+  -- Settled plans paint no matte: the world draws, then the menu draws
+  -- through its plan with no settled fill between them.
+  Assert.deepEqual(labels(sink), { "world", "menu" })
+  local menuCall = sink[2]
   Assert.equal(menuCall[2], menuStatus, "the start menu renderer receives the host's menu presentation")
   Assert.deepEqual(menuCall[3], bodyPlacement, "the menu draws through the plan body placement")
 end
 
--- Application phase: the world stays fully faded (fadeAlpha 1) and only the
--- Trainer Card surface draws on top; the menu, dialogue, and signpost are
--- never drawn underneath the application.
-function T.application_phase_draws_only_the_card_surface_and_keeps_the_world_faded()
+-- A minimal drawable Start Menu status for layered-application fixtures:
+-- a canonical body pane with a render callback drawing through the plan.
+local function layeredMenuStatus()
+  local bodyPlacement = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 256, 192),
+    "the menu test host fits the canonical body"
+  )
+  local menuStatus = { selectedPosition = 0, actions = {} }
+  menuStatus.presentation = {
+    panes = { { id = "content", placement = bodyPlacement, interactive = true } },
+    content = {},
+    inputKey = "start-menu",
+    render = function(resources, view, plan)
+      assert(resources.startMenuRenderer, "the menu render borrows its renderer"):draw(
+        view,
+        assert(plan.panes[1], "the menu plan needs its body pane").placement
+      )
+    end,
+    mapInput = function()
+      return nil
+    end,
+    frames = {},
+  }
+  return menuStatus, bodyPlacement
+end
+
+-- Application phase: the paused world draws, then the retained Start Menu
+-- through its plan, then the Trainer Card surface; the dialogue and
+-- signpost stay yielded while the modal surfaces own the tick.
+function T.application_phase_draws_the_menu_below_the_card_with_no_fade()
+  local menuStatus, bodyPlacement = layeredMenuStatus()
   local applicationStatus = { name = "GOLD", trainerId = 0 }
   local state, sink = drawableState({
     hostStatus = {
       phase = "application",
-      fadeAlpha = 1,
       applicationId = FieldApplicationIds.TRAINER_CARD,
+      menu = menuStatus,
       application = applicationStatus,
     },
     signpostModal = true,
@@ -384,32 +379,26 @@ function T.application_phase_draws_only_the_card_surface_and_keeps_the_world_fad
     error(err, 0)
   end
 
-  Assert.deepEqual(labels(sink), { "world", "rect", "card" })
-  local fadeCall = sink[2]
-  Assert.deepEqual(
-    { fadeCall[2], fadeCall[3], fadeCall[4], fadeCall[5] },
-    { 0, 0, 0, 1 },
-    "the application fade runs at the host fade alpha"
-  )
-  Assert.deepEqual(
-    { fadeCall[6], fadeCall[7], fadeCall[8], fadeCall[9], fadeCall[10] },
-    { "fill", 0, 0, 640, 480 },
-    "the fade covers the world viewport"
-  )
+  Assert.deepEqual(labels(sink), { "world", "menu", "card" })
+  local menuCall = sink[2]
+  Assert.equal(menuCall[2], menuStatus, "the start menu renderer receives the host's menu presentation")
+  Assert.deepEqual(menuCall[3], bodyPlacement, "the menu draws through the plan body placement")
   local cardCall = sink[3]
   Assert.equal(cardCall[2], applicationStatus, "the trainer card renderer receives the host's application presentation")
   Assert.equal(cardCall[3], state.runtime.viewport, "the card draws into the viewport")
 end
 
 -- Application phase: the party application draws through the same dispatch
--- with its own id and layout; the card surface never draws underneath it.
+-- with its own id and layout under the retained menu; the card surface
+-- never draws underneath it.
 function T.application_phase_draws_the_party_surface_through_the_presentation_dispatch()
+  local menuStatus = layeredMenuStatus()
   local applicationStatus = { layout = { frame = { x = 0, y = 0, width = 640, height = 480 } } }
   local state, sink = drawableState({
     hostStatus = {
       phase = "application",
-      fadeAlpha = 1,
       applicationId = FieldApplicationIds.POKEMON,
+      menu = menuStatus,
       application = applicationStatus,
     },
   })
@@ -422,7 +411,7 @@ function T.application_phase_draws_the_party_surface_through_the_presentation_di
     error(err, 0)
   end
 
-  Assert.deepEqual(labels(sink), { "world", "rect", "party" })
+  Assert.deepEqual(labels(sink), { "world", "menu", "party" })
   local partyCall = sink[3]
   Assert.equal(partyCall[2], applicationStatus, "the party renderer receives the host's application presentation")
   Assert.equal(partyCall[3], applicationStatus.layout, "the party draws through the application layout")
@@ -433,19 +422,41 @@ function T.application_phase_draws_the_party_surface_through_the_presentation_di
   )
 end
 
--- The application fade covers the actual union of the world viewport and the
--- Start Menu plan coverage: disjoint surfaces are painted as separate
--- rectangles, so the gap between them is never covered and no region is
--- painted twice (a bounding box would paint the gap; blindly drawing both
--- rects would double the alpha where they overlap).
-function T.the_application_fade_paints_disjoint_surfaces_separately_and_never_the_gap()
+-- Application phase with a retained menu: the paused world draws, then the
+-- Start Menu background through its plan, then the child application. No
+-- host-owned black overlay is painted between them; the child covers the
+-- menu only where its own panes and frames draw.
+function T.application_phase_layers_the_retained_menu_below_the_child_with_no_fade()
+  local bodyPlacement = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 256, 192),
+    "the menu test host fits the canonical body"
+  )
+  Assert.deepEqual(bodyPlacement.frame, { x = 64, y = 48, width = 512, height = 384 })
+  Assert.equal(bodyPlacement.scale, 2)
+  local menuStatus = { selectedPosition = 0, actions = {} }
+  menuStatus.presentation = {
+    panes = { { id = "content", placement = bodyPlacement, interactive = true } },
+    content = {},
+    inputKey = "start-menu",
+    render = function(resources, view, plan)
+      assert(resources.startMenuRenderer, "the menu render borrows its renderer"):draw(
+        view,
+        assert(plan.panes[1], "the menu plan needs its body pane").placement
+      )
+    end,
+    mapInput = function()
+      return nil
+    end,
+    frames = {},
+  }
+  local applicationStatus = { name = "GOLD", trainerId = 0 }
   local state, sink = drawableState({
-    hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
-    topology = dualTopology(),
-    worldViewport = { x = 0, y = 0, width = 256, height = 192 },
-    -- Separate the menu surface from the world with a real gap: the fade
-    -- follows the retained plan coverage exactly.
-    menuCoverage = { { x = 320, y = 0, width = 256, height = 192 } },
+    hostStatus = {
+      phase = "application",
+      applicationId = FieldApplicationIds.TRAINER_CARD,
+      menu = menuStatus,
+      application = applicationStatus,
+    },
   })
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
@@ -456,160 +467,13 @@ function T.the_application_fade_paints_disjoint_surfaces_separately_and_never_th
     error(err, 0)
   end
 
-  Assert.deepEqual(labels(sink), { "rect", "rect", "world", "rect", "rect" })
-  -- The field backdrop paints the host letterbox (window minus world
-  -- viewport) opaque black before the world; the fade paints after it.
-  Assert.deepEqual(
-    { sink[1][2], sink[1][3], sink[1][4], sink[1][5], sink[1][6], sink[1][7], sink[1][8], sink[1][9], sink[1][10] },
-    { 0, 0, 0, 1, "fill", 0, 192, 640, 288 },
-    "the backdrop covers the letterbox below the world viewport"
-  )
-  Assert.deepEqual(
-    { sink[2][2], sink[2][3], sink[2][4], sink[2][5], sink[2][6], sink[2][7], sink[2][8], sink[2][9], sink[2][10] },
-    { 0, 0, 0, 1, "fill", 256, 0, 384, 192 },
-    "the backdrop covers the letterbox right of the world viewport"
-  )
-  local rects = {}
-  for i = 4, #sink do
-    rects[#rects + 1] = { sink[i][5], sink[i][6], sink[i][7], sink[i][8], sink[i][9], sink[i][10] }
-  end
-  Assert.deepEqual(rects[1], { 0.5, "fill", 0, 0, 256, 192 }, "the world viewport is painted in full at the fade alpha")
-  Assert.deepEqual(rects[2], { 0.5, "fill", 320, 0, 256, 192 }, "the disjoint menu frame is painted separately")
-  -- The gap between the surfaces (256..320) is never covered by the fade:
-  -- every fade rectangle stays inside one of the two surfaces. (The opaque
-  -- backdrop behind them covers the letterbox, including the gap.)
-  for _, rect in ipairs(rects) do
-    local x, _, w, _ = rect[3], rect[4], rect[5], rect[6]
-    local covered = (x < 256 and x + w <= 256) or (x >= 320)
-    Assert.isTrue(covered, "no fade rectangle may span the gap between surfaces")
-  end
-  Assert.equal(#sink, 5, "backdrop, world, and fade draw; no modal surface is drawn during the fade")
-end
-
--- A menu frame fully inside (or equal to) the world viewport adds nothing:
--- the union is exactly the world rect, so no region is alpha-doubled.
-function T.the_application_fade_never_doubles_alpha_for_a_contained_menu_frame()
-  local state, sink = drawableState({
-    hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
-    topology = worldTopology(),
-    menuCoverage = { { x = 64, y = 48, width = 320, height = 240 } },
-  })
-  local restore = spyGraphics(sink)
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
-
-  Assert.deepEqual(labels(sink), { "world", "rect" })
-  local fadeCall = sink[2]
-  Assert.deepEqual(
-    { fadeCall[6], fadeCall[7], fadeCall[8], fadeCall[9], fadeCall[10] },
-    { "fill", 0, 0, 640, 480 },
-    "a contained menu frame adds no rectangle: the world rect alone is the union"
-  )
-end
-
--- A menu frame to the right of the world viewport with a partial overlap
--- contributes only its non-overlapping strip: the overlap region is painted
--- once (by the world rect) and the strip covers the rest.
-function T.the_application_fade_paints_only_the_non_overlapping_strip_of_a_partial_overlap()
-  local state, sink = drawableState({
-    hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
-    topology = worldTopology(),
-    worldViewport = { x = 0, y = 0, width = 256, height = 192 },
-    menuCoverage = { { x = 128, y = 0, width = 384, height = 192 } },
-  })
-  local restore = spyGraphics(sink)
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
-
-  Assert.deepEqual(labels(sink), { "rect", "rect", "world", "rect", "rect" })
-  Assert.deepEqual(
-    { sink[1][6], sink[1][7], sink[1][8], sink[1][9], sink[1][10] },
-    { "fill", 0, 192, 640, 288 },
-    "the backdrop covers the letterbox below the world viewport"
-  )
-  Assert.deepEqual(
-    { sink[2][6], sink[2][7], sink[2][8], sink[2][9], sink[2][10] },
-    { "fill", 256, 0, 384, 192 },
-    "the backdrop covers the letterbox right of the world viewport"
-  )
-  Assert.deepEqual(
-    { sink[4][6], sink[4][7], sink[4][8], sink[4][9], sink[4][10] },
-    { "fill", 0, 0, 256, 192 },
-    "the world viewport is painted in full"
-  )
-  Assert.deepEqual(
-    { sink[5][6], sink[5][7], sink[5][8], sink[5][9], sink[5][10] },
-    { "fill", 256, 0, 256, 192 },
-    "only the non-overlapping right strip of the menu frame is painted"
-  )
-  Assert.equal(#sink, 5, "backdrop, world, and fade draw; the overlapping band is painted exactly once")
-end
-
--- The same partial overlap extending past the world top and bottom paints
--- the right strip plus the two vertical strips: every strip stays outside
--- the intersection, so no region receives alpha twice.
-function T.the_application_fade_paints_the_strips_around_a_corner_overlap()
-  local state, sink = drawableState({
-    hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
-    topology = worldTopology(),
-    worldViewport = { x = 0, y = 0, width = 256, height = 192 },
-    menuCoverage = { { x = 128, y = -64, width = 384, height = 320 } },
-  })
-  local restore = spyGraphics(sink)
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
-
-  Assert.deepEqual(labels(sink), { "rect", "rect", "world", "rect", "rect", "rect", "rect" })
-  Assert.deepEqual(
-    { sink[1][6], sink[1][7], sink[1][8], sink[1][9], sink[1][10] },
-    { "fill", 0, 192, 640, 288 },
-    "the backdrop covers the letterbox below the world viewport"
-  )
-  Assert.deepEqual(
-    { sink[2][6], sink[2][7], sink[2][8], sink[2][9], sink[2][10] },
-    { "fill", 256, 0, 384, 192 },
-    "the backdrop covers the letterbox right of the world viewport"
-  )
-  Assert.deepEqual(
-    { sink[4][6], sink[4][7], sink[4][8], sink[4][9], sink[4][10] },
-    { "fill", 0, 0, 256, 192 },
-    "the world viewport is painted in full"
-  )
-  Assert.deepEqual(
-    { sink[5][6], sink[5][7], sink[5][8], sink[5][9], sink[5][10] },
-    { "fill", 256, -64, 256, 320 },
-    "the right strip covers the menu frame outside the world width"
-  )
-  Assert.deepEqual(
-    { sink[6][6], sink[6][7], sink[6][8], sink[6][9], sink[6][10] },
-    { "fill", 128, -64, 128, 64 },
-    "the top strip covers the menu frame above the world"
-  )
-  Assert.deepEqual(
-    { sink[7][6], sink[7][7], sink[7][8], sink[7][9], sink[7][10] },
-    { "fill", 128, 192, 128, 64 },
-    "the bottom strip covers the menu frame below the world"
-  )
-  Assert.equal(
-    #sink,
-    7,
-    "backdrop, world, and fade draw; the overlap region is painted exactly once (by the world rect)"
-  )
+  Assert.deepEqual(labels(sink), { "world", "menu", "card" })
+  local menuCall = sink[2]
+  Assert.equal(menuCall[2], menuStatus, "the start menu renderer receives the host's menu presentation")
+  Assert.deepEqual(menuCall[3], bodyPlacement, "the menu draws through the plan body placement")
+  local cardCall = sink[3]
+  Assert.equal(cardCall[2], applicationStatus, "the trainer card renderer receives the host's application presentation")
+  Assert.equal(cardCall[3], state.runtime.viewport, "the card draws into the viewport")
 end
 
 return { tests = T }

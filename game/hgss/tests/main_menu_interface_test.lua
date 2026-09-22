@@ -99,6 +99,19 @@ function T.tests.default_menu_occupies_the_primary_surface_only_on_a_physical_du
       "no menu pane may extend into the auxiliary surface: the save UI stays primary-only"
     )
   end
+  Assert.deepEqual(plan.frames, {}, "the startup menu publishes no application frame")
+  local hostBackgrounds =
+    assert(plan.content.hostBackgrounds, "the startup menu carries its leaf-owned host backgrounds")
+  Assert.equal(#hostBackgrounds, 2, "the dual startup menu paints both host surfaces itself")
+end
+
+function T.tests.outside_presses_never_dismiss_the_startup_menu()
+  local topology = singleWorld(1280, 720)
+  local measurement = measurementFor(topology, 1280, 720, "main-menu-outside-guard")
+  local menu, _ = menuWith(measurement, nil)
+  local plan = assert(menu:view().presentation, "Main Menu must publish its presentation plan")
+  local mapped = plan.mapInput({ type = "pointer_down", pointerId = "mouse:1", outside = true }, menu:view(), plan)
+  Assert.isNil(mapped, "an outside press carries no menu action and never dismisses")
 end
 
 function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
@@ -109,6 +122,7 @@ function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
     wide = function(_, _)
       return {
         panes = {},
+        frames = {},
         content = {},
         inputKey = "replacement-wide",
         render = function(_, _, _)
@@ -117,8 +131,6 @@ function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
         mapInput = function(_, _, _)
           return { type = "activateNewGame" }
         end,
-        coverage = {},
-        backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
       }
     end,
   }

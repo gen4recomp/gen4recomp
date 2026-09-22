@@ -25,7 +25,6 @@ local function fullscreenContext(topology, width, height)
     configuration = "nativeLike",
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = StartMenuInterface.fullscreen,
   }
 end
