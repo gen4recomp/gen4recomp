@@ -1561,13 +1561,13 @@ function T.occupied_worker_with_blocked_queue_reports_waiting()
   local host = newThreadHost(4)
   local pool = selectedInteractivePool(host, generation)
   withLove(host.love, function()
-    pool:request(activityMapJob(generation, "60", 60, 0))
+    pool:request(activityMapJob(generation, "60", 60, 100))
     pool:update()
-    pool:request(activityMapJob(generation, "61", 61, 0))
+    pool:request(activityMapJob(generation, "61", 61, 100))
   end)
-  Assert.equal(pool:status("map:60"), "running", "the first job occupies the worker")
-  Assert.equal(pool:status("map:61"), "queued", "the second job waits on the busy worker")
-  Assert.equal(observeActivity(host, pool), "waiting", "blocked queued work waits on its worker")
+  Assert.equal(pool:status("map:60"), "running", "the first background job holds the single slot")
+  Assert.equal(pool:status("map:61"), "queued", "the second background job waits on the held slot")
+  Assert.equal(observeActivity(host, pool), "waiting", "blocked background work waits on its worker")
   pool:shutdown()
 end
 
@@ -1602,6 +1602,24 @@ function T.fatal_pool_condition_never_reports_idle()
   end)
   Assert.isFalse(ok, "the stopped worker surfaces its fatal condition")
   Assert.equal(observeActivity(host, pool), "runnable", "a fatal pool condition never reads idle")
+  pool:shutdown()
+end
+
+-- Required demand beside running background work stays dispatchable: the
+-- pool reads runnable while a free worker can take it.
+function T.required_work_beside_running_background_reports_runnable()
+  local generation = "activity-required-beside-background"
+  local host = newThreadHost(6)
+  local pool = selectedInteractivePool(host, generation)
+  withLove(host.love, function()
+    pool:request(activityMapJob(generation, "70", 70, 100))
+    pool:update()
+  end)
+  Assert.equal(pool:status("map:70"), "running", "the background job occupies its worker")
+  withLove(host.love, function()
+    pool:request(activityMapJob(generation, "71", 71, 0))
+  end)
+  Assert.equal(observeActivity(host, pool), "runnable", "required demand beside background work can advance now")
   pool:shutdown()
 end
 

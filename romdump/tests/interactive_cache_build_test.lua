@@ -1378,6 +1378,52 @@ local function stageBankReply(env, bankId, marker, stageName)
   pushWorkerReply(env, 1, "message-bank", key, stageName, "prepared")
 end
 
+-- Two-worker staging: an overlapping leaf executes on the second
+-- bounded worker, so its bytes stage under that worker's dispatch stage
+-- and its completion reports that worker. Single-worker call sites keep
+-- stageBankReply unchanged.
+---@param env table
+---@param bankId integer
+---@param marker string
+---@param workerId integer
+---@param occurrence integer
+local function stageBankReplyOnWorker(env, bankId, marker, workerId, occurrence)
+  local key = tostring(bankId)
+  local stageName = dispatchedStage(env, workerId, "message-bank:" .. key, occurrence)
+  withHost(env.host, function()
+    local artifact = PreparedArtifact.new({
+      cacheFs = env.cacheFs,
+      generationId = env.session.generationId,
+      epoch = 1,
+      kind = "message-bank",
+      key = key,
+      jobKey = "message-bank:" .. key,
+      stageName = stageName,
+    })
+    FieldMessageCacheWriter.stageBank(artifact, {
+      bankId = bankId,
+      bank = { schema = FieldMessageCache.SCHEMA, bankId = bankId, messageCount = 0, key = bankId, messages = {} },
+      marker = marker,
+      dependencies = {
+        cacheFormat = "synthetic",
+        charmapVersion = "synthetic",
+        manifestSchema = "synthetic",
+        versionRomSha1 = "synthetic",
+        messageNarc = {
+          symbol = "synthetic",
+          alias = "synthetic",
+          narcId = 0,
+          fileId = 0,
+          path = "synthetic",
+          sha1 = "synthetic",
+        },
+      },
+    })
+    artifact:finishSuccess({ marker = marker })
+  end)
+  pushWorkerReply(env, workerId, "message-bank", key, stageName, "prepared")
+end
+
 ---@param env table
 ---@param bankIds integer[]
 ---@param bankMarkers table<integer, string>
@@ -1518,21 +1564,25 @@ function T.cold_request_dispatches_children_before_the_parent()
   Assert.isNil(failure, "no failure is reported while the summary waits for its banks")
   Assert.equal(poolStatus(env, "message-summary", "global"), "unknown", "the parent never occupies a worker early")
   pumpSession(env, 1)
-  Assert.deepEqual(env.host.dispatched, { "message-bank:3" }, "only the first cold bank dispatches")
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "message-bank:3", "message-bank:5" },
+    "both cold banks dispatch together onto the bounded workers"
+  )
   Assert.equal(poolStatus(env, "message-summary", "global"), "unknown", "the parent waits for every bank")
 
   stageBankReply(env, 3, "synthetic:romshape:003", dispatchedStage(env, 1, "message-bank:3", 1))
   pumpSession(env, 2)
   Assert.equal(poolStatus(env, "message-bank", "3"), "ready", "the first bank publishes through the pool")
-  pumpSession(env, 1)
   Assert.deepEqual(
     env.host.dispatched,
     { "message-bank:3", "message-bank:5" },
-    "the second bank follows the first publication"
+    "the second bank already executes beside the first"
   )
   Assert.equal(poolStatus(env, "message-summary", "global"), "unknown", "one cold bank still gates the parent")
 
-  stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, 1, "message-bank:5", 1))
+  local worker5 = dispatchedWorker(env, "message-bank:5")
+  stageBankReplyOnWorker(env, 5, "synthetic:romshape:005", worker5, 1)
   pumpSession(env, 2)
   Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the second bank publishes through the pool")
   pumpSession(env, 2)
@@ -1642,7 +1692,17 @@ function T.shared_prerequisite_inherits_urgent_demand()
     { "audio-catalog:global", "audio-summary:global", "mon-catalog:global" },
     "the required catalog inherits the urgent demand"
   )
-  pushWorkerReply(env, 1, "mon-catalog", "global", dispatchedStage(env, 1, "mon-catalog:global", 1), "reused")
+  -- The required catalog executes beside the occupant on the second
+  -- bounded worker, so its reuse proof reports that worker.
+  local sharedCatalogWorker = dispatchedWorker(env, "mon-catalog:global")
+  pushWorkerReply(
+    env,
+    sharedCatalogWorker,
+    "mon-catalog",
+    "global",
+    dispatchedStage(env, sharedCatalogWorker, "mon-catalog:global", 1),
+    "reused"
+  )
   pumpSession(env, 1)
   Assert.equal(poolStatus(env, "mon-layout", "global"), "queued", "the proven catalog wakes its layout")
   requestJob(env, "message-bank", "3", "near")
@@ -1668,16 +1728,20 @@ function T.retry_repairs_only_the_failed_leaf()
   Assert.isNil(failure, "no failure is reported while the summary waits")
   Assert.equal(poolStatus(env, "message-bank", "3"), "unknown", "the healthy bank is never submitted before admission")
   pumpSession(env, 1)
-  Assert.deepEqual(env.host.dispatched, { "message-bank:3" }, "the warm bank dispatches first for worker proof")
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "message-bank:3", "message-bank:5" },
+    "both banks dispatch together onto the bounded workers"
+  )
   pushWorkerReply(env, 1, "message-bank", "3", dispatchedStage(env, 1, "message-bank:3", 1), "reused")
   pumpSession(env, 2)
   Assert.equal(poolStatus(env, "message-bank", "3"), "ready", "the reused bank proves ready without publication")
   Assert.deepEqual(
     env.host.dispatched,
     { "message-bank:3", "message-bank:5" },
-    "the cold bank dispatches once the worker frees"
+    "the cold bank overlaps the worker proof"
   )
-  pushWorkerReply(env, 1, "message-bank", "5", dispatchedStage(env, 1, "message-bank:5", 1), "failed")
+  pushWorkerReply(env, 2, "message-bank", "5", dispatchedStage(env, 2, "message-bank:5", 1), "failed")
   pumpSession(env, 2)
   local blocked, blockedFailure = requestJob(env, "message-summary", "global", "required")
   Assert.isFalse(blocked, "the parent stays blocked behind its failed bank")
@@ -1707,7 +1771,7 @@ function T.retry_repairs_only_the_failed_leaf()
     retriedStatus == "queued" or retriedStatus == "running",
     "only the failed leaf retries: " .. tostring(retriedStatus)
   )
-  stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, 1, "message-bank:5", 2))
+  stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, 1, "message-bank:5", 1))
   pumpSession(env, 2)
   Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the retried leaf publishes")
   pumpSession(env, 2)
@@ -1734,7 +1798,11 @@ function T.retirement_ends_pending_waits_without_ghost_work()
   local env = openLiveSession({ generation = "dependency-retire-generation", bankIds = { 3, 5 } })
   requestJob(env, "message-summary", "global", "required")
   pumpSession(env, 1)
-  Assert.deepEqual(env.host.dispatched, { "message-bank:3" }, "one bank executes while the other queues")
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "message-bank:3", "message-bank:5" },
+    "both banks execute together on the bounded workers"
+  )
   withHost(env.host, function()
     env.session:retire()
   end)
@@ -1743,7 +1811,7 @@ function T.retirement_ends_pending_waits_without_ghost_work()
   end)
   Assert.isFalse(retiredAgain, "retirement reaches the pool exactly once")
   Assert.equal(poolStatus(env, "message-bank", "3"), "running", "executing work stays charged")
-  Assert.equal(poolStatus(env, "message-bank", "5"), "cancelled", "queued work never runs after retirement")
+  Assert.equal(poolStatus(env, "message-bank", "5"), "running", "the overlapping bank stays charged too")
   local requestOk = pcall(function()
     withHost(env.host, function()
       return env.session:requestJob("message-bank", "3", "required")
@@ -1753,7 +1821,7 @@ function T.retirement_ends_pending_waits_without_ghost_work()
 
   pushWorkerReply(env, 1, "message-bank", "3", dispatchedStage(env, 1, "message-bank:3", 1), "failed")
   pumpPool(env, 2)
-  Assert.deepEqual(env.host.dispatched, { "message-bank:3" }, "late output dispatches nothing new")
+  Assert.deepEqual(env.host.dispatched, { "message-bank:3", "message-bank:5" }, "late output dispatches nothing new")
   Assert.equal(poolStatus(env, "message-bank", "3"), "cancelled", "the late result settles without publishing")
   Assert.isNil(env.cacheFs:read(ArtifactState.path("message-bank", "3")), "the late result publishes no receipt")
   local waitOk, waitError = pcall(function()
@@ -1835,7 +1903,17 @@ function T.required_demand_outranks_earlier_near_sharing()
     { "audio-catalog:global", "audio-summary:global", "mon-catalog:global" },
     "the required catalog outranks later near demand"
   )
-  pushWorkerReply(env, 1, "mon-catalog", "global", dispatchedStage(env, 1, "mon-catalog:global", 1), "reused")
+  -- The required catalog executes beside the occupant on the second
+  -- bounded worker, so its reuse proof reports that worker.
+  local outrankCatalogWorker = dispatchedWorker(env, "mon-catalog:global")
+  pushWorkerReply(
+    env,
+    outrankCatalogWorker,
+    "mon-catalog",
+    "global",
+    dispatchedStage(env, outrankCatalogWorker, "mon-catalog:global", 1),
+    "reused"
+  )
   pumpSession(env, 1)
   Assert.equal(poolStatus(env, "mon-layout", "global"), "queued", "the proven catalog wakes its layout")
   -- Near demand arriving after the required job queued still waits its
@@ -1859,15 +1937,19 @@ function T.failed_dependency_blocks_parent_before_submission()
   Assert.isFalse(pending, "the summary stays pending while one bank is cold")
   Assert.isNil(pendingFailure, "no failure is reported while the summary waits")
   pumpSession(env, 1)
-  Assert.deepEqual(env.host.dispatched, { "message-bank:3" }, "the warm bank dispatches first for worker proof")
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "message-bank:3", "message-bank:5" },
+    "both banks dispatch together onto the bounded workers"
+  )
   pushWorkerReply(env, 1, "message-bank", "3", dispatchedStage(env, 1, "message-bank:3", 1), "reused")
   pumpSession(env, 2)
   Assert.deepEqual(
     env.host.dispatched,
     { "message-bank:3", "message-bank:5" },
-    "the cold bank dispatches once the worker frees"
+    "the cold bank overlaps the worker proof"
   )
-  pushWorkerReply(env, 1, "message-bank", "5", dispatchedStage(env, 1, "message-bank:5", 1), "failed")
+  pushWorkerReply(env, 2, "message-bank", "5", dispatchedStage(env, 2, "message-bank:5", 1), "failed")
   pumpSession(env, 2)
   local blocked, blockedFailure = requestJob(env, "message-summary", "global", "required")
   Assert.isFalse(blocked, "the parent stays blocked behind its failed bank")
@@ -2353,7 +2435,7 @@ function T.first_milestone_demand_promotes_existing_members()
   Assert.equal(actors.urgency, "required", "the existing member strengthens to the milestone urgency")
   Assert.equal(bag.urgency, "required", "the existing member strengthens to the milestone urgency")
   Assert.equal(dispatchCount(env, "actors", "global"), 1, "promotion never resubmits")
-  Assert.equal(poolStatus(env, "bag", "global"), "queued", "the second leaf still waits its turn")
+  Assert.equal(poolStatus(env, "bag", "global"), "running", "the promoted second leaf takes the free worker")
   local calls = #env.host.dispatched
   withHost(env.host, function()
     local again, againFailure = env.session:requestMilestone("field-core", "required")
@@ -2884,7 +2966,8 @@ function T.background_demand_submits_without_session_parking()
   pumpSession(env, 3)
   -- Submission is the session contract: every requested leaf reaches the
   -- pool instead of parking behind session-side credit. The single
-  -- interactive worker executes one leaf while the rest queue at the pool.
+  -- interactive background slot executes one leaf while the rest queue at
+  -- the pool.
   for _, bankId in ipairs({ 3, 5, 7 }) do
     local key = tostring(bankId)
     Assert.isTrue(
@@ -2905,12 +2988,12 @@ function T.background_demand_submits_without_session_parking()
   Assert.equal(dispatchCount(env, "message-bank", "7"), 1, "promotion jumps the pool queue without resubmission")
   local worker7 = dispatchedWorker(env, "message-bank:7")
   publishBankLive(env, 7, "synthetic:romshape:007")
-  stageBankReply(env, 7, "synthetic:romshape:007", dispatchedStage(env, worker7, "message-bank:7", 1))
+  stageBankReplyOnWorker(env, 7, "synthetic:romshape:007", worker7, 1)
   pumpSession(env, 3)
   Assert.equal(poolStatus(env, "message-bank", "7"), "ready", "the promoted leaf publishes")
   local worker5 = dispatchedWorker(env, "message-bank:5")
   publishBankLive(env, 5, "synthetic:romshape:005")
-  stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, worker5, "message-bank:5", 1))
+  stageBankReplyOnWorker(env, 5, "synthetic:romshape:005", worker5, 1)
   pumpSession(env, 3)
   Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the last leaf publishes")
   for _, bankId in ipairs({ 3, 5, 7 }) do

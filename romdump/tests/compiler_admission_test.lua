@@ -288,9 +288,9 @@ function T.promotion_reuses_a_single_queued_job()
   )
   updatePool(pool, host)
   updatePool(pool, host)
-  Assert.deepEqual(host.dispatched, { "map:60" })
+  Assert.deepEqual(host.dispatched, { "map:60", "script-member:7" })
   Assert.equal(poolStatus(pool, host, "map:60"), "running")
-  Assert.equal(poolStatus(pool, host, "script-member:7"), "queued")
+  Assert.equal(poolStatus(pool, host, "script-member:7"), "running")
   shutdownPool(pool, host)
 end
 
@@ -460,8 +460,8 @@ function T.retired_interest_frees_no_phantom_worker()
   for _, thread in ipairs(host.threads) do
     starts = starts + thread.starts
   end
-  Assert.equal(#host.threads, 1, "retiring interest starts no replacement thread")
-  Assert.equal(starts, 1, "retiring interest starts no replacement thread")
+  Assert.equal(#host.threads, 2, "retiring interest starts no replacement thread")
+  Assert.equal(starts, 2, "retiring interest starts no replacement thread")
   pushCompletion(
     host,
     preparedCompletion({
@@ -894,8 +894,21 @@ function T.promotion_while_blocked_keeps_one_queued_job()
       payload = mapPayload(60),
     })
   )
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "62",
+      priority = REQUIRED,
+      sizeClass = "normal",
+      payload = mapPayload(62),
+    })
+  )
   updatePool(pool, host)
-  Assert.deepEqual(host.dispatched, { "map:60" })
+  Assert.deepEqual(host.dispatched, { "map:60", "map:62" })
   requestJob(
     pool,
     host,
@@ -924,7 +937,7 @@ function T.promotion_while_blocked_keeps_one_queued_job()
   )
   updatePool(pool, host, 0)
   updatePool(pool, host, 0)
-  Assert.deepEqual(host.dispatched, { "map:60" }, "the promoted job never bypasses the executing job")
+  Assert.deepEqual(host.dispatched, { "map:60", "map:62" }, "the promoted job never bypasses the executing jobs")
   Assert.equal(poolStatus(pool, host, "map:61"), "queued")
   shutdownPool(pool, host)
 end
@@ -972,7 +985,7 @@ function T.mismatched_stage_stops_admission_visibly()
     end)
   end)
   Assert.isFalse(second, "a protocol failure stops further admission")
-  Assert.equal(#host.threads, 1, "a protocol failure starts no replacement worker")
+  Assert.equal(#host.threads, 2, "a protocol failure starts no replacement worker")
   Assert.isTrue(poolStatus(pool, host, "map:61") ~= "ready", "the mismatched completion publishes nothing")
   shutdownPool(pool, host)
 end
@@ -1168,7 +1181,7 @@ function T.demanded_result_is_accepted_and_pinned()
   updatePool(pool, host, 0)
   Assert.isTrue(poolStatus(pool, host, "map:60") ~= "running", "the demanded reply settles the job")
   Assert.equal(host.threads[1].waits, 0, "the healthy worker is never joined")
-  Assert.equal(#host.threads, 1, "no replacement capacity appears")
+  Assert.equal(#host.threads, 2, "no replacement capacity appears")
   Assert.isNil(poolDiagnostics(pool, host).error, "no fatal worker-death error is recorded")
   shutdownPool(pool, host)
 end
@@ -1360,6 +1373,9 @@ function T.executing_normal_job_closes_after_completion_during_quiescence()
   updatePool(pool, host)
   local stage = dispatchedStage(host, 1, 1)
   quiescePool(pool, host)
+  local idleClose = inputChannel(host, 2).log[1]
+  Assert.notNil(idleClose, "the idle worker receives a close request")
+  Assert.notNil(idleClose.closeToken, "the close request carries its barrier identity")
   pushCompletion(
     host,
     preparedCompletion({
@@ -1381,8 +1397,9 @@ function T.executing_normal_job_closes_after_completion_during_quiescence()
   updatePool(pool, host)
   Assert.isNil(poolDiagnostics(pool, host).error, "settling the job raises no fatal error")
   pushCompletion(host, { status = "context-closed", workerId = 1, closeToken = closeMessage.closeToken })
+  pushCompletion(host, { status = "context-closed", workerId = 2, closeToken = idleClose.closeToken })
   updatePool(pool, host, 0)
-  Assert.isTrue(poolQuiescent(pool, host), "the acknowledged close settles the barrier")
+  Assert.isTrue(poolQuiescent(pool, host), "the acknowledged closes settle the barrier")
   shutdownPool(pool, host)
 end
 
@@ -1392,15 +1409,18 @@ function T.stale_close_acknowledgement_keeps_the_barrier_open()
   local pool = openPool(host, "interactive")
   selectGeneration(pool, host, generation, 1)
   quiescePool(pool, host)
-  local closeMessage = inputChannel(host, 1).log[1]
-  Assert.notNil(closeMessage, "the idle worker receives a close request")
-  Assert.notNil(closeMessage.closeToken, "the close request carries its barrier identity")
-  pushCompletion(host, { status = "context-closed", workerId = 1, closeToken = closeMessage.closeToken + 999 })
+  local firstClose = inputChannel(host, 1).log[1]
+  Assert.notNil(firstClose, "the idle worker receives a close request")
+  Assert.notNil(firstClose.closeToken, "the close request carries its barrier identity")
+  local secondClose = inputChannel(host, 2).log[1]
+  Assert.notNil(secondClose, "the second idle worker receives a close request")
+  pushCompletion(host, { status = "context-closed", workerId = 1, closeToken = firstClose.closeToken + 999 })
   updatePool(pool, host, 0)
   Assert.isFalse(poolQuiescent(pool, host), "a stale acknowledgement never closes the barrier")
-  pushCompletion(host, { status = "context-closed", workerId = 1, closeToken = closeMessage.closeToken })
+  pushCompletion(host, { status = "context-closed", workerId = 1, closeToken = firstClose.closeToken })
+  pushCompletion(host, { status = "context-closed", workerId = 2, closeToken = secondClose.closeToken })
   updatePool(pool, host, 0)
-  Assert.isTrue(poolQuiescent(pool, host), "the matching acknowledgement closes the barrier")
+  Assert.isTrue(poolQuiescent(pool, host), "the matching acknowledgements close the barrier")
   quiescePool(pool, host)
   updatePool(pool, host, 0)
   Assert.isTrue(poolQuiescent(pool, host), "a repeated quiesce stays settled")
@@ -1418,8 +1438,10 @@ function T.selection_before_source_closure_is_rejected()
     selectGeneration(pool, host, generation, 2)
   end)
   Assert.isFalse(ok, "a new selection is rejected while the barrier is incomplete")
-  local closeMessage = inputChannel(host, 1).log[1]
-  pushCompletion(host, { status = "context-closed", workerId = 1, closeToken = closeMessage.closeToken })
+  local firstClose = inputChannel(host, 1).log[1]
+  local secondClose = inputChannel(host, 2).log[1]
+  pushCompletion(host, { status = "context-closed", workerId = 1, closeToken = firstClose.closeToken })
+  pushCompletion(host, { status = "context-closed", workerId = 2, closeToken = secondClose.closeToken })
   updatePool(pool, host, 0)
   Assert.isTrue(poolQuiescent(pool, host), "the barrier closes once acknowledged")
   selectGeneration(pool, host, generation, 2)
@@ -1581,8 +1603,8 @@ function T.retirement_cancels_interest_without_freeing_the_slot()
 end
 
 -- Worker counts are a fixed physical cap, not a function of job families:
--- batch runs at most two compilers, interactive runs exactly one, and a
--- single processor still runs one worker. No family label changes this.
+-- batch and interactive pools run at most two compilers on capable hosts,
+-- and a single processor still runs one worker. No family label changes this.
 function T.fixed_worker_counts_bound_batch_and_interactive_pools()
   local batchHost = newThreadHost(6)
   local batchPool = openPool(batchHost, "batch")
@@ -1590,7 +1612,7 @@ function T.fixed_worker_counts_bound_batch_and_interactive_pools()
   shutdownPool(batchPool, batchHost)
   local interactiveHost = newThreadHost(6)
   local interactivePool = openPool(interactiveHost, "interactive")
-  Assert.equal(#interactiveHost.threads, 1, "an interactive pool runs exactly one worker")
+  Assert.equal(#interactiveHost.threads, 2, "an interactive pool on six processors runs two workers")
   shutdownPool(interactivePool, interactiveHost)
   local singleHost = newThreadHost(1)
   local singlePool = openPool(singleHost, "batch")
@@ -1707,6 +1729,242 @@ function T.independent_jobs_overlap_and_settle_without_worker_replacement()
   Assert.equal(poolStatus(pool, host, "map:60"), "prepared")
   Assert.equal(poolStatus(pool, host, "map:61"), "prepared")
   Assert.equal(#host.threads, workersAtOpen, "settled workers are not replaced")
+  shutdownPool(pool, host)
+end
+
+-- Two required jobs overlap on a capable interactive pool: both bounded
+-- workers take one required job each without replacement capacity.
+function T.two_required_jobs_overlap_on_a_capable_interactive_pool()
+  local host = newThreadHost(6)
+  local pool = openPool(host, "interactive")
+  Assert.equal(#host.threads, 2, "a capable interactive pool runs two workers")
+  local generation = "test-generation-required-overlap"
+  selectGeneration(pool, host, generation, 1)
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "60",
+      priority = REQUIRED,
+      sizeClass = "normal",
+      payload = mapPayload(60),
+    })
+  )
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "61",
+      priority = REQUIRED,
+      sizeClass = "normal",
+      payload = mapPayload(61),
+    })
+  )
+  updatePool(pool, host)
+  updatePool(pool, host)
+  Assert.deepEqual(host.dispatched, { "map:60", "map:61" }, "both required jobs dispatch together")
+  Assert.equal(poolStatus(pool, host, "map:60"), "running")
+  Assert.equal(poolStatus(pool, host, "map:61"), "running")
+  Assert.equal(#inputChannel(host, 1).log, 1, "the first worker takes exactly one job")
+  Assert.equal(#inputChannel(host, 2).log, 1, "the second worker takes exactly one job")
+  Assert.equal(#host.threads, 2, "overlap uses the bounded workers without replacement")
+  shutdownPool(pool, host)
+end
+
+-- Interactive worker capacity follows the bounded processor formula: one
+-- worker below three processors and two workers above, while batch keeps
+-- its current one-or-two ceiling.
+function T.processor_count_bounds_interactive_worker_capacity()
+  local oneHost = newThreadHost(1)
+  local onePool = openPool(oneHost, "interactive")
+  Assert.equal(#oneHost.threads, 1, "a single-processor interactive pool runs one worker")
+  shutdownPool(onePool, oneHost)
+  local twoHost = newThreadHost(2)
+  local twoPool = openPool(twoHost, "interactive")
+  Assert.equal(#twoHost.threads, 1, "a two-processor interactive pool runs one worker")
+  shutdownPool(twoPool, twoHost)
+  local sixHost = newThreadHost(6)
+  local sixPool = openPool(sixHost, "interactive")
+  Assert.equal(#sixHost.threads, 2, "a six-processor interactive pool runs two workers")
+  shutdownPool(sixPool, sixHost)
+  local batchHost = newThreadHost(6)
+  local batchPool = openPool(batchHost, "batch")
+  Assert.equal(#batchHost.threads, 2, "a six-processor batch pool keeps two workers")
+  shutdownPool(batchPool, batchHost)
+end
+
+-- Non-required interactive work keeps a single physical slot: a second
+-- near/sweep job waits while the first runs, including while the first
+-- result is prepared but unpublished, and proceeds once the slot drains.
+-- Both background priorities share one parametrized pass plus one mixed
+-- sweep-then-near pass.
+function T.non_required_work_keeps_a_single_interactive_slot()
+  for _, priority in ipairs({ NEAR, SWEEP }) do
+    local host = newThreadHost(6)
+    local pool = openPool(host, "interactive")
+    local generation = "test-generation-single-slot-" .. tostring(priority)
+    selectGeneration(pool, host, generation, 1)
+    requestJob(
+      pool,
+      host,
+      makeJob({
+        generation = generation,
+        epoch = 1,
+        kind = "map",
+        key = "60",
+        priority = priority,
+        sizeClass = "normal",
+        payload = mapPayload(60),
+      })
+    )
+    requestJob(
+      pool,
+      host,
+      makeJob({
+        generation = generation,
+        epoch = 1,
+        kind = "map",
+        key = "61",
+        priority = priority,
+        sizeClass = "normal",
+        payload = mapPayload(61),
+      })
+    )
+    updatePool(pool, host)
+    Assert.equal(poolStatus(pool, host, "map:60"), "running", "the first background job runs")
+    Assert.equal(poolStatus(pool, host, "map:61"), "queued", "the second background job waits for the single slot")
+    if priority == NEAR then
+      pushCompletion(
+        host,
+        preparedCompletion({
+          workerId = 1,
+          epoch = 1,
+          generation = generation,
+          kind = "map",
+          key = "60",
+          stageName = dispatchedStage(host, 1, 1),
+        })
+      )
+      updatePool(pool, host, 0)
+      Assert.equal(poolStatus(pool, host, "map:60"), "prepared", "the completion pins its worker")
+      Assert.equal(
+        poolStatus(pool, host, "map:61"),
+        "queued",
+        "a prepared background result still holds the single slot"
+      )
+      updatePool(pool, host)
+      Assert.deepEqual(host.dispatched, { "map:60", "map:61" }, "the waiting job proceeds once the slot drains")
+      Assert.equal(poolStatus(pool, host, "map:61"), "running")
+    end
+    shutdownPool(pool, host)
+  end
+  local host = newThreadHost(6)
+  local pool = openPool(host, "interactive")
+  local generation = "test-generation-single-slot-mixed"
+  selectGeneration(pool, host, generation, 1)
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "70",
+      priority = SWEEP,
+      sizeClass = "normal",
+      payload = mapPayload(70),
+    })
+  )
+  updatePool(pool, host)
+  Assert.equal(poolStatus(pool, host, "map:70"), "running")
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "71",
+      priority = NEAR,
+      sizeClass = "normal",
+      payload = mapPayload(71),
+    })
+  )
+  updatePool(pool, host, 0)
+  Assert.equal(poolStatus(pool, host, "map:71"), "queued", "near work waits while the single background slot is held")
+  shutdownPool(pool, host)
+end
+
+-- Required work takes the free slot beside running background work: the
+-- background job keeps its worker, the required job dispatches to the
+-- other worker, and a further background job stays queued.
+function T.required_work_dispatches_beside_running_background_work()
+  local host = newThreadHost(6)
+  local pool = openPool(host, "interactive")
+  local generation = "test-generation-required-beside-background"
+  selectGeneration(pool, host, generation, 1)
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "70",
+      priority = SWEEP,
+      sizeClass = "normal",
+      payload = mapPayload(70),
+    })
+  )
+  updatePool(pool, host)
+  Assert.equal(poolStatus(pool, host, "map:70"), "running", "the background job occupies its worker")
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "71",
+      priority = REQUIRED,
+      sizeClass = "normal",
+      payload = mapPayload(71),
+    })
+  )
+  updatePool(pool, host)
+  Assert.deepEqual(
+    host.dispatched,
+    { "map:70", "map:71" },
+    "required work uses the free slot without preempting background work"
+  )
+  Assert.equal(poolStatus(pool, host, "map:70"), "running", "the background job keeps its worker")
+  Assert.equal(poolStatus(pool, host, "map:71"), "running")
+  Assert.equal(#inputChannel(host, 2).log, 1, "the required job takes the second worker")
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "72",
+      priority = SWEEP,
+      sizeClass = "normal",
+      payload = mapPayload(72),
+    })
+  )
+  updatePool(pool, host, 0)
+  Assert.equal(
+    poolStatus(pool, host, "map:72"),
+    "queued",
+    "a second background job waits while the single background slot is held"
+  )
   shutdownPool(pool, host)
 end
 

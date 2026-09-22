@@ -262,13 +262,12 @@ local function processorCount()
   return 1
 end
 
--- Fixed physical capacity, not a function of job families: exactly one
--- interactive compiler, at most two batch compilers. No family label
--- changes this count.
+-- Bounded physical capacity as a function of host processors: at most two
+-- compilers, at least one. Batch and interactive share this bound; interactive
+-- background work is admission-limited to a single slot in _eligibleRecord.
+-- No family label changes the worker count.
 local function workerCount(mode)
-  if mode == "interactive" then
-    return 1
-  end
+  assert(mode == "batch" or mode == "interactive", "compiler pool mode is invalid")
   return math.max(1, math.min(2, processorCount() - 1))
 end
 
@@ -777,6 +776,21 @@ local function priorityHeads(self, priority)
   return heads
 end
 
+-- Physical occupancy behind the interactive single background slot: any
+-- worker holding a running or prepared-pinned job counts, whatever its
+-- priority or epoch. Prepared results pin their worker until publication
+-- drains them, so slots cover both states without consulting the queue.
+---@param self CompilerPool
+---@return boolean
+local function backgroundSlotHeld(self)
+  for _, worker in ipairs(self.workers) do
+    if worker.slot ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
 function CompilerPool:_eligibleRecord()
   if self.quiescing or self.queuedCount == 0 then
     return nil
@@ -795,6 +809,13 @@ function CompilerPool:_eligibleRecord()
     return nil
   end
   for _, priority in ipairs(PRIORITIES) do
+    -- Interactive background work keeps a single physical slot: while any
+    -- worker holds a running or prepared-pinned job, no non-required job
+    -- may dispatch. Required work stays exempt and takes any free worker
+    -- without preempting the held slot.
+    if self.mode == "interactive" and priority ~= 0 and backgroundSlotHeld(self) then
+      return nil
+    end
     for _, node in ipairs(priorityHeads(self, priority)) do
       local record = self.jobs[node.key]
       if record ~= nil and record.node == node and record.state == "queued" then
