@@ -72,11 +72,16 @@ FieldPresentationResources.__index = FieldPresentationResources
 ---@return table<string, FieldPresentationApplicationPresenter>
 local function buildPresenters(owner)
   local function drawPokemon(presentation, _)
-    assert(owner.partyScreenRenderer, "party screen renderer is unavailable"):draw(
-      presentation,
-      assert(presentation and presentation.layout, "the party application presents its layout"),
-      assert(owner.monIconProvider, "party icon provider is unavailable")
-    )
+    local status = assert(presentation, "the party application presents its status")
+    local plan = assert(status.presentation, "the party application presents its plan")
+    local hostGraphics = love and love.graphics
+    assert(type(hostGraphics) == "table", "party drawing requires its host graphics namespace")
+    ApplicationPresentation.draw(hostGraphics, {
+      graphics = hostGraphics,
+      partyScreenRenderer = assert(owner.partyScreenRenderer, "party screen renderer is unavailable"),
+      icons = assert(owner.monIconProvider, "party icon provider is unavailable"),
+      text = assert(owner.textRenderer, "party text renderer is unavailable"),
+    }, status, plan)
   end
   local function drawTrainerCard(presentation, runtime)
     local fieldRuntime = assert(runtime, "the card application requires field runtime")
@@ -145,7 +150,7 @@ function FieldPresentationResources.new(runtime)
       manifest = runtime.uiManifest,
       text = textRenderer,
     })
-    self.partyScreenRenderer = PartyScreenRenderer.new()
+    self.partyScreenRenderer = PartyScreenRenderer.new({ text = textRenderer })
     self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs)
     -- Bag presentation resolves eagerly beside the party icons: field entry
     -- boots only when the compiled item/bag caches are present, and the

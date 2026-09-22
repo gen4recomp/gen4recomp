@@ -944,6 +944,7 @@ function FieldRuntime:_load()
     self.presentationWindows = {
       start_menu = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
       bag = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+      party = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
     }
     self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
 
@@ -1383,13 +1384,20 @@ function FieldRuntime:_applicationDescriptors()
       effect = playSequence,
     })
   end
-  local function measurePartyViewport()
-    return self.viewport.width, self.viewport.height
-  end
   local function partyScreenFactory()
+    local windowMemory = assert(
+      self.presentationWindows and self.presentationWindows.party,
+      "the party wrapper requires its runtime window memory"
+    )
+    local partyOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.party or nil
+    local function measureDisplay()
+      return self.presentationDisplay
+    end
     return PartyScreenState.new({
       service = self.monService,
-      measureViewport = measurePartyViewport,
+      measureDisplay = measureDisplay,
+      windowState = windowMemory,
+      overrides = partyOverrides,
     })
   end
   local function bagFactory()

@@ -438,6 +438,8 @@ function PartyScreenController:updateFixed(uiInput)
       self:_pointerMove(event)
     elseif event.type == "pointer_up" then
       self:_pointerUp(event)
+    elseif event.type == "pointer_cancel" then
+      self:cancelPointerCapture()
     elseif event.type == "menu" or event.type == "pointer_scroll" then
       -- A child application's own input policy applies: the synthesized
       -- menu edge and scroll events never drive the party screen.

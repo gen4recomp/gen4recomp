@@ -184,12 +184,13 @@ function T.tests.switch_through_the_screen_reorders_once_and_returns_to_field()
     Assert.equal(status.applicationId, PARTY_APPLICATION)
 
     -- Slot 0 is under the cursor: confirm opens the action choice,
-    -- confirm again starts the switch, down moves to slot 1, confirm swaps.
+    -- confirm again starts the switch, right moves within the top row to
+    -- slot 1, confirm swaps.
     confirm(game)
     confirm(game)
-    state:keypressed("s")
+    state:keypressed("d")
     game:step()
-    state:keyreleased("s")
+    state:keyreleased("d")
     confirm(game)
     Assert.equal(service:partyRevision(), revision + 1, "the screen switch bumps the revision exactly once")
     Assert.deepEqual(
