@@ -1,5 +1,5 @@
--- Renders the authentic HGSS Trainer Card front into the viewport's centered
--- 4:3 reference frame: the generated card art (the manifest's
+-- Renders the authentic HGSS Trainer Card front through one resolved
+-- logical placement: the generated card art (the manifest's
 -- `hgss.trainer_card.front` asset at its front rect) plus the audited front
 -- text layout from ov51_021E6F18 in asm/overlay_trainer_card_main.s at the
 -- pinned decomp commit 008257708 — the front windows created from the
@@ -21,16 +21,16 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
-local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@class TrainerCardRenderer
 ---@field _graphics love.graphics
 ---@field _text FieldTextRenderer the shared glyph atlas/text drawing collaborator
 ---@field _cardImage love.Image?
 ---@field _cardQuad love.Quad?
----@field card { front: FieldDialogueTheme.Rect } the resolved manifest front surface
+---@field card { front: { x: number, y: number, width: number, height: number } } the resolved manifest front surface
 local TrainerCardRenderer = {}
 TrainerCardRenderer.__index = TrainerCardRenderer
 
@@ -122,19 +122,18 @@ function TrainerCardRenderer:_buildQuads()
   self._cardQuad = lg.newQuad(rect.x, rect.y, rect.width, rect.height, card:getWidth(), card:getHeight())
 end
 
--- Draws the canonical card front into viewport.referenceFrame: the card art
--- over the manifest front rect, then the audited labels and the two
--- authoritative values (right-aligned per the source prints). The
--- presentation carries only the implemented profile fields, so the label
--- rows for unimplemented values stay empty and nothing is fabricated.
--- No-op (and no state touched) when this renderer has no images. Restores
--- canvas, shader, scissor, blend, depth, wireframe, cull, and color
--- afterwards.
+-- Draws the canonical card front through the resolved placement: the card
+-- art over the manifest front rect, then the audited labels and the two
+-- authoritative values (right-aligned per the source prints), all in logical
+-- coordinates under one shared root transform. The presentation carries
+-- only the implemented profile fields, so the label rows for unimplemented
+-- values stay empty and nothing is fabricated. No-op (and no state touched)
+-- when this renderer has no images. Restores canvas, shader, scissor,
+-- blend, depth, wireframe, cull, and color afterwards.
 
 ---@param presentation table<string, unknown>?
----@param viewport { referenceFrame: FieldDialogueTheme.Rect }
----@param presentationScale number positive integer scale selected for this surface
-function TrainerCardRenderer:draw(presentation, viewport, presentationScale)
+---@param placement table<string, unknown>? the resolved full frame/clip placement
+function TrainerCardRenderer:draw(presentation, placement)
   if not presentation or not self._cardImage then
     return
   end
@@ -144,46 +143,29 @@ function TrainerCardRenderer:draw(presentation, viewport, presentationScale)
   assert(type(presentation.money) == "number", "the card presentation requires money")
   assert(type(presentation.playTimeSeconds) == "number", "the card presentation requires play time")
   assert(
-    type(presentationScale) == "number"
-      and presentationScale > 0
-      and presentationScale == presentationScale
-      and presentationScale ~= math.huge
-      and presentationScale ~= -math.huge
-      and presentationScale == math.floor(presentationScale),
-    "TrainerCardRenderer:draw requires a positive integer presentation scale"
+    placement ~= nil and type(placement.frame) == "table" and type(placement.scale) == "number",
+    "the card surface requires the placement record"
   )
   FieldDrawState.protectedDraw(lg, function()
-    -- Trainer Card is an application surface, not field-attached: it keeps
-    -- the existing placement contract (scale from the caller's integer fit,
-    -- no camera zoom) so it stays independent of field zoom.
-    local ref = viewport.referenceFrame
-    local appScale = presentationScale
-    local layout = {
-      scale = appScale,
-      origin = {
-        x = math.floor(ref.x + (ref.width - FieldDialogueTheme.referenceWidth * appScale) / 2 + 0.5),
-        y = math.floor(ref.y + ref.height - FieldDialogueTheme.referenceHeight * appScale + 0.5),
-      },
-    }
-    lg.intersectScissor(ref.x, ref.y, ref.width, ref.height)
-    lg.translate(layout.origin.x, layout.origin.y)
-    lg.scale(layout.scale, layout.scale)
-    lg.setColor(1, 1, 1, 1)
-    lg.draw(assert(self._cardImage), assert(self._cardQuad), self.card.front.x, self.card.front.y)
-    for _, anchor in ipairs(TrainerCardRenderer.LABEL_ANCHORS) do
-      self._text:drawText(anchor.text, anchor.x, anchor.y)
-    end
-    local name = presentation.name
-    self._text:drawText(name, TrainerCardRenderer.NAME_RIGHT_EDGE - self._text:textWidth(name), 24)
-    local money = tostring(presentation.money)
-    self._text:drawText(money, 152 - self._text:textWidth(money), 48)
-    local totalMinutes = math.floor(presentation.playTimeSeconds / 60)
-    local hours = math.floor(totalMinutes / 60)
-    local minutes = totalMinutes % 60
-    local playTime = string.format("%d:%02d", hours, minutes)
-    self._text:drawText(playTime, 240 - self._text:textWidth(playTime), 128)
-    local trainerId = string.format("%0" .. TrainerCardRenderer.TRAINER_ID_DIGITS .. "d", presentation.visibleTrainerId)
-    self._text:drawText(trainerId, TrainerCardRenderer.TRAINER_ID_RIGHT_EDGE - self._text:textWidth(trainerId), 24)
+    LogicalSurface.draw(lg, placement, function()
+      lg.setColor(1, 1, 1, 1)
+      lg.draw(assert(self._cardImage), assert(self._cardQuad), self.card.front.x, self.card.front.y)
+      for _, anchor in ipairs(TrainerCardRenderer.LABEL_ANCHORS) do
+        self._text:drawText(anchor.text, anchor.x, anchor.y)
+      end
+      local name = presentation.name
+      self._text:drawText(name, TrainerCardRenderer.NAME_RIGHT_EDGE - self._text:textWidth(name), 24)
+      local money = tostring(presentation.money)
+      self._text:drawText(money, 152 - self._text:textWidth(money), 48)
+      local totalMinutes = math.floor(presentation.playTimeSeconds / 60)
+      local hours = math.floor(totalMinutes / 60)
+      local minutes = totalMinutes % 60
+      local playTime = string.format("%d:%02d", hours, minutes)
+      self._text:drawText(playTime, 240 - self._text:textWidth(playTime), 128)
+      local trainerId =
+        string.format("%0" .. TrainerCardRenderer.TRAINER_ID_DIGITS .. "d", presentation.visibleTrainerId)
+      self._text:drawText(trainerId, TrainerCardRenderer.TRAINER_ID_RIGHT_EDGE - self._text:textWidth(trainerId), 24)
+    end)
   end)
 end
 

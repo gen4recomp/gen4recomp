@@ -16,7 +16,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
-local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
+local PixelScale = require("libs.ui.src.PixelScale")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 local T = {}
@@ -25,7 +25,17 @@ local T = {}
 -- never reloads it from the cache itself.
 local MANIFEST = FieldUiFixture.manifest()
 
-local CANONICAL = FieldViewport.new(256, 192, { mode = "expanded" })
+-- Resolved placements replace the old viewport+scale call shape: the
+-- renderer draws through one full frame/clip record and never derives
+-- host math itself.
+local function placementFor(x, y, width, height, options)
+  return assert(
+    PixelScale.placeFixed({ x = x, y = y, width = width, height = height }, 256, 192, options),
+    "the probe host must admit a card placement"
+  )
+end
+
+local CANONICAL_PLACEMENT = placementFor(0, 0, 256, 192)
 
 local function throwsCode(code, fn)
   local ok, err = pcall(fn)
@@ -193,34 +203,34 @@ end
 
 function T.draw_is_a_noop_without_a_presentation()
   local renderer = cardRenderer(renderedGraphics())
-  renderer:draw(nil, CANONICAL, 1)
+  renderer:draw(nil, CANONICAL_PLACEMENT)
 end
 
-function T.draw_uses_the_supplied_integer_scale_for_a_640_by_480_reference_frame()
+function T.draw_uses_the_resolved_placement_for_a_640_by_480_host()
   local graphics = renderedGraphics()
   local renderer = cardRenderer(graphics)
-  local viewport = FieldViewport.new(640, 480, { mode = "expanded" })
+  local placement = placementFor(0, 0, 640, 480)
 
-  renderer:draw(presentation(), viewport, 2)
+  renderer:draw(presentation(), placement)
 
   Assert.deepEqual(graphics.transforms, {
-    { "translate", 64, 96 },
+    { "translate", 64, 48 },
     { "scale", 2, 2 },
-  }, "the card uses the caller's fitted integer scale")
+  }, "the card draws through the supplied placement transform")
 end
 
-function T.draw_rejects_a_fractional_active_scale()
+function T.draw_rejects_a_missing_placement()
   local renderer = cardRenderer(renderedGraphics())
   local err = Assert.throws(function()
-    renderer:draw(presentation(), CANONICAL, 1.5)
+    renderer:draw(presentation(), nil)
   end)
-  Assert.isTrue(tostring(err):find("positive integer", 1, true) ~= nil, "fractional card scales are rejected")
+  Assert.isTrue(tostring(err):find("placement record", 1, true) ~= nil, "a missing placement is rejected")
 end
 
 function T.draw_presents_the_card_art_then_the_audited_labels_and_values()
   local graphics = renderedGraphics()
   local renderer = cardRenderer(graphics)
-  renderer:draw(presentation(), CANONICAL, 1)
+  renderer:draw(presentation(), CANONICAL_PLACEMENT)
 
   local firstDraw = nil ---@type any
   for _, draw in ipairs(graphics.draws) do
@@ -250,7 +260,7 @@ end
 function T.draw_right_aligns_the_name_and_the_five_digit_trainer_id()
   local graphics = renderedGraphics()
   local renderer = cardRenderer(graphics)
-  renderer:draw(presentation({ name = "GOLD", visibleTrainerId = 12345 }), CANONICAL, 1)
+  renderer:draw(presentation({ name = "GOLD", visibleTrainerId = 12345 }), CANONICAL_PLACEMENT)
 
   -- The six audited labels precede the values in draw order; the fixture
   -- glyphs advance 8px each.
@@ -269,7 +279,7 @@ function T.draw_right_aligns_a_multibyte_name_through_the_shared_text_path()
   local graphics = renderedGraphics()
   local multibyte = FieldUiFixture.cardFontDefWithMultibyte()
   local renderer = cardRenderer(graphics, FieldUiFixture.trainerCardCache(multibyte))
-  renderer:draw(presentation({ name = "\195\137lise", visibleTrainerId = 12345 }), CANONICAL, 1)
+  renderer:draw(presentation({ name = "\195\137lise", visibleTrainerId = 12345 }), CANONICAL_PLACEMENT)
 
   local labelGlyphs = 6 + 4 + 5 + 5 + 4 + 17
   -- É advances 6px; l/i/s/e advance 8px each, so the name is 38px wide.
@@ -284,7 +294,7 @@ end
 function T.draw_zero_pads_the_trainer_id_to_five_digits()
   local graphics = renderedGraphics()
   local renderer = cardRenderer(graphics)
-  renderer:draw(presentation({ visibleTrainerId = 0 }), CANONICAL, 1)
+  renderer:draw(presentation({ visibleTrainerId = 0 }), CANONICAL_PLACEMENT)
   drawnGlyphs(graphics, "00000", 112 - 5 * 8, 24, 6 + 4 + 5 + 5 + 4 + 17 + 4 + 1 + 4)
 end
 
@@ -294,7 +304,7 @@ end
 function T.draw_renders_the_authentic_blank_for_unimplemented_value_rows()
   local graphics = renderedGraphics()
   local renderer = cardRenderer(graphics)
-  renderer:draw(presentation(), CANONICAL, 1)
+  renderer:draw(presentation(), CANONICAL_PLACEMENT)
 
   local glyphDraws = {}
   for _, draw in ipairs(graphics.draws) do
@@ -346,7 +356,7 @@ function T.draw_restores_every_graphics_state_it_touches()
     scissor = { 4, 8, 32, 16 },
   })
   local renderer = cardRenderer(lg)
-  renderer:draw(presentation(), FieldViewport.new(1280, 720, { mode = "expanded" }), 3)
+  renderer:draw(presentation(), placementFor(0, 0, 1280, 720))
   Assert.equal(lg.pushDepth(), 0, "the transform stack is balanced")
   Assert.equal(lg.getCanvas(), "canvas")
   Assert.equal(lg.getShader(), "shader")
@@ -374,13 +384,13 @@ function T.draw_error_balances_the_transform_stack()
   local graphics = renderedGraphics({ failOnDrawCall = 1 })
   local renderer = cardRenderer(graphics)
   local ok = pcall(function()
-    renderer:draw(presentation(), CANONICAL, 1)
+    renderer:draw(presentation(), CANONICAL_PLACEMENT)
   end)
   Assert.isFalse(ok, "the draw failure must propagate")
   Assert.equal(graphics.pushDepth(), 0, "a draw error must not leave the transform stack unbalanced")
 end
 
-function T.clips_the_card_to_the_reference_frame_without_changing_placement()
+function T.clips_the_card_to_the_placement_clip_without_changing_origin()
   local graphics = renderedGraphics({
     canvas = "canvas",
     shader = "shader",
@@ -394,20 +404,22 @@ function T.clips_the_card_to_the_reference_frame_without_changing_placement()
     scissor = { 4, 8, 32, 16 },
   })
   local renderer = cardRenderer(graphics)
-  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
-  viewport.referenceFrame = { x = 31, y = 19, width = 255, height = 191 }
-  renderer:draw(presentation(), viewport, 1)
+  local placement = placementFor(0, 0, 750, 560, {
+    maxOverdraw = { left = 4, right = 4, top = 4, bottom = 4 },
+    protectedRect = { x = 8, y = 8, width = 240, height = 176 },
+  })
+  renderer:draw(presentation(), placement)
 
   Assert.deepEqual(graphics.scissorIntersections, {
     {
-      requested = { 31, 19, 255, 191 },
-      effective = { 31, 19, 5, 5 },
+      requested = { 0, 1, 750, 558 },
+      effective = { 4, 8, 32, 16 },
     },
-  }, "trainer card clips to the reference frame and caller scissor")
+  }, "trainer card clips to the placement clip and caller scissor")
   Assert.deepEqual(graphics.transforms, {
-    { "translate", 31, 18 },
-    { "scale", 1, 1 },
-  }, "trainer card keeps its bottom-centered one-x placement")
+    { "translate", -9, -8 },
+    { "scale", 3, 3 },
+  }, "trainer card keeps its full-frame origin at triple pixels")
   local sx, sy, sw, sh = graphics.getScissor()
   Assert.equal(sx, 4)
   Assert.equal(sy, 8)

@@ -14,7 +14,6 @@ local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
-local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 
 local T = {}
@@ -22,8 +21,16 @@ local T = {}
 local CANONICAL_WIDTH = 256
 local CANONICAL_HEIGHT = 192
 
-local function canonicalViewport()
-  return FieldViewport.new(CANONICAL_WIDTH, CANONICAL_HEIGHT, { mode = "expanded" })
+local function canonicalPlacement()
+  local PixelScale = require("libs.ui.src.PixelScale")
+  return assert(
+    PixelScale.placeFixed(
+      { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
+      CANONICAL_WIDTH,
+      CANONICAL_HEIGHT
+    ),
+    "the canonical host must admit a one-x card placement"
+  )
 end
 
 -- The demo presentation: the implemented profile fields only.
@@ -58,7 +65,7 @@ local function canonicalRender(scope, cacheFs, manifest, presentation)
   local canvas = scope:own(lg.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
-  renderer:draw(presentation, canonicalViewport(), 1)
+  renderer:draw(presentation, canonicalPlacement())
   lg.setCanvas()
   return scope:own(canvas:newImageData())
 end
@@ -323,7 +330,12 @@ function T.restores_graphics_state_after_draw(scope)
   lg.setColor(0.2, 0.4, 0.6, 0.8)
   lg.setScissor(4, 8, 32, 16)
 
-  renderer:draw(demoPresentation(), FieldViewport.new(1280, 720, { mode = "expanded" }), 3)
+  local PixelScale = require("libs.ui.src.PixelScale")
+  local restorePlacement = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 1280, height = 720 }, CANONICAL_WIDTH, CANONICAL_HEIGHT),
+    "the probe host must admit a card placement"
+  )
+  renderer:draw(demoPresentation(), restorePlacement)
 
   local function assertRestored(canvasExpected, shaderExpected)
     Assert.equal(lg.getCanvas(), canvasExpected)
@@ -363,6 +375,105 @@ function T.release_frees_the_owned_images(scope)
   renderer:release()
 
   Assert.isNil(renderer._cardImage)
+end
+
+-- Near-fit margin crop keeps every profile value visible: the shared
+-- bounded-overdraw policy admits a triple-pixel placement with a
+-- three-logical-pixel crop per edge on a 750x560 host (doubled and centred
+-- on 640x480, identical physical result at DPI 2), and the card draws
+-- through that supplied placement with the full card inside the visible clip
+-- while cropped margins stay clear.
+function T.near_fit_crop_keeps_all_profile_text_visible(scope)
+  local PixelScale = require("libs.ui.src.PixelScale")
+  local budget = { left = 4, right = 4, top = 4, bottom = 4 }
+  local protected = { x = 8, y = 8, width = 240, height = 176 }
+  local near = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 750, height = 560 }, CANONICAL_WIDTH, CANONICAL_HEIGHT, {
+      maxOverdraw = budget,
+      protectedRect = protected,
+    }),
+    "the 750x560 host must admit a cropped card placement"
+  )
+  Assert.equal(near.pixelScale, 3, "the near-fit host uses triple pixels")
+  Assert.deepEqual(near.crop, { left = 3, right = 3, top = 3, bottom = 3 }, "near-fit crop")
+  local exact = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, CANONICAL_WIDTH, CANONICAL_HEIGHT, {
+      maxOverdraw = budget,
+      protectedRect = protected,
+    }),
+    "the 640x480 host must admit a card placement"
+  )
+  Assert.equal(exact.pixelScale, 2, "the exact-fit host stays doubled")
+  Assert.deepEqual(exact.crop, { left = 0, right = 0, top = 0, bottom = 0 }, "exact-fit crop")
+  local dense = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 375, height = 280 }, CANONICAL_WIDTH, CANONICAL_HEIGHT, {
+      maxOverdraw = budget,
+      protectedRect = protected,
+      pixelRatio = 2,
+    }),
+    "the DPI-2 host must admit the same physical placement"
+  )
+  Assert.equal(dense.pixelScale, 3, "the DPI-2 host matches the physical triple pixels")
+  Assert.deepEqual(dense.crop, { left = 3, right = 3, top = 3, bottom = 3 }, "DPI-2 crop")
+
+  local presentation = demoPresentation()
+  presentation.name = "ABCDEFG"
+  presentation.visibleTrainerId = 65535
+  presentation.money = 12345
+  presentation.playTimeSeconds = 3723
+  local cacheFs = FieldUiFixture.trainerCardCache()
+  local manifest = FieldUiFixture.manifest()
+  local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
+  local renderer = scope:own(TrainerCardRenderer.new({ cacheFs = cacheFs, manifest = manifest, text = text }))
+  local lg = love.graphics
+  local canvas = scope:own(lg.newCanvas(750, 560))
+  lg.setCanvas(canvas)
+  lg.clear(0, 0, 0, 0)
+  renderer:draw(presentation, near)
+  lg.setCanvas()
+  local data = scope:own(canvas:newImageData())
+  local clip = assert(near.clipRect, "the cropped placement must carry its visible clip")
+  local function hostPoint(lx, ly)
+    return near.origin.x + lx * near.scale, near.origin.y + ly * near.scale
+  end
+  -- every audited text anchor (label origins plus the right-aligned value
+  -- edges) maps inside the visible clip, so no profile value hides in a
+  -- cropped margin
+  local anchors = {
+    { 16, 24 },
+    { 136, 24 },
+    { 16, 48 },
+    { 16, 104 },
+    { 16, 128 },
+    { 16, 144 },
+    { 240, 24 },
+    { 112, 24 },
+    { 152, 48 },
+    { 240, 128 },
+  }
+  for _, anchor in ipairs(anchors) do
+    local hx, hy = hostPoint(anchor[1], anchor[2])
+    Assert.isTrue(
+      hx >= clip.x and hy >= clip.y and hx < clip.x + clip.width and hy < clip.y + clip.height,
+      string.format("anchor (%d,%d) stays inside the visible clip", anchor[1], anchor[2])
+    )
+  end
+  -- the full card paints inside the clip: its centre is opaque art, while
+  -- the cropped corners stay clear
+  local cx, cy = hostPoint(128, 96)
+  local _, _, _, ca = data:getPixel(math.floor(cx), math.floor(cy))
+  Assert.isTrue(ca > 0, "the card art paints inside the visible clip")
+  local function assertClear(px, py, label)
+    local r, g, b, a = data:getPixel(px, py)
+    Assert.isTrue(
+      a == 0,
+      label .. string.format(" stays clear (got %s,%s,%s,%s)", tostring(r), tostring(g), tostring(b), tostring(a))
+    )
+  end
+  assertClear(0, 0, "cropped top-left margin")
+  assertClear(749, 0, "cropped top-right margin")
+  assertClear(0, 559, "cropped bottom-left margin")
+  assertClear(749, 559, "cropped bottom-right margin")
 end
 
 return GraphicsSmoke.suite(T)

@@ -34,12 +34,25 @@ local UNLOCK_FLAGS = {
 }
 
 -- The production composition: a fresh field boot with no descriptor options;
--- the real unlock flag makes the production Trainer Card interactive.
+-- the real unlock flag makes the production Trainer Card interactive. The
+-- boot carries an explicit single-display topology matching the drawable so
+-- the runtime installs its resize-tracking provider: later
+-- resizePresentation calls (including physical pairs) then measure through
+-- the resized topology instead of the context default.
 local function bootGame()
+  local bootWidth, bootHeight = love.graphics.getDimensions()
   local game = harness():boot({
     versionId = AcceptanceHarness.defaultVersion(),
     map = "MAP_BURNED_TOWER_1F",
     save = "fresh",
+    fieldOptions = {
+      screenTopology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = bootWidth, height = bootHeight },
+        touch = false,
+        role = "world",
+      }),
+    },
   })
   game:waitForFieldEntry()
   game:setWorldState({ flag = FieldScriptSymbols.flagsByName.FLAG_GOT_TRAINER_CARD })
@@ -576,6 +589,129 @@ function T.tests.menu_child_return_keeps_one_lifetime_twelve_tick_fades_and_plan
     Assert.equal(#(widePlan.coverage or {}), 0, "a window must not clear pixels outside itself")
     pressMenuEdge(game)
     stepTo("closed", 16, "the windowed menu must close")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- The Trainer Card follows the shared interface policy instead of the
+-- field camera: on a wide host it owns one source-sized content pane in a
+-- draggable window whose position survives a close/reopen cycle, a field
+-- viewport refit keeps its logical content and input geometry stable, a
+-- physical pair hosts it on the auxiliary surface without a window, and
+-- closing reports exactly one result.
+function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
+  local game = bootGame()
+  local ok, err = xpcall(function()
+    local runtime = game.runtime
+    local function openCard()
+      -- The menu persists across a child close (the host returns to
+      -- the menu phase), while the menu edge toggles: pressing it while
+      -- the menu is already open would close it, so only open the menu
+      -- from outside it. Both paths launch the card from an open menu.
+      if runtime.applicationHost:status().phase ~= "menu" then
+        openMenu(game)
+      end
+      activateActionById(game, "vanilla.trainer_card")
+      local ticks = 0
+      while runtime.applicationHost:status().phase ~= "application" and ticks < 24 do
+        game:step()
+        ticks = ticks + 1
+      end
+      Assert.equal(runtime.applicationHost:status().phase, "application", "the card must open as a child application")
+      return assert(runtime.applicationHost:status().application, "the open card must expose its status")
+    end
+    local function closeCard()
+      game.runtime:pressCancel()
+      game:step()
+      game.runtime:releaseCancel()
+      Assert.equal(runtime.applicationHost:status().phase, "fading_in", "closing the card must start the fade-in")
+      local ticks = 0
+      while runtime.applicationHost:status().phase ~= "menu" and ticks < 16 do
+        game:step()
+        ticks = ticks + 1
+      end
+      Assert.equal(runtime.applicationHost:status().phase, "menu", "the close must return to the menu")
+    end
+    ensureTouchPlacement(game, 1280, 720)
+    local plan = assert(openCard().presentation, "the open card must publish its presentation plan")
+    Assert.equal(type(plan.inputKey), "string", "the card plan must name its input geometry")
+    local contentKey = plan.inputKey
+    Assert.equal(#plan.panes, 1, "the wide card shows one content pane")
+    local placement = assert(plan.panes[1].placement, "the content pane must carry its placement")
+    Assert.equal(placement.logicalWidth, 256, "the card content stays source-sized")
+    Assert.equal(placement.logicalHeight, 192, "the card content stays source-sized")
+    local window = assert(plan.window, "the wide card must own its draggable window")
+    local grab = assert(window.grabRect, "the window must carry its host grab strip")
+    local outerBefore = { x = window.outer.frame.x, y = window.outer.frame.y }
+    local startX, startY = grab.x + grab.width / 2, grab.y + grab.height / 2
+    runtime.input:pointerDown("touch:1", startX, startY)
+    game:step()
+    runtime.input:pointerMove("touch:1", startX + 120, startY + 60)
+    game:step()
+    runtime.input:pointerUp("touch:1", startX + 120, startY + 60)
+    game:step()
+    local moved =
+      assert(runtime.applicationHost:status().application.presentation, "the card must keep its plan after the drag")
+    Assert.equal(runtime.applicationHost:status().phase, "application", "the title drag must not close the card")
+    local movedOuter = assert(moved.window, "the card must stay windowed after the drag").outer.frame
+    closeCard()
+    local reopened = assert(openCard().presentation, "the reopened card must publish its plan")
+    local reopenedOuter = assert(reopened.window, "the reopened card must own its window").outer.frame
+    Assert.equal(reopenedOuter.x, movedOuter.x, "the drag position survives the reopen")
+    Assert.equal(reopenedOuter.y, movedOuter.y, "the drag position survives the reopen")
+    Assert.isTrue(
+      reopenedOuter.x ~= outerBefore.x or reopenedOuter.y ~= outerBefore.y,
+      "the drag must have moved the window"
+    )
+    -- a field viewport refit (which drives field zoom on the old path)
+    -- keeps the card's logical content and input geometry stable
+    game.runtime:resizePresentation(1280, 600, touchTopology(1280, 600))
+    game:step()
+    local refit =
+      assert(runtime.applicationHost:status().application.presentation, "the card must keep its plan across the refit")
+    Assert.equal(refit.inputKey, contentKey, "the refit must not change the input geometry")
+    Assert.equal(#refit.panes, 1, "the refit keeps one content pane")
+    Assert.equal(
+      assert(refit.panes[1].placement, "the refit pane must carry its placement").logicalWidth,
+      256,
+      "the refit keeps source-sized content"
+    )
+    -- a physical pair hosts the card on the auxiliary surface with no window
+    game.runtime:resizePresentation(
+      800,
+      600,
+      ScreenTopology.dualDisplay({
+        id = "main",
+        rect = { x = 400, y = 100, width = 256, height = 192 },
+        touch = true,
+        role = "world",
+      }, {
+        id = "sub",
+        rect = { x = 100, y = 300, width = 256, height = 192 },
+        touch = false,
+        role = "auxiliary",
+      })
+    )
+    game:step()
+    local dual =
+      assert(runtime.applicationHost:status().application.presentation, "the card must keep its plan on the pair")
+    Assert.isNil(dual.window, "the auxiliary card needs no window")
+    local dualFrame = assert(dual.panes[1].placement, "the dual pane must carry its placement").frame
+    Assert.isTrue(
+      dualFrame.x >= 100
+        and dualFrame.y >= 300
+        and dualFrame.x + dualFrame.width <= 356
+        and dualFrame.y + dualFrame.height <= 492,
+      "the pair hosts the card on the auxiliary surface"
+    )
+    -- closing reports exactly once: the return reaches the menu and the
+    -- card opens again cleanly
+    closeCard()
+    openCard()
+    closeCard()
   end, debug.traceback)
   game:close()
   if not ok then

@@ -81,8 +81,8 @@ function T.tests.production_factory_registers_the_card_and_resume_drives_the_pre
     Assert.equal(status.trainerId, runtime.playerData.profile.trainerId)
     Assert.keySet(
       status,
-      "money,name,open,playTimeSeconds,trainerId,visibleTrainerId",
-      "the card exposes the implemented profile fields"
+      "money,name,open,playTimeSeconds,presentation,trainerId,visibleTrainerId",
+      "the card exposes the implemented profile fields plus its presentation plan"
     )
 
     -- The saved bucket wins over the initial manifest after a resume: return

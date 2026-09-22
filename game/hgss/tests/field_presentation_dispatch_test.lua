@@ -273,18 +273,56 @@ function T.pokemon_routes_only_to_the_party_presenter()
 end
 
 function T.trainer_card_routes_only_to_the_card_presenter()
+  local PixelScale = require("libs.ui.src.PixelScale")
   local sink, calls = {}, {}
-  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-    local presentation = { name = "GOLD" }
-    local viewport = { referenceFrame = { x = 0, y = 0, width = 256, height = 192 } }
-    local runtime = drawRuntime(viewport)
-    resources:drawApplication(FieldApplicationIds.TRAINER_CARD, presentation, runtime)
-    Assert.equal(#sink, 1, "exactly one presenter draws")
-    Assert.equal(sink[1][1], "card", "the Trainer Card application draws through the card renderer")
-    Assert.equal(sink[1][2], presentation, "the presenter receives the host application presentation")
-    Assert.equal(sink[1][3], runtime.viewport, "the card presenter draws into the runtime viewport")
-    resources:dispose()
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local presentation = {
+        presentation = {
+          panes = {
+            {
+              id = "content",
+              placement = assert(
+                PixelScale.placeFixed({ x = 0, y = 0, width = 256, height = 192 }, 256, 192),
+                "the probe host must admit a card placement"
+              ),
+              interactive = true,
+            },
+          },
+          content = {},
+          inputKey = "trainer-card",
+          render = function(borrowed, view, plan)
+            assert(borrowed.trainerCardRenderer, "the card render borrows its renderer"):draw(
+              view,
+              assert(plan.panes[1] and plan.panes[1].placement, "the card pane carries its placement")
+            )
+          end,
+          mapInput = function()
+            return nil
+          end,
+          coverage = {},
+          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+        },
+      }
+      resources:drawApplication(FieldApplicationIds.TRAINER_CARD, presentation, drawRuntime())
+      Assert.equal(#sink, 1, "exactly one presenter draws")
+      Assert.equal(sink[1][1], "card", "the Trainer Card application draws through the card renderer")
+      Assert.equal(sink[1][2], presentation, "the presenter receives the host application presentation")
+      Assert.equal(
+        sink[1][3],
+        presentation.presentation.panes[1].placement,
+        "the card presenter draws through the planned pane placement"
+      )
+      Assert.isNil(calls.card, "drawing never releases the borrowed card renderer")
+      resources:dispose()
+    end)
   end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.bag_routes_only_to_the_bag_presenter()
