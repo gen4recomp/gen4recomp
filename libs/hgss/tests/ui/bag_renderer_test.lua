@@ -205,12 +205,6 @@ local function manifest()
               hitRect = { x = 96, y = 160, width = 96, height = 32 },
             },
           },
-          buttons = {
-            { x = 8, y = 136, width = 80, height = 16 },
-            { x = 104, y = 136, width = 80, height = 16 },
-            { x = 8, y = 168, width = 80, height = 16 },
-            { x = 104, y = 168, width = 80, height = 16 },
-          },
         },
         quantity = {
           digits = {
@@ -1356,7 +1350,7 @@ local function textInRect(content, needle, rect)
 end
 
 function T.nested_states_label_their_responsive_buttons()
-  local buttons = manifest().interactive.overlays.actionMenu.buttons
+  local actionSlots = manifest().interactive.overlays.actionMenu.slots
   local function drawFor(state)
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
     local content = text()
@@ -1380,10 +1374,13 @@ function T.nested_states_label_their_responsive_buttons()
   Assert.equal(#graphics.rectangles, 0, "nested states never fall back to primitive outlines")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   local confirmGraphics, confirmContent = drawFor("toss_confirm")
-  Assert.isTrue(textInRect(confirmContent, "YES", buttons[3]), "the confirmation state labels its confirm button")
+  Assert.isTrue(
+    textInRect(confirmContent, "YES", actionSlots[3].textRect),
+    "the confirmation state labels its confirm button"
+  )
   Assert.equal(#confirmGraphics.rectangles, 0, "the confirmation state never falls back to primitive outlines")
   local moveGraphics, moveContent = drawFor("move_select")
-  Assert.isTrue(textInRect(moveContent, "YES", buttons[3]), "move selection labels its confirm button")
+  Assert.isTrue(textInRect(moveContent, "YES", actionSlots[3].textRect), "move selection labels its confirm button")
   Assert.equal(#moveGraphics.rectangles, 0, "move selection never falls back to primitive outlines")
 end
 

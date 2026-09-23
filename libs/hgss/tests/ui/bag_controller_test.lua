@@ -68,12 +68,6 @@ local function manifest()
             { hitRect = { x = 8, y = 168, width = 80, height = 16 } },
             { hitRect = { x = 104, y = 168, width = 80, height = 16 } },
           },
-          buttons = {
-            { x = 8, y = 136, width = 80, height = 16 },
-            { x = 104, y = 136, width = 80, height = 16 },
-            { x = 8, y = 168, width = 80, height = 16 },
-            { x = 104, y = 168, width = 80, height = 16 },
-          },
         },
         quantity = {
           controls = {
