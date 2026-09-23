@@ -130,12 +130,16 @@ local function cellBlock(objs)
   )
 end
 
-function T.accepts_lz10_wrapped_nitro_container()
+-- Transport compression is normalized by NARC/member owners before decode:
+-- an LZ10 wrapper is not a plain G2D container and must be rejected with
+-- the existing magic error, not transparently unwrapped here.
+function T.lz10_wrapped_bytes_are_not_a_plain_g2d_container()
   local data = literalLz10(container("RECN", {
     cellBlock({ { x = 0, y = 0, tile = 0, pal = 0 } }),
   }))
-  local cell = assert(G2dDecoder.decodeCell(data))
-  Assert.equal(#cell.cells, 1)
+  local out, err = G2dDecoder.decodeCell(data)
+  Assert.isNil(out)
+  Assert.equal(assert(err).code, G2dDecoder.ERROR.MAGIC_INVALID)
 end
 
 function T.cell_chunk_reports_objs_per_cell()

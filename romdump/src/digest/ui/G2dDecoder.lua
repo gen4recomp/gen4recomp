@@ -11,7 +11,6 @@
 local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local Rgb555 = require("libs.codec.src.Rgb555")
-local Lz10 = require("romdump.src.digest.Lz10")
 local FieldFontDecoder = require("romdump.src.digest.ui.FieldFontDecoder")
 
 local G2dDecoder = {}
@@ -113,16 +112,6 @@ local function _blocks(reader, opts)
 end
 
 local function blocks(data, opts, label)
-  -- NARC 8's G2D members use the normal Nitro LZ10 member wrapper. Decode it
-  -- at the shared source-format boundary so callers see the actual G2D
-  -- container and all chunk offsets remain relative to it.
-  if string.byte(data, 1) == 0x10 then
-    local plain, err = Lz10.decode(data)
-    if not plain then
-      error(err, 0)
-    end
-    data = plain
-  end
   local reader = BinaryReader.new(data, label)
   local ok, magic, blks = pcall(_blocks, reader, opts)
   if not ok then

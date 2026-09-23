@@ -13,6 +13,7 @@ local BagCache = require("libs.assets.src.BagCache")
 local BagSources = require("romdump.src.config.BagSources")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+local Lz10 = require("romdump.src.digest.Lz10")
 local HgssArchives = require("romdump.src.config.HgssArchives")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local MonSources = require("romdump.src.config.MonSources")
@@ -903,12 +904,22 @@ function T.hero_edge_colors_carry_the_retail_table(romFs, versionId)
   }, "the compiled edge records match the retail table")
 end
 
+-- Raw NARC members carry their transport wrapper: normalize LZ10 exactly as
+-- the producer member reader does before handing bytes to the plain G2D
+-- decoder. Uncompressed members pass through unchanged.
+local function plainMember(bytes)
+  if string.byte(bytes, 1) ~= 0x10 then
+    return bytes
+  end
+  return assert(Lz10.decode(bytes))
+end
+
 function T.narc8_move_summary_sources_decode_and_resolve_every_semantic_key(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local narc8 = assert(romFs:openNarc("NARC_a_0_0_8"))
   local function assertDecodes(kind, memberId)
     local bytes = assert(narc8:readMember(memberId), "NARC8 member " .. memberId .. " must exist")
-    local record, err = G2dDecoder[kind](bytes, { label = "NARC8 member " .. memberId })
+    local record, err = G2dDecoder[kind](plainMember(bytes), { label = "NARC8 member " .. memberId })
     Assert.notNil(record, "NARC8 member " .. memberId .. " must decode: " .. (err and err.message or "?"))
   end
   assertDecodes("decodePalette", 74)
