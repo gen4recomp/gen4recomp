@@ -42,6 +42,16 @@ local function monsService(ctx)
 end
 
 ---@param ctx table<string, unknown>
+---@return table<string, unknown> starter balls service
+local function starterBallsService(ctx)
+  local services = ctx.services or {}
+  local starterBalls = services.starterBalls
+  assert(starterBalls ~= nil, "choose_starter requires the starter balls service")
+  assert(type(starterBalls.placeStarterBalls) == "function", "the starter balls service must place starter balls")
+  return starterBalls
+end
+
+---@param ctx table<string, unknown>
 ---@return table<string, unknown> provider
 local function starterProvider(ctx)
   local services = ctx.services or {}
@@ -247,6 +257,7 @@ function ChooseStarterTask.poll(state, ctx)
     if not mons:addMon(candidate) then
       MonsErrors.raise(MonsErrors.SAVE_INVALID, "starter publication requires a free party slot", { slot = index })
     end
+    starterBallsService(ctx):placeStarterBalls()
     state.published = true
     if host:status() ~= nil then
       host:close()
