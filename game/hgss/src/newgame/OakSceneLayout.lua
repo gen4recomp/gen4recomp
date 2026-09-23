@@ -106,8 +106,8 @@ end
 function OakSceneLayout.sceneRegions(width, safeFrame, contentWidthCap)
   assert(contentWidthCap > 0, "Oak scene content width cap must be positive")
   local scene = rect(0, safeFrame.y, width, safeFrame.height)
-  local contentWidth = math.min(scene.width, contentWidthCap)
-  local sceneContent = rect(scene.x + (scene.width - contentWidth) / 2, scene.y, contentWidth, scene.height)
+  local contentWidth = math.min(safeFrame.width, contentWidthCap)
+  local sceneContent = rect(safeFrame.x + (safeFrame.width - contentWidth) / 2, scene.y, contentWidth, scene.height)
   return scene, sceneContent
 end
 
@@ -137,7 +137,6 @@ function OakSceneLayout.mode(view)
   return {
     reservesDialogue = view.dialogue ~= nil
       or phase == "name_confirm"
-      or phase == "name_composition_transition"
       or phase == "name_prompt"
       or phase == "name_launch_wait"
       or phase == "final_dialogue"
@@ -160,7 +159,6 @@ function OakSceneLayout.mode(view)
       or phase == "oak_slide_left"
       or phase == "oak_tell_about_yourself",
     selectorActive = phase == "gender_select" or phase == "gender_confirm",
-    nameForward = phase == "name_composition_transition",
     nameConfirm = phase == "name_confirm",
     finalDialogue = phase == "final_dialogue",
     genderQuestion = phase == "gender_question",
@@ -190,28 +188,6 @@ function OakSceneLayout.composedOakRect(startRect, oak, oakRegion, progress)
     y = startRect.y + (targetY - startRect.y) * progress,
     width = oak.width * scale,
     height = oak.height * scale,
-    scale = scale,
-  }
-end
-
-function OakSceneLayout.interpolateSubjectRect(from, to, progress, integerScale)
-  assert(
-    type(progress) == "number"
-      and progress == progress
-      and progress > -math.huge
-      and progress < math.huge
-      and progress >= 0
-      and progress <= 1,
-    "Oak subject interpolation progress is invalid"
-  )
-  assert(from.scale > 0 and to.scale > 0, "Oak subject interpolation scale is invalid")
-  local scale = integerScale and (progress < 0.5 and from.scale or to.scale)
-    or from.scale + (to.scale - from.scale) * progress
-  return {
-    x = from.x + (to.x - from.x) * progress,
-    y = from.y + (to.y - from.y) * progress,
-    width = from.width / from.scale * scale,
-    height = from.height / from.scale * scale,
     scale = scale,
   }
 end

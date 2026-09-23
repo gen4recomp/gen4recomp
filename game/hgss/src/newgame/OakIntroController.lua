@@ -182,7 +182,7 @@ function OakIntroController:press(action)
   elseif phase == "name_edit" then
     local accepted, submitted = self._profile:pressName(action)
     if submitted == "submit" and accepted then
-      self._timeline:beginNameComposition()
+      self._timeline:beginNameComposition(self._profile:gender())
     end
     return accepted
   else
@@ -197,7 +197,7 @@ function OakIntroController:activateNameCell(row, column)
   end
   local accepted = self._profile:activateNameCell(row, column)
   if accepted and self._profile:namingResult() and self._profile:namingResult().kind == "submit" then
-    self._timeline:beginNameComposition()
+    self._timeline:beginNameComposition(self._profile:gender())
   end
   return accepted
 end
@@ -208,7 +208,7 @@ function OakIntroController:activateNameControl(id)
   end
   local accepted = self._profile:activateNameControl(id)
   if accepted and self._profile:namingResult() and self._profile:namingResult().kind == "submit" then
-    self._timeline:beginNameComposition()
+    self._timeline:beginNameComposition(self._profile:gender())
   end
   return accepted
 end

@@ -56,20 +56,10 @@ local function validateSubjectState(view, dialogue, subjectId, subjectWidget, or
   if nameProgress ~= nil then
     assertFiniteProgress(nameProgress, "Oak name composition progress is invalid")
   end
-  local isNameForward = view.phase == "name_composition_transition"
   local isNameConfirm = view.phase == "name_confirm"
   local isFinalDialogue = view.phase == "final_dialogue"
   local isGenderQuestion = view.phase == "gender_question"
-  if isNameForward then
-    assert(nameProgress ~= nil, "Oak name composition progress is invalid")
-    assertFiniteProgress(nameProgress, "Oak name composition progress is invalid")
-    assert(compositionProgress == 1, "Oak gender composition progress is invalid")
-    assert(
-      subjectId == "oak" and ordinarySubject ~= nil and subjectWidget ~= nil,
-      "Oak subject is required for name composition"
-    )
-    assert(dialogue ~= nil, "Oak name composition requires reserved dialogue")
-  elseif isNameConfirm or isFinalDialogue then
+  if isNameConfirm or isFinalDialogue then
     assert(compositionProgress == 1, "Oak gender composition progress is invalid")
     assert(nameProgress == 1, "Oak name composition progress is invalid")
     assert(
@@ -202,36 +192,24 @@ end
 ---@param view table<string, unknown>
 ---@return boolean
 local function usesNameStage(view)
-  return view.phase == "name_composition_transition"
-    or view.phase == "name_confirm"
+  return view.phase == "name_confirm"
     or view.phase == "final_dialogue"
     or (view.phase == "gender_question" and view.nameCompositionProgress == 1)
 end
 
 local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId, subjectWidget, ordinarySubject)
-  local nameProgress = view.nameCompositionProgress
   validateSubjectState(view, dialogue, subjectId, subjectWidget, ordinarySubject)
-  local isNameForward = view.phase == "name_composition_transition"
   local selectorActive = view.phase == "gender_select" or view.phase == "gender_confirm"
   local oakRegion, selectorRegion
   local nameOakRegion, nameChoiceRegion
   local selectedSubject = ordinarySubject
   local needsNameEndpoint = usesNameStage(view)
   if needsNameEndpoint then
-    local genderHost = OakSceneLayout.aboveDialogue(scene, assert(dialogue), gap)
-    local genderRegion = OakSceneLayout.selectorRegions(genderHost, gap)
-    local genderOakRegion = genderRegion
-    local genderOakRect =
-      OakSceneLayout.composedOakRect(assert(ordinarySubject), assert(subjectWidget), genderOakRegion, 1)
     local _, nameOakRegionInner, nameChoiceRegionInner =
       OakSceneLayout.nameStageAndRegions(sceneContent, assert(dialogue), gap)
     nameOakRegion, nameChoiceRegion = nameOakRegionInner, nameChoiceRegionInner
     local nameOakRect = OakSceneLayout.composedOakRect(assert(ordinarySubject), assert(subjectWidget), nameOakRegion, 1)
-    if isNameForward then
-      selectedSubject = OakSceneLayout.interpolateSubjectRect(genderOakRect, nameOakRect, assert(nameProgress), true)
-    else
-      selectedSubject = nameOakRect
-    end
+    selectedSubject = nameOakRect
     oakRegion, selectorRegion = nameOakRegion, nameChoiceRegion
   elseif selectorActive then
     -- The interactive selector hides Oak, so the cards own the full scene
@@ -246,7 +224,7 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
   return selectedSubject, oakRegion, selectorRegion, nameChoiceRegion, selectorActive
 end
 
-local function integerConfirmationEntries(region, preferredScale, alignRight)
+local function integerConfirmationEntries(region, preferredScale, alignRight, bounds)
   local stackWidth = TextButton.REFERENCE_WIDTH
   local stackHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
   local scale = PixelScale.fitPreferred(region, stackWidth, stackHeight, preferredScale)
@@ -266,6 +244,10 @@ local function integerConfirmationEntries(region, preferredScale, alignRight)
     x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
   end
   local y = PixelScale.snapLogical(region.y + (region.height - (height * 2 + 8 * scale)) / 2)
+  if bounds ~= nil then
+    x = math.max(bounds.x, math.min(x, bounds.x + bounds.width - width))
+    y = math.max(bounds.y, math.min(y, bounds.y + bounds.height - height * 2 - 8 * scale))
+  end
   return {
     [0] = {
       key = "yes",
@@ -364,7 +346,8 @@ local function profileLayout(
     end
   end
   if view.phase == "name_confirm" and view.confirmationChoice and view.confirmationChoice.kind == "name" then
-    result.confirmationButtons = integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale), true)
+    result.confirmationButtons =
+      integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale), true, result.safeFrame)
   end
   -- The reusable Naming Screen child is placed by the parent-owned naming
   -- session, never by scene composition: OakIntroState publishes the

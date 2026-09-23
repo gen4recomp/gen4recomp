@@ -496,17 +496,12 @@ function T.gender_rejection_returns_through_question_with_remembered_focus()
   Assert.equal(state:view().genderFocus, 1)
 end
 
-function T.name_composition_uses_exactly_twenty_six_source_frames()
+function T.name_submission_enters_confirmation_immediately()
   local state = advanceToNameEdit()
   state:press("submit")
-  Assert.equal(state:view().phase, "name_composition_transition")
-  Assert.equal(state:view().nameCompositionProgress, 0)
-  state:tick(25)
-  Assert.equal(state:view().phase, "name_composition_transition")
-  Assert.near(state:view().nameCompositionProgress, 25 / 26)
-  state:tick(1)
   Assert.equal(state:view().phase, "name_confirm")
   Assert.equal(state:view().nameCompositionProgress, 1)
+  Assert.equal(state:view().messageKey, "profile.name_confirm.male")
 end
 
 function T.confirmation_completion_activates_an_explicit_yes_choice()
@@ -1251,7 +1246,7 @@ function T.naming_screen_start_submits_regardless_of_focused_cell()
   local state = advanceToNameEdit()
   Assert.isTrue(state:inputText("GOLD"))
   state:press("start")
-  Assert.equal(state:view().phase, "name_composition_transition")
+  Assert.equal(state:view().phase, "name_confirm")
   Assert.equal(state:view().name, "GOLD")
 end
 
@@ -1447,32 +1442,17 @@ function T.invalid_or_oversized_input_is_rejected_without_ever_defaulting()
   Assert.equal(state:view().name, "ABCDEGO", "rejected input must never be silently replaced by a default")
 end
 
-function T.name_submission_advances_directly_to_name_placement_over_twenty_six_frames()
+function T.name_submission_publishes_name_placement_immediately()
   local state = advanceToNameEdit()
   Assert.equal(state:view().genderCompositionProgress, 1)
   state:inputText("GOLD")
   state:press("submit")
   Assert.equal(state:view().genderCompositionProgress, 1, "name submit must keep gender composition at 1")
-  local progress = state:view().nameCompositionProgress
-  Assert.notNil(progress, "name composition progress must be exposed")
-  Assert.equal(progress, 0)
-  local previous = 0
-  for _ = 1, 25 do
-    state:tick(1)
-    local view = state:view()
-    Assert.equal(view.genderCompositionProgress, 1)
-    local current = assert(view.nameCompositionProgress)
-    Assert.isTrue(current > previous, "name progress must strictly increase each tick")
-    Assert.isTrue(current > 0 and current < 1)
-    Assert.isTrue(view.phase ~= "name_confirm", "name_confirm must wait for forward transition")
-    previous = current
-  end
-  state:tick(1)
-  local finished = state:view()
-  Assert.equal(finished.genderCompositionProgress, 1)
-  Assert.equal(finished.nameCompositionProgress, 1)
-  Assert.equal(finished.phase, "name_confirm")
-  Assert.equal(finished.name, "GOLD")
+  local view = state:view()
+  Assert.equal(view.nameCompositionProgress, 1)
+  Assert.equal(view.phase, "name_confirm")
+  Assert.equal(view.messageKey, "profile.name_confirm.male")
+  Assert.equal(view.name, "GOLD")
 end
 
 function T.affirmative_name_answer_keeps_name_placement()
