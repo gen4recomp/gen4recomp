@@ -29,8 +29,19 @@ function T.geometry_preserves_the_audited_rectangles()
   Assert.equal(geometry.cancel.rect.x, 192)
   Assert.equal(geometry.cancel.textRect.width, 56)
   Assert.equal(geometry.descriptionFrame.y, 144)
-  Assert.equal(#geometry.actionButtons, 4)
+  Assert.equal(#geometry.actionSlots, 4)
+  Assert.deepEqual(geometry.actionSlots[1], {
+    center = { x = 48, y = 144 },
+    textRect = { x = 8, y = 136, width = 80, height = 16 },
+    hitRect = { x = 0, y = 128, width = 94, height = 32 },
+  })
   Assert.equal(#geometry.quantityDigits, 3)
+  Assert.equal(#geometry.quantityControls, 6)
+  Assert.deepEqual(geometry.quantityConfirm, {
+    center = { x = 136, y = 176 },
+    hitRect = { x = 96, y = 168, width = 78, height = 24 },
+  })
+  Assert.deepEqual(geometry.quantityCancelHitRect, { x = 178, y = 168, width = 78, height = 24 })
 end
 
 function T.states_name_one_pose_and_pattern_per_pocket()
@@ -234,6 +245,31 @@ function T.geometry_without_separate_role_records_fails()
   local okIcons, errIcons = pcall(BagPresentationCompiler.compileGeometry, missingIcons)
   Assert.isFalse(okIcons, "missing icon placements must fail")
   Assert.notNil(tostring(errIcons):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
+end
+
+function T.geometry_rejects_wrong_quantity_control_order()
+  local edited = {
+    itemIconCenters = BagSources.itemIconCenters,
+    focusTargets = BagSources.focusTargets,
+    geometry = BagSources.geometry,
+  }
+  edited.geometry = {}
+  for key, value in pairs(BagSources.geometry) do
+    edited.geometry[key] = value
+  end
+  edited.geometry.quantityControls = {}
+  for index, control in ipairs(BagSources.geometry.quantityControls) do
+    edited.geometry.quantityControls[index] = control
+  end
+  edited.geometry.quantityControls[1] = {
+    delta = 10,
+    role = "increment",
+    center = { x = 136, y = 104 },
+    hitRect = { x = 120, y = 88, width = 32, height = 24 },
+  }
+  local ok, err = pcall(BagPresentationCompiler.compileGeometry, edited)
+  Assert.isFalse(ok, "quantity controls must remain in source order")
+  Assert.notNil(tostring(err):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
 end
 
 return { tests = T }

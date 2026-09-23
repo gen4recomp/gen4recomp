@@ -242,16 +242,23 @@ function BagPresentationCompiler.compileGeometry(config)
   if type(countReadout) ~= "table" then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no count readout", {})
   end
-  if type(geometry.actionButtons) ~= "table" or #geometry.actionButtons ~= 4 then
+  if type(geometry.actionSlots) ~= "table" or #geometry.actionSlots ~= 4 then
     Errors.raise(
       BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
-      "bag geometry must carry exactly four action buttons",
+      "bag geometry must carry exactly four action slots",
       {}
     )
   end
-  local actionButtons = {}
-  for index, button in ipairs(geometry.actionButtons) do
-    actionButtons[index] = checkRect(button, "action button " .. index)
+  local actionSlots = {}
+  for index, slot in ipairs(geometry.actionSlots) do
+    if type(slot) ~= "table" then
+      Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "action slot " .. index .. " is malformed", {})
+    end
+    actionSlots[index] = {
+      center = checkPoint(slot.center, "action slot " .. index .. " center"),
+      textRect = checkRect(slot.textRect, "action slot " .. index .. " text window"),
+      hitRect = checkRect(slot.hitRect, "action slot " .. index .. " hit rect"),
+    }
   end
   if type(geometry.quantityDigits) ~= "table" or #geometry.quantityDigits ~= 3 then
     Errors.raise(
@@ -264,6 +271,46 @@ function BagPresentationCompiler.compileGeometry(config)
   for index, digit in ipairs(geometry.quantityDigits) do
     quantityDigits[index] = checkRect(digit, "quantity digit " .. index)
   end
+  if type(geometry.quantityControls) ~= "table" or #geometry.quantityControls ~= 6 then
+    Errors.raise(
+      BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
+      "bag geometry must carry exactly six quantity controls",
+      {}
+    )
+  end
+  local quantityControls = {}
+  local expectedControls = {
+    { delta = 100, role = "increment" },
+    { delta = 10, role = "increment" },
+    { delta = 1, role = "increment" },
+    { delta = -100, role = "decrement" },
+    { delta = -10, role = "decrement" },
+    { delta = -1, role = "decrement" },
+  }
+  for index, control in ipairs(geometry.quantityControls) do
+    local expected = expectedControls[index]
+    if type(control) ~= "table" or control.delta ~= expected.delta or control.role ~= expected.role then
+      Errors.raise(
+        BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
+        "quantity control " .. index .. " has the wrong role",
+        {}
+      )
+    end
+    quantityControls[index] = {
+      delta = control.delta,
+      role = control.role,
+      center = checkPoint(control.center, "quantity control " .. index .. " center"),
+      hitRect = checkRect(control.hitRect, "quantity control " .. index .. " hit rect"),
+    }
+  end
+  if type(geometry.quantityConfirm) ~= "table" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no quantity confirm", {})
+  end
+  local quantityConfirm = {
+    center = checkPoint(geometry.quantityConfirm.center, "quantity confirm center"),
+    hitRect = checkRect(geometry.quantityConfirm.hitRect, "quantity confirm hit rect"),
+  }
+  local quantityCancelHitRect = checkRect(geometry.quantityCancelHitRect, "quantity cancel hit rect")
   local cancelSource = geometry.cancel
   if type(cancelSource) ~= "table" then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no cancel affordance", {})
@@ -340,8 +387,11 @@ function BagPresentationCompiler.compileGeometry(config)
     cancel = { rect = cancelRect, textRect = cancelText, labelRect = cancelLabel },
     descriptionFrame = checkRect(geometry.descriptionFrame, "description frame"),
     descriptionText = checkRect(geometry.descriptionText, "description text"),
-    actionButtons = actionButtons,
+    actionSlots = actionSlots,
     quantityDigits = quantityDigits,
+    quantityControls = quantityControls,
+    quantityConfirm = quantityConfirm,
+    quantityCancelHitRect = quantityCancelHitRect,
   }
 end
 

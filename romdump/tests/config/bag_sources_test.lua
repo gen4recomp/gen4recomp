@@ -55,7 +55,6 @@ function T.two_dimensional_roles_cover_the_audited_members()
   Assert.equal(screens.actionWash, 42)
   Assert.equal(screens.confirmation, 45)
   Assert.equal(screens.quantity, 52)
-  Assert.equal(screens.quantityAlt, 53)
   Assert.equal(BagSources.chars.upper, 7)
   Assert.equal(BagSources.chars.lower, 46)
   Assert.equal(BagSources.chars.registrationMarker, 37)
@@ -111,13 +110,17 @@ function T.canonical_geometry_covers_tabs_slots_and_affordances()
     "cancel",
     "descriptionFrame",
     "descriptionText",
-    "actionButtons",
+    "actionSlots",
     "quantityDigits",
+    "quantityControls",
+    "quantityConfirm",
+    "quantityCancelHitRect",
   }) do
     Assert.notNil(geometry[name], "geometry must carry " .. name)
   end
-  Assert.equal(#geometry.actionButtons, 4)
+  Assert.equal(#geometry.actionSlots, 4)
   Assert.equal(#geometry.quantityDigits, 3)
+  Assert.equal(#geometry.quantityControls, 6)
   local function fits(rect, what)
     Assert.isTrue(rect.x + rect.width <= 256 and rect.y + rect.height <= 192, what .. " must fit the pane")
   end
@@ -126,8 +129,9 @@ function T.canonical_geometry_covers_tabs_slots_and_affordances()
   fits(geometry.cancel.textRect, "cancel text window")
   fits(geometry.descriptionFrame, "description frame")
   fits(geometry.descriptionText, "description text")
-  for _, button in ipairs(geometry.actionButtons) do
-    fits(button, "action button")
+  for _, slot in ipairs(geometry.actionSlots) do
+    fits(slot.textRect, "action text window")
+    fits(slot.hitRect, "action hit rect")
   end
   for _, digit in ipairs(geometry.quantityDigits) do
     fits(digit, "quantity digit")
@@ -182,7 +186,7 @@ function T.message_selection_names_the_audited_banks_and_indexes()
   local BagSources = sources()
   Assert.deepEqual(BagSources.messages.actionLabels, {
     toss = { bank = 10, index = 1 },
-    move = { bank = 0, index = 3 },
+    move = { bank = 10, index = 75 },
     register = { bank = 10, index = 2 },
     unregister = { bank = 10, index = 18 },
     cancel = { bank = 10, index = 8 },

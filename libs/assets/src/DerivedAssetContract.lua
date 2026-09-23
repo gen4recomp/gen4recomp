@@ -270,12 +270,13 @@ DerivedAssetContract.items = {
 -- pane controls (one pocket strip per active pocket carrying the persistent
 -- selected-pocket treatment, six item slots, count readout, Cancel with
 -- its source-centered label area, the browse count-variant backgrounds,
--- the action/quantity/confirmation overlays, semantic action text/templates,
+-- four action slots, six quantity controls with static press visuals, the
+-- action/quantity/confirmation overlays, semantic action text/templates,
 -- and the two registration-slot markers). Item icons stay in the item
 -- class; the bag manifest references no icon pixels.
 DerivedAssetContract.bag = {
   cacheFormat = "bag-cache-v2",
-  schema = "g4-bag-assets-v8",
+  schema = "g4-bag-assets-v9",
 }
 
 DerivedAssetContract.audio = {

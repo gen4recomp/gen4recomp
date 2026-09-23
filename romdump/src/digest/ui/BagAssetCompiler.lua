@@ -126,7 +126,6 @@ local SCREEN_ROLES = {
   { role = "action-wash", member = BagSources.screens.actionWash, upper = false },
   { role = "confirmation", member = BagSources.screens.confirmation, upper = false },
   { role = "quantity", member = BagSources.screens.quantity, upper = false },
-  { role = "quantity-alt", member = BagSources.screens.quantityAlt, upper = false },
 }
 
 local function compileScreens(archive, dependencies, assets)
@@ -219,6 +218,69 @@ end
 local function compileVisual(spriteData, selector, role, assets)
   local rendered = renderStaticFrame(spriteData, selector, role)
   return writeSpriteFrame(rendered, BagCache.assetDir() .. "/" .. role .. "-frame-1.png", assets)
+end
+
+local function sameRenderedFrame(first, second)
+  return first.width == second.width
+    and first.height == second.height
+    and first.offset.x == second.offset.x
+    and first.offset.y == second.offset.y
+    and first.pixels == second.pixels
+end
+
+local function compilePressedPair(spriteData, normalSelector, pressedSelector, role, assets)
+  local charData, paletteData, cellData, animation = unpack(spriteData)
+  local normalSequence = animation.anims[normalSelector.animation + 1]
+  local pressedSequence = animation.anims[pressedSelector.animation + 1]
+  if normalSequence == nil or pressedSequence == nil then
+    sourceError(role .. " selects a missing animation sequence", {})
+  end
+  assert(normalSequence ~= nil and pressedSequence ~= nil, "missing animation sequences fail above")
+  if #normalSequence.frames ~= 1 or #pressedSequence.frames ~= 2 then
+    sourceError(role .. " must have one normal frame and two pressed frames", {
+      normalFrames = #normalSequence.frames,
+      pressedFrames = #pressedSequence.frames,
+    })
+  end
+  local pressTicks = pressedSequence.frames[1].duration
+  if type(pressTicks) ~= "number" or pressTicks <= 0 or pressTicks % 1 ~= 0 then
+    sourceError(role .. " has no positive first-frame duration", { duration = pressTicks })
+  end
+  local normal = G2dRasterizer.renderAnimationFrame(
+    charData,
+    paletteData,
+    cellData,
+    normalSequence,
+    1,
+    { role = role .. "-normal", animation = normalSelector.animation, frame = 0 },
+    normalSelector.palette
+  )
+  local pressed = G2dRasterizer.renderAnimationFrame(
+    charData,
+    paletteData,
+    cellData,
+    pressedSequence,
+    1,
+    { role = role .. "-pressed", animation = pressedSelector.animation, frame = 0 },
+    pressedSelector.palette
+  )
+  local returned = G2dRasterizer.renderAnimationFrame(
+    charData,
+    paletteData,
+    cellData,
+    pressedSequence,
+    2,
+    { role = role .. "-return", animation = pressedSelector.animation, frame = 1 },
+    pressedSelector.palette
+  )
+  if not sameRenderedFrame(normal, returned) then
+    sourceError(role .. " pressed sequence does not return to its normal visual", {})
+  end
+  return {
+    normal = writeSpriteFrame(normal, BagCache.assetDir() .. "/" .. role .. "-normal.png", assets),
+    pressed = writeSpriteFrame(pressed, BagCache.assetDir() .. "/" .. role .. "-pressed.png", assets),
+    pressTicks = pressTicks,
+  }
 end
 
 -- Derive one active pocket's effective tab palette: clone the base sprite
@@ -409,6 +471,27 @@ local function compileSprites(archive, dependencies, assets)
     strips[pocketState.pocket] = { image = path, width = strip.width, height = strip.height }
   end
   local focusStates = BagSources.spriteStates.focus
+  local actionFace = compileVisual(tabsData, BagSources.spriteStates.actionFace, "action-face", assets)
+  local increment = compilePressedPair(
+    tabsData,
+    BagSources.spriteStates.quantity.increment.normal,
+    BagSources.spriteStates.quantity.increment.pressed,
+    "quantity-increment",
+    assets
+  )
+  local decrement = compilePressedPair(
+    tabsData,
+    BagSources.spriteStates.quantity.decrement.normal,
+    BagSources.spriteStates.quantity.decrement.pressed,
+    "quantity-decrement",
+    assets
+  )
+  if increment.pressTicks ~= decrement.pressTicks then
+    sourceError("quantity controls have mismatched press durations", {
+      increment = increment.pressTicks,
+      decrement = decrement.pressTicks,
+    })
+  end
   return {
     strips = strips,
     focus = {
@@ -416,6 +499,13 @@ local function compileSprites(archive, dependencies, assets)
       items = compileVisual(tabsData, focusStates.items, "focus-items", assets),
       cancel = compileVisual(tabsData, focusStates.cancel, "focus-cancel", assets),
       actions = compileVisual(tabsData, focusStates.actions, "focus-actions", assets),
+    },
+    actionFace = actionFace,
+    quantity = {
+      increment = { normal = increment.normal, pressed = increment.pressed },
+      decrement = { normal = decrement.normal, pressed = decrement.pressed },
+      pressTicks = increment.pressTicks,
+      confirm = compileVisual(tabsData, BagSources.spriteStates.quantity.confirm, "quantity-confirm", assets),
     },
     -- The unselected Cancel face is realized for finalized-background
     -- composition below; it is never written to the bundle as a runtime
@@ -659,7 +749,6 @@ local function compileLowerBackgrounds(lower, cancelFace, assets)
     actionWash = "action-wash",
     actionSlots = "action-slots",
     quantity = "quantity",
-    quantityAlt = "quantity-alt",
     confirmation = "confirmation",
   }
   local backgrounds = compileFixedBackgrounds(lower, screenRoles, cancelFace, assets)
@@ -1226,9 +1315,21 @@ local function _compile(romFs)
       cancel = geometry.cancel,
       text = text,
       overlays = {
-        actionMenu = { buttons = geometry.actionButtons },
+        actionMenu = { face = sprites.actionFace, slots = geometry.actionSlots },
         quantity = {
           digits = geometry.quantityDigits,
+          controls = geometry.quantityControls,
+          visuals = {
+            increment = sprites.quantity.increment,
+            decrement = sprites.quantity.decrement,
+          },
+          pressTicks = sprites.quantity.pressTicks,
+          confirm = {
+            visual = sprites.quantity.confirm,
+            center = geometry.quantityConfirm.center,
+            hitRect = geometry.quantityConfirm.hitRect,
+          },
+          cancelHitRect = geometry.quantityCancelHitRect,
         },
         descriptionFallback = { frame = geometry.descriptionFrame, textRect = geometry.descriptionText },
       },

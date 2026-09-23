@@ -301,10 +301,41 @@ local function validManifest()
       text = semanticText(),
       overlays = {
         actionMenu = {
-          buttons = { rect(8, 136, 80, 16), rect(104, 136, 80, 16), rect(8, 168, 80, 16), rect(104, 168, 80, 16) },
+          face = visualRef("assets/generated/bag/action-face.png"),
+          slots = {
+            { center = { x = 48, y = 144 }, textRect = rect(8, 136, 80, 16), hitRect = rect(0, 128, 94, 32) },
+            { center = { x = 144, y = 144 }, textRect = rect(104, 136, 80, 16), hitRect = rect(96, 128, 96, 32) },
+            { center = { x = 48, y = 176 }, textRect = rect(8, 168, 80, 16), hitRect = rect(0, 160, 94, 32) },
+            { center = { x = 144, y = 176 }, textRect = rect(104, 168, 80, 16), hitRect = rect(96, 160, 96, 32) },
+          },
         },
         quantity = {
           digits = { rect(128, 112, 16, 24), rect(160, 112, 16, 24), rect(192, 112, 16, 24) },
+          controls = {
+            { delta = 100, role = "increment", center = { x = 136, y = 104 }, hitRect = rect(120, 88, 32, 24) },
+            { delta = 10, role = "increment", center = { x = 168, y = 104 }, hitRect = rect(152, 88, 32, 24) },
+            { delta = 1, role = "increment", center = { x = 200, y = 104 }, hitRect = rect(184, 88, 32, 24) },
+            { delta = -100, role = "decrement", center = { x = 136, y = 152 }, hitRect = rect(120, 136, 32, 24) },
+            { delta = -10, role = "decrement", center = { x = 168, y = 152 }, hitRect = rect(152, 136, 32, 24) },
+            { delta = -1, role = "decrement", center = { x = 200, y = 152 }, hitRect = rect(184, 136, 32, 24) },
+          },
+          visuals = {
+            increment = {
+              normal = visualRef("assets/generated/bag/quantity-increment-normal.png"),
+              pressed = visualRef("assets/generated/bag/quantity-increment-pressed.png"),
+            },
+            decrement = {
+              normal = visualRef("assets/generated/bag/quantity-decrement-normal.png"),
+              pressed = visualRef("assets/generated/bag/quantity-decrement-pressed.png"),
+            },
+          },
+          pressTicks = 2,
+          confirm = {
+            visual = visualRef("assets/generated/bag/quantity-confirm.png"),
+            center = { x = 136, y = 176 },
+            hitRect = rect(96, 168, 78, 24),
+          },
+          cancelHitRect = rect(178, 168, 78, 24),
         },
         descriptionFallback = { frame = rect(0, 144, 256, 48), textRect = rect(20, 144, 228, 40) },
       },
@@ -394,7 +425,7 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v8"
+  manifest.schema = "g4-bag-assets-v9"
   manifest.interactive.backgrounds.browse = countVariantBackgrounds()
   manifest.interactive.cancel = {
     rect = rect(192, 168, 64, 24),
@@ -431,7 +462,7 @@ function T.previous_manifest_fails_schema_and_cache_contract()
   Assert.isFalse(pcall(BagCache.validateManifest, manifest), "the cache validator must reject the stale fixture")
   Assert.isNil(manifest.interactive.widgets, "the stale manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v8")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v9")
 end
 
 function T.schema_rejects_wrong_logical_size()
@@ -516,9 +547,9 @@ local function assertInvalid(manifest, why)
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v8")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v8")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v8")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v9")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v9")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v9")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
 end
 
@@ -813,10 +844,50 @@ function T.semantic_focus_contract_validates_with_exact_target_counts()
   Assert.equal(#manifest.interactive.focus.actions.targets, 4, "four action targets are required")
 end
 
+function T.control_visuals_are_current_and_each_is_referenced_once()
+  local manifest = validFocusManifest()
+  local paths = assert(BagCache.referencedPaths(manifest))
+  local counts = {}
+  for _, path in ipairs(paths) do
+    counts[path] = (counts[path] or 0) + 1
+  end
+  for _, path in ipairs({
+    "assets/generated/bag/action-face.png",
+    "assets/generated/bag/quantity-increment-normal.png",
+    "assets/generated/bag/quantity-increment-pressed.png",
+    "assets/generated/bag/quantity-decrement-normal.png",
+    "assets/generated/bag/quantity-decrement-pressed.png",
+    "assets/generated/bag/quantity-confirm.png",
+  }) do
+    Assert.equal(counts[path], 1, path .. " is referenced exactly once")
+  end
+  for _, path in ipairs(paths) do
+    Assert.isNil(path:find("quantity-alt", 1, true), "retired quantity alternate art is not required")
+  end
+end
+
+function T.control_overlay_rejects_incomplete_or_timeline_shapes()
+  local missingSlotField = validFocusManifest()
+  missingSlotField.interactive.overlays.actionMenu.slots[1].center = nil
+  assertInvalid(missingSlotField, "an action slot without a center must fail")
+  local wrongControlOrder = validFocusManifest()
+  wrongControlOrder.interactive.overlays.quantity.controls[1].delta = 10
+  assertInvalid(wrongControlOrder, "quantity controls must keep their source order")
+  local wrongDuration = validFocusManifest()
+  wrongDuration.interactive.overlays.quantity.pressTicks = 3
+  assertInvalid(wrongDuration, "quantity press duration must be source-derived")
+  local timeline = validFocusManifest()
+  timeline.interactive.overlays.quantity.visuals.increment.normal.frames = {}
+  assertInvalid(timeline, "a quantity visual timeline must fail")
+  local stale = validFocusManifest()
+  stale.schema = "g4-bag-assets-v8"
+  assertInvalid(stale, "the retired Bag contract must fail")
+end
+
 function T.stale_previous_manifest_fails_once_the_focus_contract_is_current()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v8", "the schema carries the strip contract")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v8", "the central contract carries the strip schema")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v8", "the loader requires the strip schema")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v9", "the schema carries the control contract")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v9", "the central contract carries the control schema")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v9", "the loader requires the control schema")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing is unchanged")
   Assert.isFalse(
     BagAssetSchema.isValidManifest(validManifest()),
@@ -1108,9 +1179,9 @@ local function validStripManifest()
 end
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v8")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v8")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v8")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v9")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v9")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v9")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")

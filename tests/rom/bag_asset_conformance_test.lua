@@ -57,6 +57,20 @@ function T.bag_archive_resolves_through_the_semantic_alias(romFs, _)
   Assert.equal(archive:memberCount(), 95, "the bag archive member census anchors coverage")
 end
 
+function T.quantity_background_uses_only_the_supported_source_screen(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  Assert.deepEqual(
+    bundle.dependencies.selection.lowerLayers.quantity,
+    { "quantity" },
+    "the Toss quantity state uses only its selected source screen"
+  )
+  for _, dependency in ipairs(bundle.dependencies.dependencies) do
+    Assert.isFalse(dependency.name == "bag_ui:member:53", "the alternate quantity screen is not a current dependency")
+  end
+  local quantity = bundle.manifest.interactive.backgrounds.quantity.items
+  Assert.isTrue(type(bundle.assets[quantity.image]) == "string", "the single-screen quantity background is generated")
+end
+
 function T.required_source_members_decode(romFs, _)
   local archive = assert(romFs:openNarc("bag_ui"))
   local function memberBytes(memberId)
@@ -78,7 +92,6 @@ function T.required_source_members_decode(romFs, _)
     BagSources.screens.actionWash,
     BagSources.screens.confirmation,
     BagSources.screens.quantity,
-    BagSources.screens.quantityAlt,
   }) do
     assertDecodes("decodeScreen", memberId, "bag screen " .. memberId)
   end
@@ -224,8 +237,10 @@ function T.geometries_fit_the_canonical_panes(romFs, versionId)
   fits(manifest.interactive.cancel.textRect, "cancel text window")
   fits(manifest.hero.description.frame.rect, "description frame")
   fits(manifest.hero.description.textRect, "description text")
-  for _, button in ipairs(manifest.interactive.overlays.actionMenu.buttons) do
-    fits(button, "action button")
+  for _, slot in ipairs(manifest.interactive.overlays.actionMenu.slots) do
+    fits(slot.textRect, "action text window")
+    fits(slot.hitRect, "action hit rect")
+    Assert.isTrue(slot.center.x <= 256 and slot.center.y <= 192, "action center must fit the pane")
   end
   for _, digit in ipairs(manifest.interactive.overlays.quantity.digits) do
     fits(digit, "quantity digit")
@@ -329,7 +344,7 @@ function T.marker_dependencies_cover_messages_and_marker_member(romFs, versionId
     seen[dependency.name] = dependency.sha1
   end
   Assert.notNil(seen["messages:member:10"], "message bank 10 participates in the marker")
-  Assert.notNil(seen["messages:member:0"], "message bank 0 participates in the marker")
+  Assert.isNil(seen["messages:member:0"], "the retail MOVE label no longer depends on message bank 0")
   Assert.notNil(seen["bag_ui:member:37"], "the marker source member participates in the marker")
   Assert.deepEqual(bundle.dependencies.selection.messages, BagSources.messages)
   Assert.deepEqual(bundle.dependencies.selection.registration, BagSources.registration)
@@ -600,7 +615,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v8", "the rebuilt bag cache must publish the strip contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v9", "the rebuilt bag cache must publish the control contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}

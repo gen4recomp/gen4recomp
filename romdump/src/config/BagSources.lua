@@ -85,10 +85,9 @@
 -- ambient onto the global register (ModifyMatFlag FALSE/AMBIENT) while
 -- diffuse, specular, and emission stay per-material.
 --
--- Action text: msg_0010.gmm supplies the toss/register/unregister/cancel/
--- confirm labels and the move/toss prompt templates; msg_0000.gmm supplies
--- the generic move label. The compiler lowers the token streams to semantic
--- labels and text/item/quantity template segments.
+-- Action text: msg_0010.gmm supplies the toss/move/register/unregister/cancel/
+-- confirm labels and the move/toss prompt templates. The compiler lowers the
+-- token streams to semantic labels and text/item/quantity template segments.
 --
 -- Registration markers: Bag UI character member 37 holds the 104x16 source
 -- bitmap; slot 1 copies source X 24 and slot 2 copies source X 64 (Y 0,
@@ -112,7 +111,6 @@ BagSources.provenance = {
     "include/bg_window.h",
     "include/text.h",
     "files/msgdata/msg/msg_0010.gmm",
-    "files/msgdata/msg/msg_0000.gmm",
   },
 }
 
@@ -133,7 +131,6 @@ BagSources.screens = {
   actionWash = 42,
   confirmation = 45,
   quantity = 52,
-  quantityAlt = 53,
 }
 
 -- Character (NCGR) members by semantic role. The registration marker source
@@ -214,6 +211,12 @@ BagSources.spriteStates = {
     cancel = { animation = 17, palette = 9 },
     actions = { animation = 23, palette = 9 },
   },
+  actionFace = { animation = 22, palette = 8 },
+  quantity = {
+    increment = { normal = { animation = 25, palette = 8 }, pressed = { animation = 26, palette = 8 } },
+    decrement = { normal = { animation = 27, palette = 8 }, pressed = { animation = 28, palette = 8 } },
+    confirm = { animation = 31, palette = 8 },
+  },
   cancelFace = { animation = 16, palette = 8 },
   cursor = { animations = { 0, 1, 2, 3 } },
 }
@@ -223,7 +226,7 @@ BagSources.spriteStates = {
 BagSources.lowerLayers = {
   browse = { "listWash", "listSlots" },
   action = { "actionWash", "actionSlots" },
-  quantity = { "quantity", "quantityAlt" },
+  quantity = { "quantity" },
   confirmation = { "confirmation" },
 }
 
@@ -279,17 +282,17 @@ BagSources.browseCountBlocks = {
 BagSources.unboundAnimations = { 21 }
 
 -- Semantic message selection for the generated action labels and prompt
--- templates. Banks are msgdata members (bank 10 = msg_0010.gmm, bank 0 =
--- msg_0000.gmm); indexes are zero-based message ids within the bank. The
+-- templates. Bank 10 is msg_0010.gmm; indexes are zero-based message ids
+-- within the bank. The
 -- runtime manifest carries only the lowered labels/templates, never these
 -- selectors. Pinned facts: msg_0010 carries TRASH (1), REGISTER (2),
 -- CONFIRM (5), CANCEL (8), DESELECT (18), the move prompt (46), the toss
--- quantity prompt (53), and the toss confirmation prompt (55); msg_0000
--- carries the generic MOVE label (3) reused for the manual reorder action.
+-- quantity prompt (53), the MOVE label (75), and the toss confirmation
+-- prompt (55).
 BagSources.messages = {
   actionLabels = {
     toss = { bank = 10, index = 1 },
-    move = { bank = 0, index = 3 },
+    move = { bank = 10, index = 75 },
     register = { bank = 10, index = 2 },
     unregister = { bank = 10, index = 18 },
     cancel = { bank = 10, index = 8 },
@@ -404,17 +407,30 @@ BagSources.geometry = {
   },
   descriptionFrame = rect(0, 144, 256, 48),
   descriptionText = rect(20, 144, 236, 48),
-  actionButtons = {
-    rect(8, 136, 80, 16),
-    rect(104, 136, 80, 16),
-    rect(8, 168, 80, 16),
-    rect(104, 168, 80, 16),
+  actionSlots = {
+    { center = { x = 48, y = 144 }, textRect = rect(8, 136, 80, 16), hitRect = rect(0, 128, 94, 32) },
+    { center = { x = 144, y = 144 }, textRect = rect(104, 136, 80, 16), hitRect = rect(96, 128, 96, 32) },
+    { center = { x = 48, y = 176 }, textRect = rect(8, 168, 80, 16), hitRect = rect(0, 160, 94, 32) },
+    { center = { x = 144, y = 176 }, textRect = rect(104, 168, 80, 16), hitRect = rect(96, 160, 96, 32) },
   },
   quantityDigits = {
     rect(128, 112, 16, 24),
     rect(160, 112, 16, 24),
     rect(192, 112, 16, 24),
   },
+  quantityControls = {
+    { delta = 100, role = "increment", center = { x = 136, y = 104 }, hitRect = rect(120, 88, 32, 24) },
+    { delta = 10, role = "increment", center = { x = 168, y = 104 }, hitRect = rect(152, 88, 32, 24) },
+    { delta = 1, role = "increment", center = { x = 200, y = 104 }, hitRect = rect(184, 88, 32, 24) },
+    { delta = -100, role = "decrement", center = { x = 136, y = 152 }, hitRect = rect(120, 136, 32, 24) },
+    { delta = -10, role = "decrement", center = { x = 168, y = 152 }, hitRect = rect(152, 136, 32, 24) },
+    { delta = -1, role = "decrement", center = { x = 200, y = 152 }, hitRect = rect(184, 136, 32, 24) },
+  },
+  quantityConfirm = {
+    center = { x = 136, y = 176 },
+    hitRect = rect(96, 168, 78, 24),
+  },
+  quantityCancelHitRect = rect(178, 168, 78, 24),
 }
 
 -- Movable focus targets in canonical pane pixels: the position records the

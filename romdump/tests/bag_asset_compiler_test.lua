@@ -18,6 +18,10 @@ local charmap = require("romdump.src.reference.hgss.charmap")
 
 local T = {}
 
+local function visualRef(path)
+  return { image = path, width = 16, height = 16 }
+end
+
 local function u16(v)
   return string.char(v % 256, math.floor(v / 256) % 256)
 end
@@ -106,21 +110,35 @@ end
 
 local function animData(count)
   -- Sequences (16 bytes each), frame entries (8 bytes each), then cell
-  -- properties, so every selected sequence decodes to one static frame.
+  -- properties. The quantity press sequences contain a two-frame
+  -- return-to-normal pair.
   local animsOffset = 0x18
+  local frameCounts = {}
+  local totalFrames = 0
+  for a = 0, count - 1 do
+    frameCounts[a] = (a == 26 or a == 28) and 2 or 1
+    totalFrames = totalFrames + frameCounts[a]
+  end
   local framesOffset = animsOffset + count * 16
-  local dataOffset = framesOffset + count * 8
+  local dataOffset = framesOffset + totalFrames * 8
   local header = u16(count)
-    .. u16(count)
+    .. u16(totalFrames)
     .. u32(animsOffset)
     .. u32(framesOffset)
     .. u32(dataOffset)
     .. string.rep("\0", 8)
   local seqs, frames, props = {}, {}, {}
+  local frameIndex = 0
+  local propertyIndex = 0
   for a = 0, count - 1 do
-    seqs[#seqs + 1] = u16(1) .. u16(0) .. u32(0x00010000) .. u32(1) .. u32(a * 8)
-    frames[#frames + 1] = u32(a * 2) .. u16(4) .. u16(0)
-    props[#props + 1] = u16(0)
+    local frameCount = frameCounts[a]
+    seqs[#seqs + 1] = u16(frameCount) .. u16(0) .. u32(0x00010000) .. u32(1) .. u32(frameIndex * 8)
+    for frame = 1, frameCount do
+      frames[#frames + 1] = u32(propertyIndex * 2) .. u16(frame == 1 and frameCount == 2 and 2 or 4) .. u16(0)
+      props[#props + 1] = u16(0)
+      propertyIndex = propertyIndex + 1
+    end
+    frameIndex = frameIndex + frameCount
   end
   return container(
     "RNAN",
@@ -202,7 +220,7 @@ end
 
 local function syntheticMessageBanks()
   local bank10 = {}
-  for _ = 1, 56 do
+  for _ = 1, 76 do
     bank10[#bank10 + 1] = { EOS_UNIT }
   end
   bank10[2] = messageUnits({ "TOSS" })
@@ -213,12 +231,8 @@ local function syntheticMessageBanks()
   bank10[47] = messageUnits({ "Move ", ITEM_SUBSTITUTION, "." })
   bank10[54] = messageUnits({ "Toss ", ITEM_SUBSTITUTION, "?" })
   bank10[56] = messageUnits({ "Toss ", QUANTITY_SUBSTITUTION, " ", ITEM_SUBSTITUTION, "?" })
-  local bank0 = {}
-  for _ = 1, 4 do
-    bank0[#bank0 + 1] = { EOS_UNIT }
-  end
-  bank0[4] = messageUnits({ "MOVE" })
-  return { [0] = bank0, [10] = bank10 }
+  bank10[76] = messageUnits({ "MOVE" })
+  return { [10] = bank10 }
 end
 local function fixture(opts)
   opts = opts or {}
@@ -242,12 +256,11 @@ local function fixture(opts)
     BagSources.screens.actionWash,
     BagSources.screens.confirmation,
     BagSources.screens.quantity,
-    BagSources.screens.quantityAlt,
   }) do
     members[memberId + 1] = screenData()
   end
   local tabCells = {}
-  for _ = 1, 24 do
+  for _ = 1, 34 do
     -- Center-anchored objects like the retail tab cells, so composed sprite
     -- placements stay inside the canonical pane.
     tabCells[#tabCells + 1] = { { x = -16, y = -16, tile = 0, size = 2 } }
@@ -255,7 +268,7 @@ local function fixture(opts)
   members[BagSources.sprites.tabs.char + 1] = charData(200)
   members[BagSources.sprites.tabs.cell + 1] = cellData(tabCells)
   members[BagSources.sprites.tabs.palette + 1] = palette256()
-  members[BagSources.sprites.tabs.anim + 1] = animData(24)
+  members[BagSources.sprites.tabs.anim + 1] = animData(32)
   members[BagSources.palettes.tabState + 1] = palette256()
   local cursorCells = {}
   for _ = 1, 4 do
@@ -529,17 +542,23 @@ function T.producer_declares_the_audited_message_selection()
     cancel = { animation = 17, palette = 9 },
     actions = { animation = 23, palette = 9 },
   })
+  Assert.deepEqual(BagSources.spriteStates.actionFace, { animation = 22, palette = 8 })
+  Assert.deepEqual(BagSources.spriteStates.quantity, {
+    increment = { normal = { animation = 25, palette = 8 }, pressed = { animation = 26, palette = 8 } },
+    decrement = { normal = { animation = 27, palette = 8 }, pressed = { animation = 28, palette = 8 } },
+    confirm = { animation = 31, palette = 8 },
+  })
   Assert.deepEqual(BagSources.spriteStates.cancelFace, { animation = 16, palette = 8 })
   Assert.deepEqual(BagSources.lowerLayers, {
     browse = { "listWash", "listSlots" },
     action = { "actionWash", "actionSlots" },
-    quantity = { "quantity", "quantityAlt" },
+    quantity = { "quantity" },
     confirmation = { "confirmation" },
   })
   local messages = assert(BagSources.messages, "the producer must declare its message selection")
   Assert.deepEqual(messages.actionLabels, {
     toss = { bank = 10, index = 1 },
-    move = { bank = 0, index = 3 },
+    move = { bank = 10, index = 75 },
     register = { bank = 10, index = 2 },
     unregister = { bank = 10, index = 18 },
     cancel = { bank = 10, index = 8 },
@@ -676,7 +695,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v8",
+    schema = "g4-bag-assets-v9",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -888,11 +907,28 @@ local function syntheticBundle(marker)
       },
       overlays = {
         actionMenu = {
-          buttons = {
-            { x = 8, y = 136, width = 80, height = 16 },
-            { x = 104, y = 136, width = 80, height = 16 },
-            { x = 8, y = 168, width = 80, height = 16 },
-            { x = 104, y = 168, width = 80, height = 16 },
+          face = visualRef("assets/generated/bag/action-face-frame-1.png"),
+          slots = {
+            {
+              center = { x = 48, y = 144 },
+              textRect = { x = 8, y = 136, width = 80, height = 16 },
+              hitRect = { x = 0, y = 128, width = 94, height = 32 },
+            },
+            {
+              center = { x = 144, y = 144 },
+              textRect = { x = 104, y = 136, width = 80, height = 16 },
+              hitRect = { x = 96, y = 128, width = 96, height = 32 },
+            },
+            {
+              center = { x = 48, y = 176 },
+              textRect = { x = 8, y = 168, width = 80, height = 16 },
+              hitRect = { x = 0, y = 160, width = 94, height = 32 },
+            },
+            {
+              center = { x = 144, y = 176 },
+              textRect = { x = 104, y = 168, width = 80, height = 16 },
+              hitRect = { x = 96, y = 160, width = 96, height = 32 },
+            },
           },
         },
         quantity = {
@@ -901,6 +937,61 @@ local function syntheticBundle(marker)
             { x = 160, y = 112, width = 16, height = 24 },
             { x = 192, y = 112, width = 16, height = 24 },
           },
+          controls = {
+            {
+              delta = 100,
+              role = "increment",
+              center = { x = 136, y = 104 },
+              hitRect = { x = 120, y = 88, width = 32, height = 24 },
+            },
+            {
+              delta = 10,
+              role = "increment",
+              center = { x = 168, y = 104 },
+              hitRect = { x = 152, y = 88, width = 32, height = 24 },
+            },
+            {
+              delta = 1,
+              role = "increment",
+              center = { x = 200, y = 104 },
+              hitRect = { x = 184, y = 88, width = 32, height = 24 },
+            },
+            {
+              delta = -100,
+              role = "decrement",
+              center = { x = 136, y = 152 },
+              hitRect = { x = 120, y = 136, width = 32, height = 24 },
+            },
+            {
+              delta = -10,
+              role = "decrement",
+              center = { x = 168, y = 152 },
+              hitRect = { x = 152, y = 136, width = 32, height = 24 },
+            },
+            {
+              delta = -1,
+              role = "decrement",
+              center = { x = 200, y = 152 },
+              hitRect = { x = 184, y = 136, width = 32, height = 24 },
+            },
+          },
+          visuals = {
+            increment = {
+              normal = visualRef("assets/generated/bag/quantity-increment-normal.png"),
+              pressed = visualRef("assets/generated/bag/quantity-increment-pressed.png"),
+            },
+            decrement = {
+              normal = visualRef("assets/generated/bag/quantity-decrement-normal.png"),
+              pressed = visualRef("assets/generated/bag/quantity-decrement-pressed.png"),
+            },
+          },
+          pressTicks = 2,
+          confirm = {
+            visual = visualRef("assets/generated/bag/quantity-confirm-frame-1.png"),
+            center = { x = 136, y = 176 },
+            hitRect = { x = 96, y = 168, width = 78, height = 24 },
+          },
+          cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
         },
         descriptionFallback = {
           frame = { x = 0, y = 144, width = 256, height = 48 },
@@ -927,7 +1018,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v8")
+  Assert.equal(loaded.schema, "g4-bag-assets-v9")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

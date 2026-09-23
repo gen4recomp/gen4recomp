@@ -24,7 +24,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v8"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v9"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -838,24 +838,87 @@ local function checkInteractive(interactive, context)
   if type(actionMenu) ~= "table" then
     fail("interactive.overlays.actionMenu must be a record", context)
   end
-  checkKeys(actionMenu, { buttons = true }, context, "interactive.overlays.actionMenu")
-  if not Validate.isArray(actionMenu.buttons) or #actionMenu.buttons ~= 4 then
-    fail("interactive.overlays.actionMenu.buttons must carry exactly four button rectangles", context)
+  checkKeys(actionMenu, { face = true, slots = true }, context, "interactive.overlays.actionMenu")
+  checkVisual(actionMenu.face, context, "interactive.overlays.actionMenu.face")
+  if not Validate.isArray(actionMenu.slots) or #actionMenu.slots ~= 4 then
+    fail("interactive.overlays.actionMenu.slots must carry exactly four action slots", context)
   end
-  for index, button in ipairs(actionMenu.buttons) do
-    checkRect(button, context, "interactive.overlays.actionMenu.buttons[" .. index .. "]")
+  for index, slot in ipairs(actionMenu.slots) do
+    local what = "interactive.overlays.actionMenu.slots[" .. index .. "]"
+    if type(slot) ~= "table" then
+      fail(what .. " must be a record", context)
+    end
+    checkKeys(slot, { center = true, textRect = true, hitRect = true }, context, what)
+    checkPoint(slot.center, context, what .. ".center")
+    checkRect(slot.textRect, context, what .. ".textRect")
+    checkRect(slot.hitRect, context, what .. ".hitRect")
   end
   local quantity = overlays.quantity
   if type(quantity) ~= "table" then
     fail("interactive.overlays.quantity must be a record", context)
   end
-  checkKeys(quantity, { digits = true }, context, "interactive.overlays.quantity")
+  checkKeys(
+    quantity,
+    { digits = true, controls = true, visuals = true, pressTicks = true, confirm = true, cancelHitRect = true },
+    context,
+    "interactive.overlays.quantity"
+  )
   if not Validate.isArray(quantity.digits) or #quantity.digits ~= 3 then
     fail("interactive.overlays.quantity.digits must carry exactly three digit rectangles", context)
   end
   for index, digit in ipairs(quantity.digits) do
     checkRect(digit, context, "interactive.overlays.quantity.digits[" .. index .. "]")
   end
+  local expectedControls = {
+    { delta = 100, role = "increment" },
+    { delta = 10, role = "increment" },
+    { delta = 1, role = "increment" },
+    { delta = -100, role = "decrement" },
+    { delta = -10, role = "decrement" },
+    { delta = -1, role = "decrement" },
+  }
+  if not Validate.isArray(quantity.controls) or #quantity.controls ~= #expectedControls then
+    fail("interactive.overlays.quantity.controls must carry exactly six controls", context)
+  end
+  for index, control in ipairs(quantity.controls) do
+    local expected = expectedControls[index]
+    local what = "interactive.overlays.quantity.controls[" .. index .. "]"
+    if type(control) ~= "table" then
+      fail(what .. " must be a record", context)
+    end
+    checkKeys(control, { delta = true, role = true, center = true, hitRect = true }, context, what)
+    if control.delta ~= expected.delta or control.role ~= expected.role then
+      fail(what .. " has the wrong source order", context)
+    end
+    checkPoint(control.center, context, what .. ".center")
+    checkRect(control.hitRect, context, what .. ".hitRect")
+  end
+  if type(quantity.visuals) ~= "table" then
+    fail("interactive.overlays.quantity.visuals must be a record", context)
+  end
+  checkKeys(quantity.visuals, { increment = true, decrement = true }, context, "interactive.overlays.quantity.visuals")
+  for _, role in ipairs({ "increment", "decrement" }) do
+    local visual = quantity.visuals[role]
+    local what = "interactive.overlays.quantity.visuals." .. role
+    if type(visual) ~= "table" then
+      fail(what .. " must be a record", context)
+    end
+    checkKeys(visual, { normal = true, pressed = true }, context, what)
+    checkVisual(visual.normal, context, what .. ".normal")
+    checkVisual(visual.pressed, context, what .. ".pressed")
+  end
+  if quantity.pressTicks ~= 2 then
+    fail("interactive.overlays.quantity.pressTicks must be exactly two ticks", context)
+  end
+  local confirm = quantity.confirm
+  if type(confirm) ~= "table" then
+    fail("interactive.overlays.quantity.confirm must be a record", context)
+  end
+  checkKeys(confirm, { visual = true, center = true, hitRect = true }, context, "interactive.overlays.quantity.confirm")
+  checkVisual(confirm.visual, context, "interactive.overlays.quantity.confirm.visual")
+  checkPoint(confirm.center, context, "interactive.overlays.quantity.confirm.center")
+  checkRect(confirm.hitRect, context, "interactive.overlays.quantity.confirm.hitRect")
+  checkRect(quantity.cancelHitRect, context, "interactive.overlays.quantity.cancelHitRect")
   local fallback = overlays.descriptionFallback
   if type(fallback) ~= "table" then
     fail("interactive.overlays.descriptionFallback must be a record", context)

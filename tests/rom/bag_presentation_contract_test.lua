@@ -77,8 +77,8 @@ function T.rebuilt_bundle_publishes_the_semantic_focus_contract(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
 
-  Assert.equal(manifest.schema, "g4-bag-assets-v8", "the rebuilt Bag cache must publish the strip contract")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v8", "the loader must require the strip contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v9", "the rebuilt Bag cache must publish the control contract")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v9", "the loader must require the control contract")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing must not change with the semantic migration")
   for _, stale in ipairs({
     "g4-bag-assets-v2",
@@ -196,6 +196,93 @@ function T.rebuilt_bundle_publishes_the_semantic_focus_contract(romFs)
   end
   for path in pairs(bundle.assets) do
     Assert.isFalse(path:find("icon", 1, true) ~= nil, "item icon pixels must remain outside the Bag bundle")
+  end
+end
+
+function T.action_overlay_publishes_source_slot_geometry_and_normal_face(romFs)
+  local bundle = compile(romFs)
+  local overlay = assert(assert(bundle.manifest.interactive).overlays).actionMenu
+  Assert.notNil(overlay.face, "the action overlay must publish its normal face")
+  Assert.deepEqual(overlay.slots, {
+    {
+      center = { x = 48, y = 144 },
+      textRect = { x = 8, y = 136, width = 80, height = 16 },
+      hitRect = { x = 0, y = 128, width = 94, height = 32 },
+    },
+    {
+      center = { x = 144, y = 144 },
+      textRect = { x = 104, y = 136, width = 80, height = 16 },
+      hitRect = { x = 96, y = 128, width = 96, height = 32 },
+    },
+    {
+      center = { x = 48, y = 176 },
+      textRect = { x = 8, y = 168, width = 80, height = 16 },
+      hitRect = { x = 0, y = 160, width = 94, height = 32 },
+    },
+    {
+      center = { x = 144, y = 176 },
+      textRect = { x = 104, y = 168, width = 80, height = 16 },
+      hitRect = { x = 96, y = 160, width = 96, height = 32 },
+    },
+  }, "action slots preserve independent source geometry")
+  assertImage(bundle, overlay.face, "normal action face")
+  assertNoTimelineOrSourceIdentity(overlay.face, "normal action face")
+end
+
+function T.quantity_overlay_publishes_source_controls_and_static_press_feedback(romFs)
+  local bundle = compile(romFs)
+  local overlay = assert(assert(bundle.manifest.interactive).overlays).quantity
+  Assert.deepEqual(overlay.controls, {
+    {
+      delta = 100,
+      role = "increment",
+      center = { x = 136, y = 104 },
+      hitRect = { x = 120, y = 88, width = 32, height = 24 },
+    },
+    {
+      delta = 10,
+      role = "increment",
+      center = { x = 168, y = 104 },
+      hitRect = { x = 152, y = 88, width = 32, height = 24 },
+    },
+    {
+      delta = 1,
+      role = "increment",
+      center = { x = 200, y = 104 },
+      hitRect = { x = 184, y = 88, width = 32, height = 24 },
+    },
+    {
+      delta = -100,
+      role = "decrement",
+      center = { x = 136, y = 152 },
+      hitRect = { x = 120, y = 136, width = 32, height = 24 },
+    },
+    {
+      delta = -10,
+      role = "decrement",
+      center = { x = 168, y = 152 },
+      hitRect = { x = 152, y = 136, width = 32, height = 24 },
+    },
+    {
+      delta = -1,
+      role = "decrement",
+      center = { x = 200, y = 152 },
+      hitRect = { x = 184, y = 136, width = 32, height = 24 },
+    },
+  }, "quantity controls preserve source order and geometry")
+  Assert.equal(overlay.pressTicks, 2, "quantity press feedback carries the source duration")
+  Assert.deepEqual(overlay.confirm.center, { x = 136, y = 176 })
+  Assert.deepEqual(overlay.confirm.hitRect, { x = 96, y = 168, width = 78, height = 24 })
+  Assert.deepEqual(overlay.cancelHitRect, { x = 178, y = 168, width = 78, height = 24 })
+  for _, visual in ipairs({
+    overlay.visuals.increment.normal,
+    overlay.visuals.increment.pressed,
+    overlay.visuals.decrement.normal,
+    overlay.visuals.decrement.pressed,
+    overlay.confirm.visual,
+  }) do
+    assertImage(bundle, visual, "quantity control visual")
+    assertNoTimelineOrSourceIdentity(visual, "quantity control visual")
   end
 end
 
