@@ -228,7 +228,6 @@ local function validManifest()
       description = {
         frame = {
           image = "assets/generated/bag/description-frame.png",
-          alternateImage = "assets/generated/bag/description-frame-alt.png",
           rect = rect(0, 144, 256, 48),
         },
         textRect = rect(20, 144, 228, 40),
@@ -426,7 +425,6 @@ end
 local function validFocusManifest()
   local manifest = validManifest()
   manifest.schema = "g4-bag-assets-v10"
-  manifest.hero.description.frame.alternateImage = nil
   local icon = function(key)
     return { image = "assets/generated/bag/move-" .. key .. ".png", width = 64, height = 16 }
   end

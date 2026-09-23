@@ -56,7 +56,6 @@ local function manifest(overrides)
       description = {
         frame = {
           image = "bag/description.png",
-          alternateImage = "bag/description-alt.png",
           rect = { x = 0, y = 144, width = 256, height = 48 },
         },
         textRect = { x = 20, y = 144, width = 228, height = 40 },

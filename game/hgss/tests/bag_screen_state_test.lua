@@ -476,7 +476,6 @@ local function composedManifest()
   manifested.hero.description = {
     frame = {
       image = "test/bag/description.png",
-      alternateImage = "test/bag/description.png",
       rect = { x = 0, y = 144, width = 256, height = 48 },
     },
     textRect = { x = 20, y = 144, width = 228, height = 40 },

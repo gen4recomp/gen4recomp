@@ -106,6 +106,61 @@ local function bagDynamicMaterial()
   }
 end
 
+---@return table<string, unknown>
+local function bagMoveSummary()
+  local function icon(key)
+    return { image = "test/bag/move-" .. key .. ".png", width = 64, height = 16 }
+  end
+  local typeIcons = {}
+  for _, key in ipairs({
+    "normal",
+    "fighting",
+    "flying",
+    "poison",
+    "ground",
+    "rock",
+    "bug",
+    "ghost",
+    "steel",
+    "mystery",
+    "fire",
+    "water",
+    "grass",
+    "electric",
+    "psychic",
+    "ice",
+    "dragon",
+    "dark",
+  }) do
+    typeIcons[key] = icon(key)
+  end
+  return {
+    background = bagImageRef("test/bag/hero-move-summary.png"),
+    labels = {
+      type = "TYPE",
+      pp = "PP",
+      category = "CATEGORY",
+      power = "POWER",
+      accuracy = "ACCURACY",
+      unavailable = "---",
+    },
+    text = {
+      type = { x = 0, y = 104 },
+      pp = { x = 16, y = 120 },
+      category = { x = 72, y = 104 },
+      power = { x = 168, y = 104 },
+      accuracy = { x = 168, y = 120 },
+      ppValue = { x = 48, y = 120 },
+      powerValue = { x = 232, y = 104 },
+      accuracyValue = { x = 232, y = 120 },
+    },
+    typeCenter = { x = 48, y = 112 },
+    categoryCenter = { x = 144, y = 112 },
+    typeIcons = typeIcons,
+    categoryIcons = { physical = icon("physical"), special = icon("special"), status = icon("status") },
+  }
+end
+
 ---@param gender string
 ---@return table<string, unknown>
 local function bagHeroDescriptor(gender)
@@ -203,11 +258,11 @@ local function bagManifest()
       description = {
         frame = {
           image = "test/bag/description-frame.png",
-          alternateImage = "test/bag/description-frame-alt.png",
           rect = bagRect(0, 144, 256, 48),
         },
         textRect = bagRect(20, 144, 228, 40),
       },
+      moveSummary = bagMoveSummary(),
       model = { male = bagHeroDescriptor("male"), female = bagHeroDescriptor("female") },
       animations = {
         states = states,
@@ -348,15 +403,41 @@ local function bagManifest()
       },
       overlays = {
         actionMenu = {
-          buttons = {
-            bagRect(8, 136, 80, 16),
-            bagRect(104, 136, 80, 16),
-            bagRect(8, 168, 80, 16),
-            bagRect(104, 168, 80, 16),
+          face = bagImageRef("test/bag/action-face.png"),
+          slots = {
+            { center = { x = 48, y = 144 }, textRect = bagRect(8, 136, 80, 16), hitRect = bagRect(0, 128, 94, 32) },
+            { center = { x = 144, y = 144 }, textRect = bagRect(104, 136, 80, 16), hitRect = bagRect(96, 128, 96, 32) },
+            { center = { x = 48, y = 176 }, textRect = bagRect(8, 168, 80, 16), hitRect = bagRect(0, 160, 94, 32) },
+            { center = { x = 144, y = 176 }, textRect = bagRect(104, 168, 80, 16), hitRect = bagRect(96, 160, 96, 32) },
           },
         },
         quantity = {
           digits = { bagRect(128, 112, 16, 24), bagRect(160, 112, 16, 24), bagRect(192, 112, 16, 24) },
+          controls = {
+            { delta = 100, role = "increment", center = { x = 136, y = 104 }, hitRect = bagRect(120, 88, 32, 24) },
+            { delta = 10, role = "increment", center = { x = 168, y = 104 }, hitRect = bagRect(152, 88, 32, 24) },
+            { delta = 1, role = "increment", center = { x = 200, y = 104 }, hitRect = bagRect(184, 88, 32, 24) },
+            { delta = -100, role = "decrement", center = { x = 136, y = 152 }, hitRect = bagRect(120, 136, 32, 24) },
+            { delta = -10, role = "decrement", center = { x = 168, y = 152 }, hitRect = bagRect(152, 136, 32, 24) },
+            { delta = -1, role = "decrement", center = { x = 200, y = 152 }, hitRect = bagRect(184, 136, 32, 24) },
+          },
+          visuals = {
+            increment = {
+              normal = bagImageRef("test/bag/quantity-increment-normal.png"),
+              pressed = bagImageRef("test/bag/quantity-increment-pressed.png"),
+            },
+            decrement = {
+              normal = bagImageRef("test/bag/quantity-decrement-normal.png"),
+              pressed = bagImageRef("test/bag/quantity-decrement-pressed.png"),
+            },
+          },
+          pressTicks = 2,
+          confirm = {
+            visual = bagImageRef("test/bag/quantity-confirm.png"),
+            center = { x = 136, y = 176 },
+            hitRect = bagRect(96, 168, 78, 24),
+          },
+          cancelHitRect = bagRect(178, 168, 78, 24),
         },
         descriptionFallback = { frame = bagRect(0, 144, 256, 48), textRect = bagRect(20, 144, 228, 40) },
       },
@@ -403,6 +484,42 @@ function FieldStatePresentationFixture.cache()
   cache:write("test/bag/hero-male.png", solidPng(32, 32))
   cache:write("test/bag/hero-female.png", solidPng(32, 32))
   cache:write("test/bag/description-frame.png", solidPng(32, 32))
+  cache:write("test/bag/hero-move-summary.png", solidPng(256, 192))
+  for _, key in ipairs({
+    "normal",
+    "fighting",
+    "flying",
+    "poison",
+    "ground",
+    "rock",
+    "bug",
+    "ghost",
+    "steel",
+    "mystery",
+    "fire",
+    "water",
+    "grass",
+    "electric",
+    "psychic",
+    "ice",
+    "dragon",
+    "dark",
+    "physical",
+    "special",
+    "status",
+  }) do
+    cache:write("test/bag/move-" .. key .. ".png", solidPng(64, 16))
+  end
+  for _, key in ipairs({
+    "action-face",
+    "quantity-increment-normal",
+    "quantity-increment-pressed",
+    "quantity-decrement-normal",
+    "quantity-decrement-pressed",
+    "quantity-confirm",
+  }) do
+    cache:write("test/bag/" .. key .. ".png", solidPng(64, 24))
+  end
   for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     for _, pocket in ipairs(BAG_POCKETS) do
       cache:write("test/bag/background-" .. state .. "-" .. pocket .. ".png", solidPng(32, 32))
@@ -413,7 +530,6 @@ function FieldStatePresentationFixture.cache()
       cache:write("test/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png", solidPng(32, 32))
     end
   end
-  cache:write("test/bag/description-frame-alt.png", solidPng(32, 32))
   for _, pocket in ipairs(BAG_POCKETS) do
     cache:write("test/bag/tabs-" .. pocket .. ".png", solidPng(256, 32))
   end
