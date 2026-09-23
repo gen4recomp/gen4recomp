@@ -483,6 +483,14 @@ function BagController:_selectionMatchesAction()
   return selected.item == self._actionItemKey
 end
 
+---@return table<string, unknown>[]
+function BagController:_currentActions()
+  local actions = self._resolveActions(self._view)
+  assert(type(actions) == "table", "the action policy returns dynamic actions")
+  validateActions(actions)
+  return actions
+end
+
 -- Confirming an item resolves the inventory-local menu for the refreshed
 -- view and snapshots the semantic selection the nested states verify
 -- against. Only an occupied focused cell may enter; an empty focus is a
@@ -496,9 +504,7 @@ function BagController:_openActionMenu()
   if type(selected) ~= "table" or type(selected.item) ~= "string" then
     return
   end
-  local actions = self._resolveActions(self._view)
-  assert(type(actions) == "table", "the action policy returns dynamic actions")
-  validateActions(actions)
+  local actions = self:_currentActions()
   self._actions = actions
   self._actionNode = 4
   for _, action in ipairs(actions) do
@@ -515,10 +521,7 @@ end
 -- Returns to the action menu with freshly resolved actions, keeping the
 -- previous menu position when the list still covers it.
 function BagController:_toActionMenu()
-  local actions = self._resolveActions(self._view)
-  assert(type(actions) == "table", "the action policy returns dynamic actions")
-  validateActions(actions)
-  self._actions = actions
+  self._actions = self:_currentActions()
   assert(self._actionNode >= 0 and self._actionNode <= 4, "action focus is a physical node")
   self:_clearQuantityPress()
   self._state = "action_menu"
@@ -536,6 +539,7 @@ function BagController:_chooseActionNode(node)
     self:_openActionMenu()
     return
   end
+  self._actions = self:_currentActions()
   if node == 4 then
     self:_toBrowsing()
     return
@@ -787,6 +791,7 @@ function BagController:_syncNested()
       self:_toBrowsing()
       return false
     end
+    self._actions = self:_currentActions()
     return true
   end
   if self._state == "move_select" then
