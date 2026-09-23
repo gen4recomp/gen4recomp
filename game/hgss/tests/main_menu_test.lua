@@ -2088,7 +2088,7 @@ end
 function T.hit_test_resolves_confirmation_modal_precedence()
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return {
           {
             saveId = "save-00000001",
@@ -2125,7 +2125,7 @@ function T.pointer_transition_during_dispatch_does_not_resolve_after_dispose()
   local menu = nil
   menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return {}
       end,
     },

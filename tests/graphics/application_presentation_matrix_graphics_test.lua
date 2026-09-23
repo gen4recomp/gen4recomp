@@ -419,7 +419,11 @@ local function iconCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   cache:writeLua(MonCache.iconManifestPath(), {
     schema = MonCache.ICON_MANIFEST_SCHEMA,
-    image = MonCache.iconImagePath(),
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.iconPagePath(0), width = 256, height = 128 },
+    },
+    pageIds = { 0 },
     entries = {
       ["MON0/f0"] = {
         x = 0,
@@ -427,6 +431,7 @@ local function iconCache()
         width = 32,
         height = 32,
         frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
+        pageId = 0,
       },
     },
     representative = { "MON0/f0" },
@@ -435,8 +440,61 @@ local function iconCache()
   for _ = 1, 64 * 64 do
     pixels[#pixels + 1] = string.char(200, 40, 40, 255)
   end
-  cache:write(MonCache.iconImagePath(), PngWriter.encode(64, 64, table.concat(pixels)))
+  cache:write(MonCache.iconPagePath(0), PngWriter.encode(64, 64, table.concat(pixels)))
   return cache
+end
+
+local function decodingQueue(cache)
+  local nextToken = 0
+  local live = {}
+  local queue = {}
+  function queue:request(kind, path, priority)
+    assert(kind == "image", "icon pages decode as images")
+    assert(priority == "demand", "visible party pages decode as demand")
+    nextToken = nextToken + 1
+    live[nextToken] = path
+    return nextToken
+  end
+  function queue:poll(token)
+    assert(live[token], "poll observes a live token")
+    return "ready"
+  end
+  function queue:take(token)
+    local path = assert(live[token], "take transfers a live token once")
+    live[token] = nil
+    local bytes = assert(cache:read(path), "the compiled icon page is present")
+    local fileData = assert(love.filesystem.newFileData(bytes, "icon-page.png"), "page bytes form a file")
+    return { imageData = assert(love.image.newImageData(fileData), "page bytes decode") }
+  end
+  function queue:cancel(token)
+    live[token] = nil
+  end
+  return queue
+end
+
+local function readyDerivedAssets()
+  return {
+    requestIconPage = function(pageId, _)
+      assert(type(pageId) == "number", "icon demand carries its page")
+      return true
+    end,
+  }
+end
+
+local function preparedProvider(cache, keys)
+  local provider = MonIconAssetProvider.new(cache, {
+    preparationQueue = decodingQueue(cache),
+    derivedAssets = readyDerivedAssets(),
+  })
+  local ready, failure
+  for _ = 1, 8 do
+    ready, failure = provider:prepareKeys(keys)
+    if ready or failure ~= nil then
+      break
+    end
+  end
+  Assert.isTrue(ready, "demanded icon pages prepare: " .. tostring(failure))
+  return provider
 end
 
 -- Party readability through the real renderer and borrowed fixture text:
@@ -445,7 +503,7 @@ end
 function T.party_cards_stay_readable_across_densities(scope)
   local lg = love.graphics
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-  local provider = MonIconAssetProvider.new(iconCache())
+  local provider = preparedProvider(iconCache(), { "MON0/f0" })
   local renderer = PartyScreenRenderer.new({ graphics = lg, text = text })
   local function slots()
     local list = {}

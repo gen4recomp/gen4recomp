@@ -53,7 +53,7 @@ function T.test_tooling_uses_run_scoped_temporary_directories()
 
   contains(testScript, 'receipt_dir="$(mktemp -d -- "$test_root/preparation.XXXXXXXX")"', "test script")
   contains(testScript, 'fresh_root="$(mktemp -d)"', "test script")
-  contains(testScript, 'run_dir="$(mktemp -d "${TMPDIR:-/tmp}/g4recomp-tests.XXXXXXXX")"', "test script")
+  contains(testScript, 'run_dir="$(mktemp -d "${TMPDIR:-/tmp}/portemon-tests.XXXXXXXX")"', "test script")
   contains(typecheckScript, 'LUALS_LOG_DIR="$(mktemp -d)"', "typecheck script")
 end
 

@@ -1035,19 +1035,21 @@ function T.starter_frames_draw_through_the_borrowed_field_window_primitive()
         end,
       }
     end
+    local MonCache = require("libs.assets.src.MonCache")
     presentation._imageEntries = {
       [manifest.backgrounds.host.image .. "|clamp|clamp"] = image(512, 192),
       [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
       [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
-      ["assets/generated/mon/portraits.png|clamp|clamp"] = image(80, 80),
+      [MonCache.portraitPagePath(0) .. "|clamp|clamp"] = image(80, 80),
+      [MonCache.portraitPagePath(1) .. "|clamp|clamp"] = image(80, 80),
     }
     presentation._cacheFs.loadLua = function(_, path)
       if path == "data/generated/mon/portraits.lua" then
         return {
           entries = {
-            a = { x = 0, y = 0, width = 80, height = 80 },
-            b = { x = 0, y = 0, width = 80, height = 80 },
-            c = { x = 0, y = 0, width = 80, height = 80 },
+            a = { x = 0, y = 0, width = 80, height = 80, pageId = 0 },
+            b = { x = 0, y = 0, width = 80, height = 80, pageId = 0 },
+            c = { x = 0, y = 0, width = 80, height = 80, pageId = 1 },
           },
         }
       end

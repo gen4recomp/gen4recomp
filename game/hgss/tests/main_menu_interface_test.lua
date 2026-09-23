@@ -12,7 +12,7 @@ local T = { tests = {} }
 
 local function singleStore()
   return {
-    list = function()
+    listMetadata = function()
       return {
         {
           saveId = "save-00000001",
