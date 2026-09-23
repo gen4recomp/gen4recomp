@@ -18,6 +18,28 @@ function T.provenance_pins_the_decomp_commit()
   Assert.isTrue(#BagSources.provenance.sources > 0, "provenance must name its source files")
 end
 
+-- The move-summary tables and resource facts are audited against the
+-- pinned move-icon assembly plus the resource-kind records for the
+-- reviewed palette, cell, animation, and char members. Provenance must
+-- keep naming that evidence without freezing future additions.
+function T.provenance_names_the_move_summary_evidence()
+  local BagSources = sources()
+  local listed = {}
+  for _, path in ipairs(BagSources.provenance.sources) do
+    listed[path] = true
+  end
+  local requiredMoveSummarySources = {
+    "asm/unk_02077678.s",
+    "files/data/resdat/resdat_00000024.json",
+    "files/data/resdat/resdat_00000025.json",
+    "files/data/resdat/resdat_00000026.json",
+    "files/data/resdat/resdat_00000055.json",
+  }
+  for _, path in ipairs(requiredMoveSummarySources) do
+    Assert.isTrue(listed[path], "provenance must name " .. path)
+  end
+end
+
 function T.bag_archive_resolves_through_the_semantic_alias()
   local BagSources = sources()
   Assert.equal(BagSources.archive.alias, "bag_ui")
