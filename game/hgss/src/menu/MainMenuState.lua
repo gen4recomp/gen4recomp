@@ -276,7 +276,7 @@ function MainMenuState:_continue(saveId)
     return
   end
   -- Continue is an intent carrying the selected save id, not a validity
-  -- claim: the owning route validates the record strictly after field core
+  -- claim: the owning route validates the record strictly after field runtime
   -- and location geometry are ready. Nothing loads here.
   self:_emit({ kind = "continue", saveId = assert(save.saveId) })
 end

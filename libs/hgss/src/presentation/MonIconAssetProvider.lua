@@ -5,8 +5,8 @@
 -- prepareKeys, which stages each page through compilation readiness, image
 -- worker decoding, and at most one GPU realization per call. Getters stay
 -- read-only: an unprepared page is a loud error, never a blank icon or a
--- draw-time load. Portrait pages are never acquired here: field core warms
--- the icon set, and portraits stay on demand elsewhere.
+-- draw-time load. Portrait pages are never acquired here: the visible party
+-- demands its icon pages through prepareKeys, and portraits stay on demand elsewhere.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")

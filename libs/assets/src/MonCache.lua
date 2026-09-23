@@ -270,7 +270,7 @@ end
 
 -- True only when the layout manifest is loadable and every icon page it
 -- declares is ready under its expected marker. Portrait coverage is never
--- required here: field core warms the icon set without the portraits.
+-- required here: the icon set covers party-demanded pages without the portraits.
 ---@param cacheFs CacheFs
 ---@param expectedMarkers table<integer, string> expected marker by zero-based page id
 ---@return boolean
