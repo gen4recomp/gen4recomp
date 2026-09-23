@@ -9,6 +9,13 @@ FieldYesNoRenderer.__index = FieldYesNoRenderer
 
 local CONTENT = { x = 25 * 8, y = 13 * 8, width = 6 * 8, height = 4 * 8 }
 
+local function fits(rect, bounds)
+  return rect.x >= bounds.x
+    and rect.y >= bounds.y
+    and rect.x + rect.width <= bounds.x + bounds.width
+    and rect.y + rect.height <= bounds.y + bounds.height
+end
+
 local function surfaceFor(topology)
   assert(type(topology) == "table" and type(topology.surfaces) == "table", "yes/no layout requires a screen topology")
   for _, surface in ipairs(topology.surfaces) do
@@ -59,7 +66,6 @@ function FieldYesNoRenderer:layout(status, topology, dialogueBox)
       surface = surface,
       content = content,
       scale = scale,
-      dialogueBox = dialogueBox,
       selectedIndex = status.selectedIndex,
       yesText = status.yesText,
       noText = status.noText,
@@ -67,12 +73,29 @@ function FieldYesNoRenderer:layout(status, topology, dialogueBox)
     }
   else
     scale = math.min(1, safe.width / CONTENT.width, safe.height / CONTENT.height)
-    content = {
-      x = safe.x + safe.width - CONTENT.width * scale,
-      y = safe.y + safe.height - CONTENT.height * scale,
-      width = CONTENT.width * scale,
-      height = CONTENT.height * scale,
-    }
+    local width = CONTENT.width * scale
+    local height = CONTENT.height * scale
+    local x = safe.x + safe.width - width
+    content = nil
+    if dialogueBox then
+      local candidates = {
+        { x = x, y = dialogueBox.y + dialogueBox.height, width = width, height = height },
+        { x = x, y = dialogueBox.y - height, width = width, height = height },
+      }
+      for _, candidate in ipairs(candidates) do
+        if fits(candidate, safe) then
+          content = candidate
+          break
+        end
+      end
+    end
+    content = content
+      or {
+        x = x,
+        y = safe.y + safe.height - height,
+        width = width,
+        height = height,
+      }
   end
   assert(content.x >= safe.x and content.y >= safe.y, "yes/no choice leaves the safe area")
   assert(content.x + content.width <= safe.x + safe.width, "yes/no choice exceeds the safe width")
@@ -80,7 +103,6 @@ function FieldYesNoRenderer:layout(status, topology, dialogueBox)
   return {
     surface = surface,
     content = content,
-    dialogueBox = dialogueBox,
     scale = scale,
     selectedIndex = status.selectedIndex,
     yesText = status.yesText,

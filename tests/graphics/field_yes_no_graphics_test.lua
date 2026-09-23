@@ -86,6 +86,43 @@ function T.single_display_choice_stays_inside_portrait_safe_area()
   text:release()
 end
 
+function T.single_display_choice_uses_dialogue_aware_candidate_order()
+  local rendererModule = loadYesNoRenderer()
+  local graphics = require("tests.support.FakeGraphics").new({ imageSizes = { { 144, 16 } } })
+  local cache = FieldUiFixture.cacheWithFontAndFrames()
+  local text = FieldTextRenderer.new({ cacheFs = cache, graphics = graphics })
+  local window = FieldWindowRenderer.new({ cacheFs = cache, manifest = FieldUiFixture.manifest(), graphics = graphics })
+  local renderer = rendererModule.new({ text = text, window = window, graphics = graphics })
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    safeRect = { x = 12, y = 24, width = 616, height = 432 },
+    role = "world",
+    touch = false,
+  })
+  local status = { active = true, selectedIndex = 0, yesText = "YES", noText = "NO", frameIndex = 1 }
+  local right = 12 + 616 - 6 * 8
+  local below = renderer:layout(status, topology, { x = 100, y = 100, width = 200, height = 80 })
+  Assert.deepEqual(below.content, { x = right, y = 180, width = 48, height = 32 }, "below-right wins when it fits")
+
+  local above = renderer:layout(status, topology, { x = 100, y = 410, width = 200, height = 40 })
+  Assert.deepEqual(
+    above.content,
+    { x = right, y = 378, width = 48, height = 32 },
+    "above-right is next when below does not fit"
+  )
+
+  local fallback = renderer:layout(status, topology, { x = 12, y = 24, width = 616, height = 432 })
+  Assert.deepEqual(
+    fallback.content,
+    { x = right, y = 424, width = 48, height = 32 },
+    "fallback stays at safe bottom-right"
+  )
+  renderer:release()
+  window:release()
+  text:release()
+end
+
 function T.focus_indicator_draw_uses_the_focus_asset_without_black_tint()
   local graphics =
     require("tests.support.FakeGraphics").new({ imageSizes = { { 512, 224 }, { 512, 16 }, { 96, 128 } } })

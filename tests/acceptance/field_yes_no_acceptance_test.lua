@@ -19,6 +19,7 @@ local T = {
 
 local VAR_FIRST_RESULT = FieldScriptSymbols.variablesByName.VAR_UNK_407C
 local VAR_SECOND_RESULT = FieldScriptSymbols.variablesByName.VAR_UNK_407D
+local VAR_THIRD_RESULT = FieldScriptSymbols.variablesByName.VAR_UNK_407F
 
 local function singleDisplay(width, height)
   return ScreenTopology.oneDisplay({
@@ -85,37 +86,62 @@ local function pressCancel(game)
   return snapshot
 end
 
--- A field script reaches the production Yes/No owner, moves from
--- Yes to No without wrapping, confirms No, then cancels a fresh choice to No.
--- The selected non-default frame and the ordinary dialogue remain live until
--- the script's explicit close_message operation.
+-- A field script reaches the production Yes/No owner and writes source-shaped
+-- values through the scheduler. The selected frame and ordinary dialogue
+-- remain live until the script's explicit close_message operation.
 function T.tests.field_script_yes_no_is_interactive_and_preserves_dialogue()
   local function exercise(game)
     game:waitForFieldEntry()
     game:startScript("acceptance.field_yes_no")
-    local opened = game:advanceUntil("field question reaches the printer boundary", function(snapshot)
-      return snapshot.dialogue.modal and snapshot.dialogue.waiting
+    local opened = game:advanceUntil("field Yes/No choice opens", function()
+      return game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil
     end, 480)
     Assert.equal(opened.dialogue.frameIndex, 1, "the choice must inherit the selected dialogue frame")
 
-    game:step()
+    pressAction(game)
+    game:advanceUntil("second field Yes/No choice opens", function()
+      return game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil
+    end, 120)
+    Assert.equal(game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT), 0, "Yes writes source value 0")
     pressDirection(game, "south")
     local afterConfirm = pressAction(game)
     Assert.isTrue(afterConfirm.dialogue.modal, "answering must not close the ordinary dialogue")
-    Assert.equal(game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT), 0)
 
-    for _ = 1, 3 do
-      game:step()
-    end
+    game:advanceUntil("third field Yes/No choice opens", function()
+      return game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil
+    end, 120)
+    Assert.equal(game.runtime.scripts.worldState:getVar(VAR_SECOND_RESULT), 1, "No writes source value 1")
     pressCancel(game)
     game:advanceUntil("field question script closes its dialogue", function(snapshot)
       return snapshot.foregroundScript == nil and not snapshot.dialogue.modal
     end, 120)
-    Assert.equal(game.runtime.scripts.worldState:getVar(VAR_SECOND_RESULT), 0)
+    Assert.equal(game.runtime.scripts.worldState:getVar(VAR_THIRD_RESULT), 1, "B writes source value 1")
   end
 
   withGame(singleDisplay(640, 480), exercise)
   withGame(singleDisplay(360, 640), exercise)
+end
+
+function T.tests.cancelling_active_field_yes_no_releases_only_the_choice()
+  withGame(singleDisplay(640, 480), function(game)
+    game:waitForFieldEntry()
+    game:startScript("acceptance.field_yes_no_cancel")
+    game:advanceUntil("field Yes/No choice opens for cancellation", function(snapshot)
+      return snapshot.dialogue.modal and game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil
+    end, 480)
+
+    local dialogueHost = game.runtime.scripts.dialogueHost
+    Assert.isTrue(game:snapshot().dialogue.modal, "ordinary dialogue is open before cancellation")
+    local scheduler = game.runtime.scripts.scheduler
+    local environmentId = assert(scheduler:foregroundEnvironmentId(), "the choice script owns the foreground")
+    scheduler:cancelEnvironment(environmentId, "acceptance choice cleanup")
+
+    Assert.isNil(dialogueHost:yesNoPresentation(), "cancelling the task removes the choice surface")
+    Assert.isTrue(game:snapshot().dialogue.modal, "cancelling the task leaves ordinary dialogue open")
+    scheduler:cancelEnvironment(environmentId, "repeat cleanup")
+    Assert.isNil(dialogueHost:yesNoPresentation(), "repeated cleanup keeps the choice closed")
+    Assert.isTrue(game:snapshot().dialogue.modal, "repeated cleanup still preserves ordinary dialogue")
+  end)
 end
 
 return T

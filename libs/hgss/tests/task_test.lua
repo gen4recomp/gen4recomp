@@ -289,10 +289,9 @@ T["gendered message selection"] = function()
   Assert.equal(h2.host.calls[2].args[1], "msg.female")
 end
 
--- 8. askYesNo writes the canonical boolean result through the task result,
--- and a real script condition reads it (the branch is driven by the written
--- value, not by script-construction-time truthiness).
-T["askYesNo result"] = function()
+-- 8. askYesNo's source-shaped result is consumed by the scheduler and a real
+-- script condition reads the resulting value.
+T["askYesNo source result"] = function()
   local h = harness({ printTicks = 1 })
   startForeground(
     h,
@@ -302,7 +301,7 @@ T["askYesNo result"] = function()
         S.say({ message = "msg.question" }),
         S.askYesNo({ message = "msg.choose", result = S.local_("accepted") }),
         S.if_({
-          condition = S.truthy(S.local_("accepted")),
+          condition = S.eq(S.local_("accepted"), 0),
           yes = { S.setVar({ variable = "VAR_AFTER", value = 1 }) },
           no = { S.setVar({ variable = "VAR_AFTER", value = 0 }) },
         }),
@@ -326,9 +325,65 @@ T["askYesNo result"] = function()
   h.scheduler:step(107, { pressedAction = true })
   h.scheduler:step(108, { pressedAction = true })
   h.scheduler:step(109, {})
-  -- The canonical result was written into the local before completion and
-  -- drove the following branch; the persistent var proves it.
+  -- Numeric comparison proves the scheduler wrote the source value zero.
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
+end
+
+local function directYesNoResult(inputs)
+  local host = FakeDialogueHost.new()
+  local state = AskYesNoTask.create({ node = { message = "msg.choose" } }, {})
+  local context = { services = { dialogue = host } }
+  AskYesNoTask.poll(state, context)
+  local result
+  for _, input in ipairs(inputs) do
+    context.input = input
+    result = AskYesNoTask.poll(state, context)
+  end
+  return result
+end
+
+T["askYesNo returns source value 0 for Yes"] = function()
+  local result = directYesNoResult({ { pressedAction = true } })
+  Assert.isTrue(result.complete)
+  Assert.equal(result.result, 0)
+end
+
+T["askYesNo returns source value 1 for No"] = function()
+  local result = directYesNoResult({ { pressedDirection = "down" }, { pressedAction = true } })
+  Assert.isTrue(result.complete)
+  Assert.equal(result.result, 1)
+end
+
+T["askYesNo returns source value 1 for B"] = function()
+  local result = directYesNoResult({ { pressedCancel = true } })
+  Assert.isTrue(result.complete)
+  Assert.equal(result.result, 1)
+end
+
+T["cancelling active askYesNo closes only the choice surface"] = function()
+  local h = harness({ printTicks = 1 })
+  startForeground(
+    h,
+    script("test.cancel_yesno", {
+      S.askYesNo({ message = "msg.question", result = S.var("VAR_AFTER") }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, {})
+  h.scheduler:step(101, {})
+  Assert.isTrue(h.host:isOpen())
+  h.scheduler:cancelEnvironment(assert(h.scheduler:environments()[1]).environmentId, "cancelled")
+
+  Assert.isTrue(h.host:isOpen(), "the choice cancellation leaves ordinary dialogue open")
+  local choiceClosed = false
+  for _, call in ipairs(h.host.calls) do
+    if call.name == "closeYesNo" then
+      choiceClosed = true
+    end
+    Assert.isFalse(call.name == "close", "choice cancellation must not close ordinary dialogue")
+  end
+  Assert.isTrue(choiceClosed, "the choice controller receives cleanup")
 end
 
 -- 9. Message bindings are passed through to the host at print time.

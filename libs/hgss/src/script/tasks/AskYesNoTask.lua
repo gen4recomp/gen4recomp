@@ -1,10 +1,8 @@
 -- ask_yes_no task implementation : opens the
 -- yes/no menu on the current message box, polls selection edges (never the
--- same tick the menu becomes eligible), writes the canonical boolean result
+-- same tick the menu becomes eligible), writes the source numeric result
 -- through the task result, and completes with the generic one-tick
--- continuation handoff. Import adapters convert the canonical true/false
--- back to the original numeric convention when a later variable comparison
--- requires it. Pure domain module: no love dependency.
+-- continuation handoff. Pure domain module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
@@ -62,14 +60,20 @@ function AskYesNoTask.poll(state, ctx)
   return {
     complete = true,
     state = state,
-    result = result.accepted and 1 or 0,
+    result = result.accepted and 0 or 1,
   }
 end
 
 ---@param state table<string, unknown>
 ---@param reason string
-function AskYesNoTask.cancel(state, reason)
+---@param ctx table<string, unknown>|nil
+function AskYesNoTask.cancel(state, reason, ctx)
   state.cancelled = reason
+  local services = ctx and ctx.services
+  local host = type(services) == "table" and services.dialogue or nil
+  if host then
+    host:closeYesNo()
+  end
 end
 
 ---@param state table<string, unknown>
