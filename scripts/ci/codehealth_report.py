@@ -801,7 +801,7 @@ def _render_summary(
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Code health — g4recomp</title>
+    <title>Code health — portemon</title>
     <link rel="stylesheet" href="../styles.css">
   </head>
   <body>

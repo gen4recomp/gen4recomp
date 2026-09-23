@@ -22,7 +22,7 @@ local function isTest()
 end
 
 function love.conf(t)
-  t.identity = "g4recomp"
+  t.identity = "portemon"
   t.version = "11.5"
   t.modules.physics = false
 
@@ -32,7 +32,7 @@ function love.conf(t)
     t.modules.joystick = false
     t.modules.touch = false
 
-    t.window.title = "g4recomp tests"
+    t.window.title = "portemon tests"
     t.window.width = WindowConfig.REFERENCE_WIDTH
     t.window.height = WindowConfig.REFERENCE_HEIGHT
     t.window.resizable = false
@@ -44,7 +44,7 @@ function love.conf(t)
     t.window.depth = 24 -- the render-target smoke tests need a depth buffer
     t.window.stencil = 8
   else
-    t.window.title = "g4recomp"
+    t.window.title = "portemon"
     t.window.width = WindowConfig.REFERENCE_WIDTH
     t.window.height = WindowConfig.REFERENCE_HEIGHT
     t.window.resizable = true
@@ -55,12 +55,12 @@ function love.conf(t)
     -- value is a configuration fault that refuses to boot rather than silently
     -- opening at a different size.
     local width, widthError =
-      WindowConfig.parseEnvDimension(os.getenv("G4RECOMP_WINDOW_WIDTH"), "G4RECOMP_WINDOW_WIDTH")
+      WindowConfig.parseEnvDimension(os.getenv("PORTEMON_WINDOW_WIDTH"), "PORTEMON_WINDOW_WIDTH")
     if widthError then
       error(widthError, 0)
     end
     local height, heightError =
-      WindowConfig.parseEnvDimension(os.getenv("G4RECOMP_WINDOW_HEIGHT"), "G4RECOMP_WINDOW_HEIGHT")
+      WindowConfig.parseEnvDimension(os.getenv("PORTEMON_WINDOW_HEIGHT"), "PORTEMON_WINDOW_HEIGHT")
     if heightError then
       error(heightError, 0)
     end

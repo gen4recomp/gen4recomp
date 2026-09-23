@@ -27,7 +27,7 @@ function VersionSelectState:draw()
   local lg = love.graphics
   local x, y = 24, 24
   lg.setColor(1, 1, 1)
-  lg.print("g4recomp — select a version", x, y)
+  lg.print("portemon — select a version", x, y)
   lg.setColor(0.85, 0.9, 0.95)
   for i, id in ipairs(self.ready) do
     lg.print(i .. ") " .. GameVersion.info(id).displayName, x, y + 12 + i * 22)

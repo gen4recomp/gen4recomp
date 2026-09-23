@@ -105,7 +105,7 @@ jobs:
         env:
           SDL_VIDEODRIVER: offscreen
           LIBGL_ALWAYS_SOFTWARE: "1"
-          G4RECOMP_REQUIRE_GRAPHICS_TESTS: "1"
+          PORTEMON_REQUIRE_GRAPHICS_TESTS: "1"
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
           printf '%s\n' '#!/bin/sh' 'exec "$RUNNER_TEMP/love-extracted/squashfs-root/AppRun" "$@"' > "$RUNNER_TEMP/bin/love"

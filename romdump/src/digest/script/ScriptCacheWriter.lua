@@ -225,7 +225,7 @@ end
 
 local function aggregateCoverage(records, plan)
   if #records == 0 then
-    return { source = { repository = "g4recomp", romSha1 = plan.romSha1 or "" }, totals = { members = 0, scripts = 0 } }
+    return { source = { repository = "portemon", romSha1 = plan.romSha1 or "" }, totals = { members = 0, scripts = 0 } }
   end
   if records[1].totals ~= nil then
     return Coverage.aggregate(records)
@@ -235,7 +235,7 @@ local function aggregateCoverage(records, plan)
     scripts = scripts + (record.scripts or 0)
   end
   return {
-    source = { repository = "g4recomp", romSha1 = plan.romSha1 or "" },
+    source = { repository = "portemon", romSha1 = plan.romSha1 or "" },
     totals = {
       members = #records,
       scripts = scripts,

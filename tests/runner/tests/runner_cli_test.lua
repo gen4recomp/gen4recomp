@@ -9,7 +9,7 @@
 --   * a run that *requires* a dump (--layer rom, --layer acceptance, strict
 --     mode, --rom-source) is an infrastructure failure when it is absent, never
 --     a skip-success;
---   * strict graphics mode (G4RECOMP_REQUIRE_GRAPHICS_TESTS) requires the
+--   * strict graphics mode (PORTEMON_REQUIRE_GRAPHICS_TESTS) requires the
 --     graphics capability when the selection includes the graphics layer, and
 --     fails a whole-run selection that executed no graphics test;
 --   * a failure in any layer, and a run that executed nothing at all, are
@@ -341,10 +341,10 @@ end
 -- Strict mode is environment-driven and makes the selected ROM capabilities
 -- mandatory.
 function T.strict_mode_comes_from_the_environment()
-  local strict = parse({}, { env = { G4RECOMP_REQUIRE_ROM_TESTS = "1" } })
+  local strict = parse({}, { env = { PORTEMON_REQUIRE_ROM_TESTS = "1" } })
   Assert.isTrue(strict.strict)
 
-  local relaxed = parse({}, { env = { G4RECOMP_REQUIRE_ROM_TESTS = "0" } })
+  local relaxed = parse({}, { env = { PORTEMON_REQUIRE_ROM_TESTS = "0" } })
   Assert.isFalse(relaxed.strict)
   Assert.isFalse(parse({}, { env = {} }).strict)
 
@@ -374,7 +374,7 @@ function T.default_run_without_a_dump_is_green_and_loudly_warned()
   contains(outcome.warning, "71", "warning reports the skipped ROM-conformance count")
   contains(outcome.warning, "23", "warning reports the skipped acceptance count")
   contains(outcome.warning, "scripts/buildcache.sh", "warning names the remediation command")
-  contains(outcome.warning, "G4RECOMP_REQUIRE_ROM_TESTS=1", "warning names the strict-mode command")
+  contains(outcome.warning, "PORTEMON_REQUIRE_ROM_TESTS=1", "warning names the strict-mode command")
 end
 
 -- The banner reports what a selection actually lost: a selection that never
@@ -402,7 +402,7 @@ end
 
 -- Strict mode turns the missing dump into an actionable failure.
 function T.strict_mode_without_a_dump_fails()
-  local plan = parse({}, { env = { G4RECOMP_REQUIRE_ROM_TESTS = "1" } })
+  local plan = parse({}, { env = { PORTEMON_REQUIRE_ROM_TESTS = "1" } })
   local run = runOf(
     { unit = { passed = 1194 }, rom = { skipped = 71 }, acceptance = { skipped = 23 } },
     { selectedCapabilities = { rom_dump = true, derived_cache = true } }
@@ -437,11 +437,11 @@ end
 -- records strict intent on the plan; the graphics capability itself is
 -- enforced in the outcome from the selected tests, not at parse time.
 function T.graphics_strict_mode_comes_from_the_environment()
-  local strict = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local strict = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   Assert.isTrue(strict.graphicsStrict, "strict graphics mode must be recorded in the plan")
   Assert.isFalse(hasCapability(strict, "graphics"), "parsing records intent; selection enforces the capability")
 
-  local relaxed = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "0" } })
+  local relaxed = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "0" } })
   Assert.isFalse(relaxed.graphicsStrict)
   Assert.isFalse(parse({}, { env = {} }).graphicsStrict)
 end
@@ -449,7 +449,7 @@ end
 -- Strict graphics mode turns an absent graphics capability into an actionable
 -- failure instead of a green run of skips.
 function T.graphics_strict_mode_without_the_capability_fails()
-  local plan = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local plan = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   local run = runOf({ unit = { passed = 1194 }, graphics = { skipped = 45 } }, {
     selectedCapabilities = { graphics = true },
   })
@@ -466,7 +466,7 @@ end
 -- failure under strict mode -- a regression that silently drops the renderer
 -- suites must not keep CI green.
 function T.graphics_strict_mode_fails_when_every_graphics_test_skipped()
-  local plan = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local plan = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   local run = runOf({ unit = { passed = 1194 }, graphics = { skipped = 45 } })
 
   local outcome = Cli.outcome(plan, { graphics = true }, run)
@@ -479,7 +479,7 @@ end
 -- The same counter when the graphics layer produced no results at all -- the
 -- layer exists in the selection but discovered or selected nothing.
 function T.graphics_strict_mode_fails_when_the_graphics_layer_executed_nothing()
-  local plan = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local plan = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   local run = runOf({ unit = { passed = 1194 } })
 
   local outcome = Cli.outcome(plan, { graphics = true }, run)
@@ -494,7 +494,7 @@ end
 
 -- Executed graphics tests satisfy the strict requirement whatever else runs.
 function T.graphics_strict_run_with_executed_graphics_tests_stays_green()
-  local plan = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local plan = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   local run = runOf({ unit = { passed = 1194 }, graphics = { passed = 45 } })
 
   local outcome = Cli.outcome(plan, { graphics = true }, run)
@@ -506,14 +506,14 @@ end
 -- Strict graphics mode is scoped to selections that include the graphics layer:
 -- a `--layer unit` partial run and `--list` never trip it.
 function T.graphics_strictness_does_not_trip_partial_runs_or_listing()
-  local unitPlan = parse({ "--layer", "unit" }, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local unitPlan = parse({ "--layer", "unit" }, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   Assert.isFalse(hasCapability(unitPlan, "graphics"), "a unit-only selection must not require the graphics capability")
 
   local unitOutcome = Cli.outcome(unitPlan, NO_DUMP, runOf({ unit = { passed = 1194 } }))
   Assert.equal(unitOutcome.exitCode, 0, "a unit-only partial run must stay green under strict graphics mode")
   Assert.isNil(unitOutcome.failure)
 
-  local listing = parse({ "--list" }, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local listing = parse({ "--list" }, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   Assert.isTrue(listing.list, "--list still parses under strict graphics mode")
 end
 
@@ -521,7 +521,7 @@ end
 -- execution counter (the generic empty-run failure still guards a filter that
 -- matches nothing at all).
 function T.graphics_strict_mode_respects_an_explicit_filter()
-  local plan = parse({ "--filter", "warp" }, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local plan = parse({ "--filter", "warp" }, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   local run = runOf({ unit = { passed = 1194 } })
 
   local outcome = Cli.outcome(plan, { graphics = true }, run)
@@ -745,7 +745,7 @@ end
 -- graphics it must not trip the whole-run execution counter when the
 -- selection contains no graphics test.
 function T.focused_tag_run_without_graphics_selection_stays_green_under_strict_graphics()
-  local plan = parse({ "--tag", "door" }, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local plan = parse({ "--tag", "door" }, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   local run = runOf({ unit = { passed = 1 } }, { selectedCapabilities = {} })
 
   local outcome = Cli.outcome(plan, { graphics = true }, run)
@@ -757,7 +757,7 @@ end
 -- A tag focus that only matches hidden slow tests reports the slow gate,
 -- not a missing graphics execution, under strict graphics.
 function T.slow_only_tag_focus_reports_the_slow_gate_not_missing_graphics()
-  local plan = parse({ "--tag", "census" }, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local plan = parse({ "--tag", "census" }, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   local run = runOf({}, { excludedSlow = 3 })
 
   local outcome = Cli.outcome(plan, { graphics = true }, run)
@@ -774,7 +774,7 @@ end
 -- Selection-aware strictness is not a relaxation: when the selected work
 -- declares the graphics capability, the absent capability still fails.
 function T.selected_graphics_capability_is_still_required_under_strict_graphics()
-  local plan = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local plan = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   local run = runOf({ graphics = { passed = 1 } }, { selectedCapabilities = { graphics = true } })
 
   local outcome = Cli.outcome(plan, NO_DUMP, run)
@@ -788,7 +788,7 @@ end
 -- unfiltered, untagged strict run that executed no graphics test fails even
 -- when the capability is available and nothing selected graphics work.
 function T.unfiltered_strict_run_with_no_executed_graphics_test_still_fails()
-  local plan = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local plan = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   Assert.isNil(plan.filter, "the whole-run selection has no filter focus")
   Assert.isNil(plan.tag, "the whole-run selection has no tag focus")
   local run = runOf({ unit = { passed = 1 } }, { selectedCapabilities = {} })

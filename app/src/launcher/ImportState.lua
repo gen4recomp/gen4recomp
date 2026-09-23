@@ -35,7 +35,7 @@ function ImportState.render(status, saveDir)
   local lg = love.graphics
   local x, y = 24, 24
   lg.setColor(1, 1, 1)
-  lg.print("g4recomp — HeartGold / SoulSilver ROM import", x, y)
+  lg.print("portemon — HeartGold / SoulSilver ROM import", x, y)
   lg.setColor(0.7, 0.7, 0.75)
   lg.print("Drop a .nds file onto this window to import it.", x, y + 28)
   if saveDir then

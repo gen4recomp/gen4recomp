@@ -31,7 +31,7 @@ local function scriptResource(id, generation, memberId)
     metadata = {
       generated = true,
       source = {
-        repository = "g4recomp",
+        repository = "portemon",
         romSha1 = generation,
         member = memberId,
         scriptIndex = 0,
@@ -47,7 +47,7 @@ local function scriptMember(memberId, id, generation)
     memberId = memberId,
     marker = generation .. ":member:" .. tostring(memberId),
     coverage = {
-      source = { repository = "g4recomp", romSha1 = generation },
+      source = { repository = "portemon", romSha1 = generation },
       totals = {
         members = 1,
         scripts = 1,

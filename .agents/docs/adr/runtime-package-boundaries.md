@@ -15,7 +15,7 @@ in the current package graph.
 
 The durable ownership question is: does behavior exist because Nintendo DS/Nitro works
 that way, because HGSS works that way, because the mod platform works that way, or because
-g4recomp stores or composes it that way? The answer determines its owner.
+portemon stores or composes it that way? The answer determines its owner.
 
 The application-top refinement is recorded separately in
 [Application and game boundaries](application-game-boundaries.md). This ADR remains the
@@ -35,7 +35,7 @@ alongside the existing foundation and asset packages.
 - `libs/hgss` owns recreated HGSS mechanisms, organized by `field`, `script`, `audio`,
   `presentation`, `ui`, and `save`. It may compose NDS, script, and asset mechanisms but
   does not own launcher, story, or new-game policy.
-- `libs/assets` owns g4recomp-defined generated and mod-facing serialization, validation,
+- `libs/assets` owns portemon-defined generated and mod-facing serialization, validation,
   paths, and schemas.
 - `libs/mons` owns the roster-independent mon/party domain with semantic records,
   Generation-IV creation, legality, and boxed serialization. It depends downward on

@@ -22,8 +22,8 @@ local ROM_GATED = { rom = true, acceptance = true }
 
 local ROM_CAPABILITIES = { "rom_dump", "derived_cache" }
 
-local STRICT_ENV = "G4RECOMP_REQUIRE_ROM_TESTS"
-local GRAPHICS_STRICT_ENV = "G4RECOMP_REQUIRE_GRAPHICS_TESTS"
+local STRICT_ENV = "PORTEMON_REQUIRE_ROM_TESTS"
+local GRAPHICS_STRICT_ENV = "PORTEMON_REQUIRE_GRAPHICS_TESTS"
 
 local BUILD_COMMAND = "scripts/buildcache.sh /path/to/rom.nds"
 local STRICT_COMMAND = STRICT_ENV .. "=1 scripts/test.sh"

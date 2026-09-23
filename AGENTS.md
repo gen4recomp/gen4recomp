@@ -115,7 +115,7 @@ package.
 - Reusable Nintendo container and Nitro/NNS format mechanics belong in `libs/nds`.
   HGSS/decomp-derived formats, NARC/member selection, source-specific overlay use, raw
   bitfields, source catalogs, and build-only source manifests stay in `romdump`.
-- `libs/assets` owns only g4recomp-defined generated/mod-facing formats, paths, schemas,
+- `libs/assets` owns only portemon-defined generated/mod-facing formats, paths, schemas,
   validation, and source-independent encoders/decoders. It must never import `romdump`.
 - `libs/nds`, `libs/script`, and `libs/hgss` are the runtime package owners described by
   their package guidance. `game/hgss` depends on HGSS mechanisms, not Nintendo implementation
@@ -229,7 +229,7 @@ Read `tests/AGENTS.md` for the test contract and runner mechanics.
   script, prefer adding one rather than teaching agents a fragile command sequence.
 - Write temporary files under `.agents/tmp/`.
 - ROM files (`.nds`, `.zip`) are commonly under workspace `tmp/`; ready dumps are commonly
-  under `.cache/love/g4recomp/{heartgold,soulsilver}`.
+  under `.cache/love/portemon/{heartgold,soulsilver}`.
 - Prefer direct command syntax over shell indirection/variable substitution when invoking
   skills or repository scripts.
 - Use scoped single-line commit subjects: `<scope>: <description>`.

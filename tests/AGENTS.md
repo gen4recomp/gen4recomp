@@ -68,7 +68,7 @@ ownership from the plausible bug.
   Filtering or tagging alone never pulls slow suites in; `--slow` must be
   present for them to run.
 - The exhaustive ROM check on a machine with a ready user-owned dump and
-  derived cache is `G4RECOMP_REQUIRE_ROM_TESTS=1 scripts/test.sh --slow`.
+  derived cache is `PORTEMON_REQUIRE_ROM_TESTS=1 scripts/test.sh --slow`.
 - Test modules are discovered recursively from roots in `tests/run.lua`; do not add a manual
   registry. A suite's layer comes from its discovery root.
 - Suites declare required `capabilities`. Optional unavailable capability uses

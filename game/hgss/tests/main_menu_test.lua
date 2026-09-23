@@ -1072,7 +1072,7 @@ function T.continue_card_announces_heading_facts_and_hides_brand_text()
     if call.text == expectedPlayTime then
       seenPlayTime = true
     end
-    if call.text == "g4recomp" then
+    if call.text == "portemon" then
       seenBrand = true
     end
   end

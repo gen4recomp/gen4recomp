@@ -1,7 +1,7 @@
 # romdump Agent Guidance
 
 Read root `AGENTS.md` first. This file owns rules specific to ROM ingestion, source research,
-and compilation into g4recomp assets.
+and compilation into portemon assets.
 
 ## Source ownership
 

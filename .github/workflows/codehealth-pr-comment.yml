@@ -58,7 +58,7 @@ jobs:
             const fs = require('fs');
             const path = require('path');
 
-            const MARKER = '<!-- gen4recomp-codehealth-hotspot-advisory -->';
+            const MARKER = '<!-- codehealth-hotspot-advisory -->';
 
             function fail(message) {
               core.setFailed(`codehealth comment: ${message}`);

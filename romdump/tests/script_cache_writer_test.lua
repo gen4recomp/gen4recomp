@@ -14,7 +14,7 @@ local GENERATION_B = string.rep("b", 40)
 
 local function memberCoverage(memberId, id, scriptIndex)
   return {
-    source = { repository = "g4recomp", romSha1 = "rom-sha" },
+    source = { repository = "portemon", romSha1 = "rom-sha" },
     totals = {
       members = 1,
       scripts = 1,
@@ -59,7 +59,7 @@ local function bundle()
       scrSeqNarc = { path = "a/0/1/2", sha1 = "archive-sha" },
     },
     coverageRecord = {
-      source = { repository = "g4recomp", romSha1 = "rom-sha" },
+      source = { repository = "portemon", romSha1 = "rom-sha" },
       totals = {
         members = 1,
         scripts = 2,

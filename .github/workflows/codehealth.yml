@@ -69,8 +69,8 @@ jobs:
       - name: Fetch previous code-health state
         id: previous
         env:
-          HISTORY_URL: https://gen4recomp.github.io/gen4recomp/codehealth/history.json
-          REPORT_URL: https://gen4recomp.github.io/gen4recomp/codehealth/quality-report.json
+          HISTORY_URL: https://portemon-nitro.github.io/portemon/codehealth/history.json
+          REPORT_URL: https://portemon-nitro.github.io/portemon/codehealth/quality-report.json
         run: |
           HISTORY_FILE="$RUNNER_TEMP/codehealth-previous-history.json"
           REPORT_FILE="$RUNNER_TEMP/codehealth-published-report.json"

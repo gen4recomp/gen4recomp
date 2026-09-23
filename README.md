@@ -1,6 +1,6 @@
-# g4recomp
+# portemon
 
-g4recomp is a LÖVE application that turns a legally-owned Nintendo DS
+portemon is a LÖVE application that turns a legally-owned Nintendo DS
 Pokémon HeartGold or SoulSilver ROM into a private, derived game data cache
 and runs the game from that cache.
 

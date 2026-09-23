@@ -3,7 +3,7 @@
 -- and exits with a status code.
 
 function love.conf(t)
-  t.identity = "g4recomp"
+  t.identity = "portemon"
   t.version = "11.5"
   t.modules.physics = false
   t.modules.window = false

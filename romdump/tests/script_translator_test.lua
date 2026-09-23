@@ -181,7 +181,7 @@ T["emitter determinism and validation"] = function()
     scriptIndex = 9,
     sourcePath = "romfs/scr_seq.narc",
     romSha1 = "rom-sha",
-    repository = "g4recomp",
+    repository = "portemon",
     game = "heartgold",
     sourceHash = "member-sha",
     coverage = resource.metadata.coverage,
@@ -278,7 +278,7 @@ T["coverage record counts opcodes"] = function()
   local report = Verifier.verifyScript(steps, ir.scripts[0], ir, lowered.omissions)
   local record = Coverage.record(ir, {
     [0] = { script = ir.scripts[0], resource = { id = "x" }, report = report },
-  }, { repository = "g4recomp", romSha1 = "rom-sha" })
+  }, { repository = "portemon", romSha1 = "rom-sha" })
   Assert.equal(record.totals.scripts, 1)
   Assert.equal(record.totals.reachableInstructions, 7)
   Assert.equal(record.opcodes[73].name, "ScrCmd_PlaySE")

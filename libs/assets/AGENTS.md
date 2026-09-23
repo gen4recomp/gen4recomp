@@ -1,6 +1,6 @@
 # libs/assets Agent Guidance
 
-Read root `AGENTS.md` first. `libs/assets` owns g4recomp-defined generated/mod-facing asset
+Read root `AGENTS.md` first. `libs/assets` owns portemon-defined generated/mod-facing asset
 contracts, not the Nintendo/HGSS source formats that produce them.
 
 ## Boundary

@@ -36,11 +36,11 @@ local TRACE_LIMIT = 32
 -- physical default save namespace. It is read once at module load: the
 -- shell produces only valid tokens, so a malformed value is a programming/
 -- infrastructure error that must fail loudly rather than be sanitized.
-local WORKER_NAMESPACE = os.getenv("G4RECOMP_TEST_ACCEPTANCE_NAMESPACE")
+local WORKER_NAMESPACE = os.getenv("PORTEMON_TEST_ACCEPTANCE_NAMESPACE")
 if WORKER_NAMESPACE ~= nil then
   assert(
     WORKER_NAMESPACE:match("^[A-Za-z0-9_.-]+$") ~= nil,
-    "G4RECOMP_TEST_ACCEPTANCE_NAMESPACE must be a single safe path segment: " .. WORKER_NAMESPACE
+    "PORTEMON_TEST_ACCEPTANCE_NAMESPACE must be a single safe path segment: " .. WORKER_NAMESPACE
   )
 end
 

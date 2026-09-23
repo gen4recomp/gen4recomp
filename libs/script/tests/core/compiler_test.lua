@@ -822,7 +822,7 @@ function T.provenance_must_not_clobber_a_copy_var_source_operand()
     metadata = {
       generated = true,
       source = {
-        repository = "g4recomp",
+        repository = "portemon",
         path = "romfs/a/0/1/2",
         game = "heartgold",
         archive = "scr_seq",

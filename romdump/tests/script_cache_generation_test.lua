@@ -32,7 +32,7 @@ local function member(memberId, id, generation)
     marker = generation .. ":member:" .. tostring(memberId),
     sourceHash = generation,
     coverage = {
-      source = { repository = "g4recomp", romSha1 = generation },
+      source = { repository = "portemon", romSha1 = generation },
       totals = {
         members = 1,
         scripts = 1,

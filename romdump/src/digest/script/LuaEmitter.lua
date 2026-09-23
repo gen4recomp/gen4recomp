@@ -182,7 +182,7 @@ function LuaEmitter.emitOverride(resource, meta)
     .. tostring(LuaEmitter.GENERATOR_VERSION)
     .. " },"
   lines[#lines + 1] = "    source = {"
-  lines[#lines + 1] = '      repository = "g4recomp",'
+  lines[#lines + 1] = '      repository = "portemon",'
   lines[#lines + 1] = "      path = " .. string.format("%q", meta.sourcePath) .. ","
   lines[#lines + 1] = '      game = "heartgold",'
   lines[#lines + 1] = '      archive = "scr_seq",'

@@ -276,7 +276,7 @@ function T.starting_an_import_disposes_the_active_field_state()
   Assert.notNil(App.importer)
 end
 
--- The bare "g4recomp" draw is developer branding on an empty frame: product
+-- The bare "portemon" draw is developer branding on an empty frame: product
 -- mode draws nothing, dev mode keeps the emergency text.
 function T.app_draw_keeps_the_emergency_brand_text_only_in_dev_mode()
   for _, dev in ipairs({ false, true }) do

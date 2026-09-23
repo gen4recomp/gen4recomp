@@ -21,7 +21,7 @@ local function throwsCode(code, fn)
 end
 
 -- Real-backend construction would write into the production save namespace
--- (saves/<versionId>/) under the g4recomp identity, so every test injects the
+-- (saves/<versionId>/) under the portemon identity, so every test injects the
 -- in-memory fake.
 local function save(versionId, backend)
   return SaveFs.forVersion(versionId, backend or FakeCache.new())

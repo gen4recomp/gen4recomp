@@ -15,7 +15,7 @@
 # re-implements option scanning. With a ready dump the published derived cache
 # is checked before the ROM-gated layers. The incremental builder runs only
 # when that audit finds no usable cache; with no dump those layers skip loudly.
-# G4RECOMP_REQUIRE_ROM_TESTS=1 makes a missing dump fatal.
+# PORTEMON_REQUIRE_ROM_TESTS=1 makes a missing dump fatal.
 # Exit status: 0 green, 1 failures or a missing required capability, 2 usage.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -31,7 +31,7 @@ trap cleanup EXIT
 
 # No inherited worker token may leak into planning, cache preparation, or
 # serial execution; only a worker subshell below exports one.
-unset G4RECOMP_TEST_ACCEPTANCE_NAMESPACE
+unset PORTEMON_TEST_ACCEPTANCE_NAMESPACE
 
 # Terminate every still-tracked child before waiting any of them, so one
 # long-running child cannot delay signal delivery to the others; then wait
@@ -68,7 +68,7 @@ export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 # The graphics layer is part of the required surface, so a whole-run selection
 # that executes no graphics test fails instead of passing silently. Callers
 # may still override it for diagnosis, like the SDL variables above.
-export G4RECOMP_REQUIRE_GRAPHICS_TESTS="${G4RECOMP_REQUIRE_GRAPHICS_TESTS:-1}"
+export PORTEMON_REQUIRE_GRAPHICS_TESTS="${PORTEMON_REQUIRE_GRAPHICS_TESTS:-1}"
 
 # `love romdump/ --build-cache` exits 2 with "no ready dump" when there is
 # nothing to prepare; any other nonzero status is a real preparation failure.
@@ -127,7 +127,7 @@ if [ "$prepare" = 1 ]; then
   fi
 
   if [ "$status" -eq 0 ]; then
-    export G4RECOMP_DERIVED_CACHE_READY=1
+    export PORTEMON_DERIVED_CACHE_READY=1
   fi
 fi
 
@@ -138,7 +138,7 @@ echo "Running tests..."
 if [ "$jobs" -eq 1 ]; then
   love app/ --test "$@" || status=$?
 else
-  run_dir="$(mktemp -d "${TMPDIR:-/tmp}/g4recomp-tests.XXXXXXXX")"
+  run_dir="$(mktemp -d "${TMPDIR:-/tmp}/portemon-tests.XXXXXXXX")"
   temp_dirs+=("$run_dir")
   run_token="${run_dir##*/}"
   echo "Running tests with $jobs workers..."
@@ -147,11 +147,11 @@ else
   trap 'cancel_parallel 143' TERM
   for ((worker = 1; worker <= jobs; worker++)); do
     (
-      unset G4RECOMP_TEST_AGGREGATE G4RECOMP_TEST_WORKER
-      export G4RECOMP_TEST_RUN_DIR="$run_dir"
-      export G4RECOMP_TEST_WORKERS="$jobs"
-      export G4RECOMP_TEST_WORKER="$worker"
-      export G4RECOMP_TEST_ACCEPTANCE_NAMESPACE="${run_token}-w${worker}"
+      unset PORTEMON_TEST_AGGREGATE PORTEMON_TEST_WORKER
+      export PORTEMON_TEST_RUN_DIR="$run_dir"
+      export PORTEMON_TEST_WORKERS="$jobs"
+      export PORTEMON_TEST_WORKER="$worker"
+      export PORTEMON_TEST_ACCEPTANCE_NAMESPACE="${run_token}-w${worker}"
       exec love app/ --test "$@"
     ) >"$run_dir/worker-$worker.log" 2>&1 &
     pids[$worker]=$!
@@ -172,10 +172,10 @@ else
     status="$worker_status"
   else
     (
-      unset G4RECOMP_TEST_WORKER G4RECOMP_TEST_ACCEPTANCE_NAMESPACE
-      export G4RECOMP_TEST_RUN_DIR="$run_dir"
-      export G4RECOMP_TEST_WORKERS="$jobs"
-      export G4RECOMP_TEST_AGGREGATE=1
+      unset PORTEMON_TEST_WORKER PORTEMON_TEST_ACCEPTANCE_NAMESPACE
+      export PORTEMON_TEST_RUN_DIR="$run_dir"
+      export PORTEMON_TEST_WORKERS="$jobs"
+      export PORTEMON_TEST_AGGREGATE=1
       exec love app/ --test "$@"
     ) &
     pids[1]=$!

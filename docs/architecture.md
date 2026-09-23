@@ -1,6 +1,6 @@
 # Architecture
 
-g4recomp separates source knowledge, generated contracts, reusable runtime
+portemon separates source knowledge, generated contracts, reusable runtime
 mechanisms, and product composition. The boundaries keep ROM-specific facts
 out of runtime code and keep saves independent from rebuildable assets.
 

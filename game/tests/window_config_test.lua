@@ -13,13 +13,13 @@ function T.reference_resolution_is_named_once()
 end
 
 function T.positive_integer_dimensions_parse()
-  local width, err = WindowConfig.parseEnvDimension("800", "G4RECOMP_WINDOW_WIDTH")
+  local width, err = WindowConfig.parseEnvDimension("800", "PORTEMON_WINDOW_WIDTH")
   Assert.isNil(err)
   Assert.equal(width, 800)
 end
 
 function T.unset_dimensions_are_absent()
-  local width, err = WindowConfig.parseEnvDimension(nil, "G4RECOMP_WINDOW_WIDTH")
+  local width, err = WindowConfig.parseEnvDimension(nil, "PORTEMON_WINDOW_WIDTH")
   Assert.isNil(width)
   Assert.isNil(err)
 end
@@ -33,19 +33,19 @@ local function assertRejected(raw, envName)
 end
 
 function T.zero_dimensions_are_rejected()
-  assertRejected("0", "G4RECOMP_WINDOW_WIDTH")
+  assertRejected("0", "PORTEMON_WINDOW_WIDTH")
 end
 
 function T.negative_dimensions_are_rejected()
-  assertRejected("-5", "G4RECOMP_WINDOW_HEIGHT")
+  assertRejected("-5", "PORTEMON_WINDOW_HEIGHT")
 end
 
 function T.fractional_dimensions_are_rejected()
-  assertRejected("12.5", "G4RECOMP_WINDOW_WIDTH")
+  assertRejected("12.5", "PORTEMON_WINDOW_WIDTH")
 end
 
 function T.garbage_dimensions_are_rejected()
-  assertRejected("garbage", "G4RECOMP_WINDOW_HEIGHT")
+  assertRejected("garbage", "PORTEMON_WINDOW_HEIGHT")
 end
 
 return { tests = T }

@@ -184,7 +184,7 @@ function App.draw()
   end
   if App.opts.dev then
     love.graphics.setColor(1, 1, 1)
-    love.graphics.print("g4recomp", 24, 24)
+    love.graphics.print("portemon", 24, 24)
   end
 end
 

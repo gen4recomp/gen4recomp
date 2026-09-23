@@ -13,7 +13,7 @@
 -- Readiness of the derived cache is not re-derived from markers: preparation is
 -- the shell entrypoint's step (`scripts/test.sh` runs `love romdump/
 -- --build-cache` before the ROM-gated layers) and it reports the outcome through
--- G4RECOMP_DERIVED_CACHE_READY. A ready raw dump alone therefore never claims a
+-- PORTEMON_DERIVED_CACHE_READY. A ready raw dump alone therefore never claims a
 -- current derived cache.
 
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -21,7 +21,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local Capabilities = {}
 
-Capabilities.DERIVED_CACHE_ENV = "G4RECOMP_DERIVED_CACHE_READY"
+Capabilities.DERIVED_CACHE_ENV = "PORTEMON_DERIVED_CACHE_READY"
 
 -- The smallest shader that still goes through the real GLSL compiler.
 local PREFLIGHT_SHADER = [[

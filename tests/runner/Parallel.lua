@@ -4,10 +4,10 @@ local LuaWriter = require("libs.codec.src.LuaWriter")
 
 local Parallel = {}
 
-Parallel.RUN_DIR_ENV = "G4RECOMP_TEST_RUN_DIR"
-Parallel.WORKERS_ENV = "G4RECOMP_TEST_WORKERS"
-Parallel.WORKER_ENV = "G4RECOMP_TEST_WORKER"
-Parallel.AGGREGATE_ENV = "G4RECOMP_TEST_AGGREGATE"
+Parallel.RUN_DIR_ENV = "PORTEMON_TEST_RUN_DIR"
+Parallel.WORKERS_ENV = "PORTEMON_TEST_WORKERS"
+Parallel.WORKER_ENV = "PORTEMON_TEST_WORKER"
+Parallel.AGGREGATE_ENV = "PORTEMON_TEST_AGGREGATE"
 Parallel.FRAGMENT_SCHEMA = "g4-test-worker-v1"
 
 local function positiveInteger(value, what)

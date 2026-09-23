@@ -262,7 +262,7 @@ function ScriptCompiler.compile(romFs, sha1hex, hashLua)
   local coverageRecord = Coverage.aggregate(records)
   coverageRecord.decodeNotes = decodeNotes
   coverageRecord.skippedMembers = plan.skippedMembers
-  coverageRecord.source = { repository = "g4recomp", romSha1 = plan.romSha1 }
+  coverageRecord.source = { repository = "portemon", romSha1 = plan.romSha1 }
   return {
     marker = plan.marker,
     index = plan.index,
@@ -303,7 +303,7 @@ function ScriptCompiler.emit(entry, opts)
     scriptIndex = entry.scriptIndex,
     sourcePath = opts.sourcePath,
     romSha1 = opts.romSha1,
-    repository = "g4recomp",
+    repository = "portemon",
     game = opts.game,
     sourceHash = entry.sourceHash or opts.sourceHash,
     coverage = entry.resource.metadata.coverage,

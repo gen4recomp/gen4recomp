@@ -93,7 +93,7 @@ end
 -- itself be executing inside an outer parallel worker; inherited run/worker
 -- identity must not leak into the nested command.
 local SANITIZE_ENV =
-  "unset G4RECOMP_TEST_RUN_DIR G4RECOMP_TEST_WORKERS G4RECOMP_TEST_WORKER G4RECOMP_TEST_AGGREGATE G4RECOMP_TEST_ACCEPTANCE_NAMESPACE;"
+  "unset PORTEMON_TEST_RUN_DIR PORTEMON_TEST_WORKERS PORTEMON_TEST_WORKER PORTEMON_TEST_AGGREGATE PORTEMON_TEST_ACCEPTANCE_NAMESPACE;"
 
 -- Shared preamble for every generated fake `love`: answers `--plan` with the
 -- exact `prepare=0`/`jobs=N` records the real plan protocol requires, using a
@@ -117,14 +117,14 @@ record_dir="$FAKE_LOVE_RECORD_DIR"
 ]]
 
 local NAMESPACE_FAKE_LOVE_BODY = [[
-if [ -n "${G4RECOMP_TEST_AGGREGATE:-}" ]; then
-  printf 'token=%s\n' "${G4RECOMP_TEST_ACCEPTANCE_NAMESPACE:-}" > "$record_dir/aggregate.txt"
+if [ -n "${PORTEMON_TEST_AGGREGATE:-}" ]; then
+  printf 'token=%s\n' "${PORTEMON_TEST_ACCEPTANCE_NAMESPACE:-}" > "$record_dir/aggregate.txt"
   exit 0
 fi
-if [ -n "${G4RECOMP_TEST_WORKER:-}" ]; then
-  worker="$G4RECOMP_TEST_WORKER"
+if [ -n "${PORTEMON_TEST_WORKER:-}" ]; then
+  worker="$PORTEMON_TEST_WORKER"
   {
-    printf 'token=%s\n' "${G4RECOMP_TEST_ACCEPTANCE_NAMESPACE:-}"
+    printf 'token=%s\n' "${PORTEMON_TEST_ACCEPTANCE_NAMESPACE:-}"
     printf 'xdg=%s\n' "${XDG_DATA_HOME:-}"
   } > "$record_dir/worker-$worker.txt"
   exit 0
@@ -134,13 +134,13 @@ exit 1
 ]]
 
 local CANCEL_FAKE_LOVE_BODY = [[
-if [ -n "${G4RECOMP_TEST_AGGREGATE:-}" ]; then
+if [ -n "${PORTEMON_TEST_AGGREGATE:-}" ]; then
   : > "$record_dir/aggregate-ran"
   exit 0
 fi
-if [ -n "${G4RECOMP_TEST_WORKER:-}" ]; then
-  worker="$G4RECOMP_TEST_WORKER"
-  run_dir="${G4RECOMP_TEST_RUN_DIR:-}"
+if [ -n "${PORTEMON_TEST_WORKER:-}" ]; then
+  worker="$PORTEMON_TEST_WORKER"
+  run_dir="${PORTEMON_TEST_RUN_DIR:-}"
   echo "$run_dir" > "$record_dir/worker-$worker.rundir"
   echo "$$" > "$record_dir/worker-$worker.pid"
   : > "$record_dir/worker-$worker.live"
@@ -169,8 +169,8 @@ exit 1
 ]]
 
 local AGGREGATE_CANCEL_FAKE_LOVE_BODY = [[
-if [ -n "${G4RECOMP_TEST_AGGREGATE:-}" ]; then
-  run_dir="${G4RECOMP_TEST_RUN_DIR:-}"
+if [ -n "${PORTEMON_TEST_AGGREGATE:-}" ]; then
+  run_dir="${PORTEMON_TEST_RUN_DIR:-}"
   echo "$run_dir" > "$record_dir/aggregate.rundir"
   echo "$$" > "$record_dir/aggregate.pid"
   echo x >> "$record_dir/aggregate.invocations"
@@ -195,8 +195,8 @@ if [ -n "${G4RECOMP_TEST_AGGREGATE:-}" ]; then
   wait "$child"
   exit 0
 fi
-if [ -n "${G4RECOMP_TEST_WORKER:-}" ]; then
-  worker="$G4RECOMP_TEST_WORKER"
+if [ -n "${PORTEMON_TEST_WORKER:-}" ]; then
+  worker="$PORTEMON_TEST_WORKER"
   : > "$record_dir/worker-$worker.done"
   exit 0
 fi
@@ -228,7 +228,7 @@ function T.parallel_worker_acceptance_tokens_are_disjoint_across_workers_and_com
       local command = table.concat({
         SANITIZE_ENV,
         "export PATH=" .. shellQuote(fakeLoveDir) .. ":$PATH;",
-        "export G4RECOMP_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
+        "export PORTEMON_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
         "export FAKE_LOVE_RECORD_DIR=" .. shellQuote(recordDir) .. ";",
         "export FAKE_LOVE_PLAN_JOBS=4;",
         "scripts/test.sh >" .. shellQuote(recordDir .. "/command.log") .. " 2>&1;",
@@ -312,7 +312,7 @@ function T.parent_term_cancellation_terminates_and_reaps_workers_before_run_dir_
     local launchCommand = table.concat({
       SANITIZE_ENV,
       "export PATH=" .. shellQuote(fakeLoveDir) .. ":$PATH;",
-      "export G4RECOMP_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
+      "export PORTEMON_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
       "export FAKE_LOVE_RECORD_DIR=" .. shellQuote(recordDir) .. ";",
       "export FAKE_LOVE_PLAN_JOBS=2;",
       "scripts/test.sh >" .. shellQuote(logFile) .. " 2>&1 &",
@@ -402,7 +402,7 @@ function T.parent_term_cancellation_terminates_and_reaps_aggregate_before_run_di
     local launchCommand = table.concat({
       SANITIZE_ENV,
       "export PATH=" .. shellQuote(fakeLoveDir) .. ":$PATH;",
-      "export G4RECOMP_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
+      "export PORTEMON_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
       "export FAKE_LOVE_RECORD_DIR=" .. shellQuote(recordDir) .. ";",
       "export FAKE_LOVE_PLAN_JOBS=2;",
       "scripts/test.sh >" .. shellQuote(logFile) .. " 2>&1 &",

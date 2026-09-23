@@ -63,7 +63,7 @@ function Session:compileMember(memberId)
   local resources, results = ScriptCompiler.translateMember(memberIr, scriptIndices, {
     stdCatalog = self.stdCatalog,
     romSha1 = self.romSha1,
-    repository = "g4recomp",
+    repository = "portemon",
     game = self.version,
     sourceHash = sourceHash,
   })
@@ -81,7 +81,7 @@ function Session:compileMember(memberId)
     resources = resources,
     results = results,
     coverage = Coverage.record(memberIr, results, {
-      repository = "g4recomp",
+      repository = "portemon",
       romSha1 = self.romSha1,
     }),
   }

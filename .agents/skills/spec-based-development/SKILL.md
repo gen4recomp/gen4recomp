@@ -1,6 +1,6 @@
 ---
 name: spec-based-development
-description: Implement finalized design-heavy implementation-spec bundles in gen4recomp through dependency-safe isolated subagent pipelines. Use when a human provides SPEC.md plus deliverables/Dxx-*.md and wants the repository changed while preserving pinned-baseline design contracts, exact repository reuse/compatibility prescriptions, acceptance-first development, TDD, provider-contract integration gates, fresh integrated design and branch reviews, exact per-deliverable commit messages, controlled deviations, and final branch verification without leaking temporary spec context into permanent artifacts.
+description: Implement finalized design-heavy implementation-spec bundles in portemon through dependency-safe isolated subagent pipelines. Use when a human provides SPEC.md plus deliverables/Dxx-*.md and wants the repository changed while preserving pinned-baseline design contracts, exact repository reuse/compatibility prescriptions, acceptance-first development, TDD, provider-contract integration gates, fresh integrated design and branch reviews, exact per-deliverable commit messages, controlled deviations, and final branch verification without leaking temporary spec context into permanent artifacts.
 ---
 
 # Spec-Based Development

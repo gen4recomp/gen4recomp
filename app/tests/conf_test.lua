@@ -61,39 +61,39 @@ function T.ordinary_configuration_defaults_to_reference_size()
   withOrdinaryConf({}, function(t)
     Assert.equal(t.window.width, WindowConfig.REFERENCE_WIDTH)
     Assert.equal(t.window.height, WindowConfig.REFERENCE_HEIGHT)
-    Assert.equal(t.window.title, "g4recomp")
+    Assert.equal(t.window.title, "portemon")
     Assert.isTrue(t.window.resizable)
     Assert.equal(t.window.vsync, 1)
   end)
 end
 
 function T.width_override_replaces_only_width()
-  withOrdinaryConf({ G4RECOMP_WINDOW_WIDTH = "800" }, function(t)
+  withOrdinaryConf({ PORTEMON_WINDOW_WIDTH = "800" }, function(t)
     Assert.equal(t.window.width, 800)
     Assert.equal(t.window.height, WindowConfig.REFERENCE_HEIGHT)
   end)
 end
 
 function T.height_override_replaces_only_height()
-  withOrdinaryConf({ G4RECOMP_WINDOW_HEIGHT = "600" }, function(t)
+  withOrdinaryConf({ PORTEMON_WINDOW_HEIGHT = "600" }, function(t)
     Assert.equal(t.window.width, WindowConfig.REFERENCE_WIDTH)
     Assert.equal(t.window.height, 600)
   end)
 end
 
 function T.both_dimensions_override_together()
-  withOrdinaryConf({ G4RECOMP_WINDOW_WIDTH = "800", G4RECOMP_WINDOW_HEIGHT = "600" }, function(t)
+  withOrdinaryConf({ PORTEMON_WINDOW_WIDTH = "800", PORTEMON_WINDOW_HEIGHT = "600" }, function(t)
     Assert.equal(t.window.width, 800)
     Assert.equal(t.window.height, 600)
   end)
 end
 
 function T.invalid_width_is_rejected()
-  assertInvalid({ G4RECOMP_WINDOW_WIDTH = "0" }, "G4RECOMP_WINDOW_WIDTH")
+  assertInvalid({ PORTEMON_WINDOW_WIDTH = "0" }, "PORTEMON_WINDOW_WIDTH")
 end
 
 function T.invalid_height_is_rejected()
-  assertInvalid({ G4RECOMP_WINDOW_HEIGHT = "garbage" }, "G4RECOMP_WINDOW_HEIGHT")
+  assertInvalid({ PORTEMON_WINDOW_HEIGHT = "garbage" }, "PORTEMON_WINDOW_HEIGHT")
 end
 
 return { tests = T }
