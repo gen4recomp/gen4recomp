@@ -1125,4 +1125,60 @@ function T.external_fill_of_the_focused_empty_cell_reconciles_selection_before_c
   Assert.equal(control:status().state, "action_menu", "the menu survives a quiet update")
 end
 
+---@param actions table<integer, table<string, unknown>>|nil the published action set
+---@param id string the action identity to locate
+---@return table<string, unknown>? the matching action record, when offered
+local function actionById(actions, id)
+  if actions == nil then
+    return nil
+  end
+  for _, action in ipairs(actions) do
+    if action.id == id then
+      return action
+    end
+  end
+  return nil
+end
+
+-- An open action menu survives an external revision that keeps the same
+-- selected item: the menu stays open on the item while its offered actions
+-- follow the live registration facts, and a later confirm dispatches the
+-- refreshed action rather than the snapshot from when the menu opened.
+function T.external_registration_revision_refreshes_same_item_actions_before_dispatch()
+  local bag = service()
+  Assert.isTrue(bag:add("BICYCLE", 1))
+  local cursor = BagCursor.new()
+  cursor:setPocket("key_items")
+  local control = controller(bag, cursor)
+  Assert.equal(selectedKey(control:status()), "BICYCLE", "setup selects the stocked bicycle")
+  control:updateFixed({ { type = "confirm" } })
+  local opened = control:status()
+  Assert.equal(opened.state, "action_menu", "confirming the bicycle opens the action menu")
+  Assert.equal(selectedKey(opened), "BICYCLE", "the menu keeps the confirmed selection")
+  Assert.equal(opened.actionNode, 1, "the lone registration action owns initial focus")
+  local offered =
+    assert(actionById(opened.actions, "register"), "the menu offers registration while the bicycle is unregistered")
+  Assert.equal(offered.slot, 1, "registration keeps its physical slot")
+  Assert.isNil(actionById(opened.actions, "unregister"), "release is absent while nothing is registered")
+  Assert.equal(bag:tryRegister("BICYCLE"), "slot1", "an external revision registers the same bicycle")
+  control:updateFixed({})
+  local refreshed = control:status()
+  Assert.equal(refreshed.state, "action_menu", "the menu survives a same-item external revision")
+  Assert.equal(selectedKey(refreshed), "BICYCLE", "the revision keeps the semantic selection")
+  Assert.equal(refreshed.actionNode, 1, "the revision keeps the physical focus node")
+  local released =
+    assert(actionById(refreshed.actions, "unregister"), "the quiet refresh exposes release for the registered bicycle")
+  Assert.equal(released.slot, 1, "release keeps the registration slot")
+  Assert.isNil(actionById(refreshed.actions, "register"), "registration is absent while registered")
+  Assert.isTrue(bag:unregister("BICYCLE"), "a second external revision releases the bicycle")
+  control:updateFixed({ { type = "confirm" } })
+  local dispatched = control:status()
+  Assert.equal(dispatched.state, "browsing", "confirming dispatches through the refreshed menu")
+  Assert.deepEqual(
+    bag:registeredItems(),
+    { "BICYCLE" },
+    "the confirm runs the current registration, not the stale release"
+  )
+end
+
 return { tests = T }
