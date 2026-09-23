@@ -215,6 +215,7 @@ function T.application_border_samples_whole_keyed_tiles()
   })
   local function quadRect(tile)
     local quad = window:clipQuad(0, tile)
+    ---@cast quad { x: number, y: number, w: number, h: number }
     return { quad.x, quad.y, quad.w, quad.h }
   end
   Assert.deepEqual(quadRect(6), { 48, 0, 8, 8 }, "the outer column keeps its tile: one band")
