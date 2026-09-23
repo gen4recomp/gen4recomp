@@ -9,6 +9,7 @@
 -- fake graphics namespace records call structure, not glyphs.
 
 local Assert = require("tests.support.Assert")
+local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
@@ -1351,12 +1352,13 @@ end
 
 function T.nested_states_label_their_responsive_buttons()
   local actionSlots = manifest().interactive.overlays.actionMenu.slots
-  local function drawFor(state)
+  local function drawFor(state, manifestRecord)
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
     local content = text()
+    local manifested = manifestRecord or manifest()
     local draw = BagRenderer.new({
       cacheFs = seedCache(),
-      manifest = manifest(),
+      manifest = manifested,
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
@@ -1382,6 +1384,24 @@ function T.nested_states_label_their_responsive_buttons()
   local moveGraphics, moveContent = drawFor("move_select")
   Assert.isTrue(textInRect(moveContent, "YES", actionSlots[3].textRect), "move selection labels its confirm button")
   Assert.equal(#moveGraphics.rectangles, 0, "move selection never falls back to primitive outlines")
+  -- The visible YES label and the pointer confirmation target must agree:
+  -- a point inside the slot-3 region where YES renders resolves through
+  -- the same generated action-slot record the renderer draws.
+  local sharedManifest = manifest()
+  local _, sharedContent = drawFor("toss_confirm", sharedManifest)
+  local sharedSlot = sharedManifest.interactive.overlays.actionMenu.slots[3]
+  Assert.isTrue(
+    textInRect(sharedContent, "YES", sharedSlot.textRect),
+    "the confirmation state labels its confirm button in the shared manifest"
+  )
+  local pointX = sharedSlot.textRect.x + sharedSlot.textRect.width / 2
+  local pointY = sharedSlot.textRect.y + sharedSlot.textRect.height / 2
+  local layout = BagLayout.resolve({ manifest = sharedManifest, heroVisible = true })
+  local confirmHit = assert(
+    layout.hitTest(pointX, pointY, { state = "toss_confirm" }),
+    "the rendered YES region resolves a confirmation target"
+  )
+  Assert.equal(confirmHit.kind, "confirm", "the rendered YES control and the hit target coincide")
 end
 
 function T.release_frees_images_exactly_once()

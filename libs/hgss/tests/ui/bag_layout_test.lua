@@ -64,12 +64,6 @@ local function manifest()
             { hitRect = { x = 8, y = 168, width = 80, height = 16 } },
             { hitRect = { x = 104, y = 168, width = 80, height = 16 } },
           },
-          buttons = {
-            { x = 8, y = 136, width = 80, height = 16 },
-            { x = 104, y = 136, width = 80, height = 16 },
-            { x = 8, y = 168, width = 80, height = 16 },
-            { x = 104, y = 168, width = 80, height = 16 },
-          },
         },
         quantity = {
           controls = {
@@ -87,28 +81,6 @@ local function manifest()
       },
     },
   }
-end
-
-local BUTTON_RECTS = {
-  { x = 8, y = 136, width = 80, height = 16 },
-  { x = 104, y = 136, width = 80, height = 16 },
-  { x = 8, y = 168, width = 80, height = 16 },
-  { x = 104, y = 168, width = 80, height = 16 },
-}
-
-local function manifestWithButtons()
-  local layoutManifest = manifest()
-  local buttons = {}
-  for index, rect in ipairs(BUTTON_RECTS) do
-    buttons[index] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
-  end
-  layoutManifest.interactive.overlays.actionMenu.slots = {
-    { hitRect = buttons[1] },
-    { hitRect = buttons[2] },
-    { hitRect = buttons[3] },
-    { hitRect = buttons[4] },
-  }
-  return layoutManifest
 end
 
 ---@param record table<string, unknown>
@@ -200,7 +172,7 @@ function T.resolve_rejects_a_missing_hero_visibility()
 end
 
 function T.nested_states_offer_responsive_controls_from_the_generated_buttons()
-  local resolved = BagLayout.resolve({ manifest = manifestWithButtons(), heroVisible = true })
+  local resolved = BagLayout.resolve({ manifest = manifest(), heroVisible = true })
   local function stateFor(state)
     local visibleSlots = {}
     for index = 1, 6 do
@@ -217,8 +189,27 @@ function T.nested_states_offer_responsive_controls_from_the_generated_buttons()
   local quantityConfirm =
     assert(resolved.hitTest(144, 176, stateFor("toss_quantity")), "the quantity confirm control confirms")
   Assert.equal(quantityConfirm.kind, "confirm")
-  local tossConfirm = assert(resolved.hitTest(144, 176, stateFor("toss_confirm")), "the confirmation state confirms")
-  Assert.equal(tossConfirm.kind, "confirm")
+  -- The confirmation screen shows its YES label in the bottom-left action
+  -- slot, so only that slot confirms; the quantity-picker confirm rectangle
+  -- lives on the right-hand side and must stay out of this state.
+  local confirmSlot = assert(
+    resolved.hitTest(48, 176, stateFor("toss_confirm")),
+    "the confirmation state confirms through its visible action slot"
+  )
+  Assert.equal(confirmSlot.kind, "confirm")
+  Assert.isNil(
+    resolved.hitTest(144, 176, stateFor("toss_confirm")),
+    "the quantity-only confirm region never confirms the toss"
+  )
+  local confirmCancel = assert(
+    resolved.hitTest(220, 176, stateFor("toss_confirm")),
+    "the confirmation state cancels through the normal cancel control"
+  )
+  Assert.equal(confirmCancel.kind, "cancel")
+  Assert.isNil(
+    resolved.hitTest(185, 176, stateFor("toss_confirm")),
+    "the quantity-only cancel extension never cancels the toss"
+  )
   local cell = assert(resolved.hitTest(76, 56, stateFor("move_select")), "move keeps its cell targets")
   Assert.equal(cell.kind, "item")
   Assert.equal(cell.visibleIndex, 0)
@@ -226,8 +217,8 @@ function T.nested_states_offer_responsive_controls_from_the_generated_buttons()
   Assert.equal(moveConfirm.kind, "confirm")
 end
 
-function T.v9_controls_resolve_physical_action_and_quantity_targets()
-  local layoutManifest = manifestWithButtons()
+function T.physical_action_and_quantity_targets_resolve_through_generated_geometry()
+  local layoutManifest = manifest()
   layoutManifest.interactive.overlays.actionMenu.slots = {
     {
       center = { x = 48, y = 144 },
@@ -315,7 +306,7 @@ function T.v9_controls_resolve_physical_action_and_quantity_targets()
 end
 
 function T.toss_states_hide_the_browsing_targets_underneath()
-  local resolved = BagLayout.resolve({ manifest = manifestWithButtons(), heroVisible = true })
+  local resolved = BagLayout.resolve({ manifest = manifest(), heroVisible = true })
   for _, state in ipairs({ "toss_quantity", "toss_confirm" }) do
     local visibleSlots = {}
     for index = 1, 6 do

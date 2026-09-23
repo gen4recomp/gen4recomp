@@ -715,7 +715,7 @@ function T.pointer_quantity_steps_confirm_and_nested_cancel_hold_across_updates(
   Assert.equal(control:status().quantity, 1, "the decrement affordance steps the picked quantity back")
   tap(control, layout, 144, 176)
   Assert.equal(control:status().state, "toss_confirm", "the confirm affordance asks for confirmation")
-  tap(control, layout, 144, 176)
+  tap(control, layout, 48, 176)
   local status = control:status()
   Assert.equal(status.state, "browsing", "confirming the toss returns to browsing")
   Assert.equal(bag:quantity("POTION"), 4, "one pointer toss removes the picked copies")

@@ -212,13 +212,11 @@ function BagLayout.resolve(spec)
       end
       return nil
     elseif buttonState == "toss_confirm" then
-      if quantity == nil then
-        quantity, quantityPressTicks, quantityCancelRect, quantityConfirmRect = quantityControls(interactive)
-      end
-      if LayoutGeometry.containsPoint(quantityConfirmRect, logicalX, logicalY) then
+      actionSlotRecords = actionSlotRecords or getActionSlots(interactive)
+      if LayoutGeometry.containsPoint(actionSlotRecords[3].hitRect, logicalX, logicalY) then
         return { kind = "confirm" }
       end
-      if LayoutGeometry.containsPoint(quantityCancelRect, logicalX, logicalY) then
+      if LayoutGeometry.containsPoint(cancelRect, logicalX, logicalY) then
         return { kind = "cancel" }
       end
       return nil

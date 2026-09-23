@@ -151,13 +151,6 @@ local function controller(bag, cursor, layoutManifest)
   })
 end
 
--- The same geometry plus the compiled action-menu button rectangles, so
--- pointer taps can reach the same semantic actions keyboard input chooses.
-local function manifestWithButtons()
-  local layoutManifest = manifest()
-  return layoutManifest
-end
-
 local function hostAt(layout, logicalX, logicalY)
   local _ = layout
   return logicalX, logicalY
@@ -563,7 +556,7 @@ function T.pointer_button_tap_matches_the_keyboard_choice()
   Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable item")
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
-  local layoutManifest = manifestWithButtons()
+  local layoutManifest = manifest()
   local control = controller(bag, cursor, layoutManifest)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   openActionMenu(control)
@@ -585,7 +578,7 @@ function T.pointer_cell_tap_steers_the_move_target()
   Assert.isTrue(bag:add("ITEM_1", 2), "setup stocks a second manual-order item")
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
-  local layoutManifest = manifestWithButtons()
+  local layoutManifest = manifest()
   local control = controller(bag, cursor, layoutManifest)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   openActionMenu(control)
@@ -612,11 +605,16 @@ local function tapButton(control, layout, layoutManifest, buttonIndex)
   local view = control:status()
   local overlay = assert(layoutManifest.interactive.overlays, "the pointer journey needs generated geometry")
   local geometry
-  if view.state == "toss_quantity" or view.state == "toss_confirm" then
+  if view.state == "toss_quantity" then
     local controls = assert(overlay.quantity.controls, "the quantity controls must be generated")
     geometry = buttonIndex == 1 and controls[6].hitRect
       or buttonIndex == 2 and controls[3].hitRect
       or buttonIndex == 3 and overlay.quantity.confirm.hitRect
+  elseif view.state == "toss_confirm" then
+    -- The confirmation screen draws YES in the bottom-left action slot,
+    -- so pointer confirmation taps that slot instead of the
+    -- quantity-picker confirm rectangle used by the previous state.
+    geometry = assert(overlay.actionMenu.slots[3], "the confirmation slot must be generated").hitRect
   elseif view.state == "action_menu" then
     local action = assert(view.actions[buttonIndex], "the tapped dynamic action must be present")
     geometry = assert(overlay.actionMenu.slots[action.slot + 1], "the action slot must be generated").hitRect
@@ -650,7 +648,7 @@ function T.pointer_only_toss_picks_confirms_once_without_early_mutation()
   Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable item")
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
-  local layoutManifest = manifestWithButtons()
+  local layoutManifest = manifest()
   local control = controller(bag, cursor, layoutManifest)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
@@ -694,7 +692,7 @@ function T.pointer_only_toss_cancellation_returns_one_level_without_mutation()
   Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable item")
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
-  local layoutManifest = manifestWithButtons()
+  local layoutManifest = manifest()
   local control = controller(bag, cursor, layoutManifest)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
@@ -727,7 +725,7 @@ function T.pointer_quantity_controls_match_press_and_release_targets()
   Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable item")
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
-  local layoutManifest = manifestWithButtons()
+  local layoutManifest = manifest()
   local control = controller(bag, cursor, layoutManifest)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   openMenuByPointer(control, layout, 0)
@@ -754,7 +752,7 @@ function T.pointer_only_move_selects_a_target_then_confirms_once()
   Assert.isTrue(bag:add("ITEM_1", 2), "setup stocks a second manual-order item")
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
-  local layoutManifest = manifestWithButtons()
+  local layoutManifest = manifest()
   local control = controller(bag, cursor, layoutManifest)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
@@ -789,7 +787,7 @@ function T.pointer_only_move_cancellation_restores_the_cursor_without_mutation()
   Assert.isTrue(bag:add("ITEM_1", 2), "setup stocks a second manual-order item")
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
-  local layoutManifest = manifestWithButtons()
+  local layoutManifest = manifest()
   local control = controller(bag, cursor, layoutManifest)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
@@ -815,7 +813,7 @@ function T.pointer_only_register_and_unregister_commit_once_each_with_a_refresh(
   Assert.isTrue(bag:add("BICYCLE", 1), "setup stocks a registerable key item")
   local cursor = BagCursor.new()
   cursor:setPocket("key_items")
-  local layoutManifest = manifestWithButtons()
+  local layoutManifest = manifest()
   local control = controller(bag, cursor, layoutManifest)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
