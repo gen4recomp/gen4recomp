@@ -1236,7 +1236,23 @@ function FieldRuntime:update(dt)
     -- advances once per fixed tick right after, so a same-tick start
     -- observes the committed placement.
     if self.followingMon then
-      self.followingMon:update()
+      local currentMap = self.session.currentMap
+      local actorMapId = self.actors and self.actors.currentMapId
+      if currentMap and self.actors then
+        assert(currentMap.mapId ~= nil, "field logical map identity is required")
+        if actorMapId == nil then
+          -- Map entry owns publication of the destination actor set. Until it
+          -- publishes an identity, the follower has no coherent map to
+          -- reconcile against.
+          assert(self.session.mapEntryController:isActive(), "field actor map identity is required")
+        elseif currentMap.mapId ~= actorMapId then
+          assert(self.session.mapEntryController:isActive(), "field actor map ownership drifted outside map entry")
+        else
+          self.followingMon:update()
+        end
+      else
+        self.followingMon:update()
+      end
     end
     if self.followingMonTransition then
       self.followingMonTransition:updateFixed()

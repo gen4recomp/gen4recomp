@@ -8,6 +8,9 @@
 -- starter and field-script paths use.
 
 local Assert = require("tests.support.Assert")
+local CacheFs = require("libs.storage.src.CacheFs")
+local RomFs = require("romdump.src.source.RomFs")
+local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 
@@ -332,6 +335,72 @@ function T.tests.save_and_continue_reconstructs_the_partner()
     Assert.deepEqual(after, before, "save/continue preserves the exact mon identity and party bytes")
     Assert.notNil(partnerId(game), "continue reconstructs exactly one partner from party state")
   end)
+end
+
+function T.tests.partner_crosses_new_bark_route_29_seam_without_stale_map_permission()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local romFs, err = RomFs.open(versionId)
+  assert(romFs, tostring(err))
+  local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
+  romFs:close()
+
+  local game = AcceptanceHarness.new():boot({
+    versionId = versionId,
+    map = "MAP_NEW_BARK",
+    save = "fresh",
+    fieldOptions = { recordingScriptHosts = true },
+  })
+  OpeningLifecycle.seedNewBarkWestExitScene(game)
+  OpeningLifecycle.settleNewBarkFriendScene(game)
+  local ok, failure = xpcall(function()
+    game:waitForFieldReady()
+    gift(game, "CHIKORITA")
+    waitForPartner(game)
+
+    local handoffs = {}
+    local staleFollowerCalls = 0
+    local session = assert(game.runtime.session)
+    local originalSessionUpdate = session.updateFixed
+    session.updateFixed = function(self)
+      originalSessionUpdate(self)
+      local logicalMapId = assert(self.currentMap).mapId
+      local actorMapId = game.runtime.actors.currentMapId
+      if logicalMapId ~= actorMapId then
+        handoffs[#handoffs + 1] = { logicalMapId = logicalMapId, actorMapId = actorMapId }
+      end
+    end
+    local followingMon = assert(game.runtime.followingMon)
+    local originalFollowingUpdate = followingMon.update
+    followingMon.update = function(self)
+      local logicalMapId = assert(game.runtime.session.currentMap).mapId
+      if logicalMapId ~= game.runtime.actors.currentMapId then
+        staleFollowerCalls = staleFollowerCalls + 1
+      end
+      originalFollowingUpdate(self)
+    end
+
+    game:moveTo(facts.zoneBoundary.approach)
+    game:face(facts.zoneBoundary.direction)
+    game:move(facts.zoneBoundary.direction)
+    local crossed = game:advanceUntil("New Bark to Route 29 follower seam", function(snapshot)
+      return snapshot.mapId == facts.route29.mapId
+    end, 120)
+    game:waitForFieldReady()
+
+    Assert.isNil(game.runtime.errorText, "the seamless follower handoff must not fault")
+    Assert.isTrue(#handoffs > 0, "the production seam must expose a transient logical/actor map mismatch")
+    Assert.equal(staleFollowerCalls, 0, "follower reconciliation must wait for coherent map ownership")
+    Assert.equal(crossed.mapId, facts.route29.mapId)
+    Assert.equal(game.runtime.session.currentMap.mapId, facts.route29.mapId)
+    Assert.equal(game.runtime.actors.currentMapId, facts.route29.mapId)
+    Assert.notNil(partnerId(game), "the active follower must survive the seam")
+    Assert.notNil(game:snapshot().actors[partnerId(game)], "the follower must be published on Route 29")
+    Assert.equal(game:renderAttempts(), 0, "follower handoff acceptance must stop before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(failure, 0)
+  end
 end
 
 return T
