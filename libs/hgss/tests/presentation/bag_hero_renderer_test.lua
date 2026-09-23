@@ -132,7 +132,7 @@ local function validManifest()
     }
   end
   return {
-    schema = "g4-bag-assets-v8",
+    schema = "g4-bag-assets-v10",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -939,7 +939,7 @@ function T.scene_edge_colors_come_from_the_generated_records()
   withDoubles(function()
     local Hero = requireHero()
     local manifest = validManifest()
-    manifest.schema = "g4-bag-assets-v8"
+    manifest.schema = "g4-bag-assets-v10"
     manifest.hero.presentation.edgeColors = {
       { r = 10, g = 10, b = 10 },
       { r = 15, g = 9, b = 4 },
@@ -964,7 +964,7 @@ function T.scene_edge_colors_come_from_the_generated_records()
     Assert.isNil(edgeColors[8], "the edge table carries no ninth entry")
     renderer:release()
     local missing = validManifest()
-    missing.schema = "g4-bag-assets-v8"
+    missing.schema = "g4-bag-assets-v10"
     missing.hero.presentation.edgeColors = nil
     Assert.throws(function()
       Hero.new({ cacheFs = stubCache(), manifest = missing, graphics = FakeGraphics({}) })

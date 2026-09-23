@@ -16,6 +16,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local BagCache = require("libs.assets.src.BagCache")
 
 ---@class BagHeroSync
 ---@field pocket string
@@ -260,7 +261,7 @@ function BagHeroRenderer.new(opts)
   local cacheFs = assert(opts.cacheFs, "the bag hero renderer requires the asset filesystem")
   assert(type(cacheFs.read) == "function", "the bag hero renderer requires a readable asset filesystem")
   local manifest = assert(opts.manifest, "the bag hero renderer requires the bag manifest")
-  assert(manifest.schema == "g4-bag-assets-v8", "the bag hero renderer requires the v8 bag manifest")
+  assert(manifest.schema == BagCache.SCHEMA, "the bag hero renderer requires the current bag manifest")
   local hero = assert(manifest.hero, "the bag manifest must carry its hero pane")
   local model = assert(hero.model, "the hero pane must carry its gender models")
   assert(type(model.male) == "table", "the hero pane must carry its male model")

@@ -405,7 +405,7 @@ end
 function T.canonical_hero_matches_the_independent_retail_projection(romFs)
   local bundle = compileBundle(romFs)
   local manifest = assert(bundle.manifest)
-  Assert.equal(manifest.schema, "g4-bag-assets-v8", "the oracle compares against the current hero contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v10", "the oracle compares against the current hero contract")
   local states = assert(assert(manifest.hero).animations.states, "the bundle carries hero pocket states")
   Assert.isTrue(#states >= 2, "the oracle needs two pocket states")
   local pockets = { states[1].pocket, states[2].pocket }
@@ -621,7 +621,7 @@ end
 function T.settled_pockets_reframe_the_hero_from_source_records(romFs)
   local bundle = compileBundle(romFs)
   local manifest = assert(bundle.manifest)
-  Assert.equal(manifest.schema, "g4-bag-assets-v8", "the reframe comparison uses the current hero contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v10", "the reframe comparison uses the current hero contract")
   local states = assert(assert(manifest.hero).animations.states, "the bundle carries hero pocket states")
   Assert.isTrue(#states >= 2, "the reframe needs two pocket states")
   local pocketA, pocketB = states[1].pocket, states[2].pocket
