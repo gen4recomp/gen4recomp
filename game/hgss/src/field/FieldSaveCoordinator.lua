@@ -25,6 +25,7 @@ local function canCapture(session, allowMenu)
     and session.player
     and session.player.motion == "idle"
     and (not session.transition or session.transition.phase == FieldTransition.PHASES.idle)
+    and not session.mapEntryController:isActive()
     and (not session.dialogue or not session.dialogue:isModal())
     and (not session.signpost or not session.signpost:isModal())
     and (
@@ -40,7 +41,7 @@ end
 function FieldSaveCoordinator:capture(allowMenu)
   local runtime = self.runtime
   if not canCapture(runtime.session, allowMenu == true) then
-    return nil, "Save deferred: movement, transition, or modal state is active"
+    return nil, "Save deferred: movement, transition, map entry, or modal state is active"
   end
   if runtime.playerAvatar and not runtime.playerAvatar:isStableForSave() then
     return nil, "Save deferred: avatar transition state is not stable"

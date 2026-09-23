@@ -105,6 +105,7 @@ end
 -- publish the same real menu and write its selected HGSS value.
 function T.tests.restart_after_hgss_menu_begin_resumes_the_real_menu_builder()
   withGame({}, function(game)
+    game:waitForFieldEntry()
     game:startScript(VANILLA_MENU)
     game:step()
 

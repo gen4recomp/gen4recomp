@@ -149,6 +149,11 @@ local function captureRuntime(overrides)
         surfaceId = 2,
         facing = "south",
       },
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
       currentMap = { mapId = 60, terrainDependencyHash = "terrain-heartgold", effectiveWeatherId = 11 },
     },
     scripts = {
@@ -260,6 +265,60 @@ function T.captureGameSave_refuses_an_unstable_boundary_without_mutating_state()
   Assert.isNil(snapshot)
   Assert.isTrue(type(reason) == "string" and reason ~= "")
   Assert.equal(runtime.session.player.motion, "walking")
+end
+
+function T.captureGameSave_refuses_active_map_entry_before_snapshot_work()
+  local activityReads = 0
+  local runtime = captureRuntime()
+  runtime.session.mapEntryController = {
+    scriptScheduler = {},
+    initController = nil,
+    autoAcknowledgePresentation = false,
+    stageName = "transition",
+    mode = "full",
+    connectionArrivalPending = false,
+    prePresentationResume = false,
+    isActive = function()
+      activityReads = activityReads + 1
+      return true
+    end,
+  }
+  local snapshotCalls = { world = 0, objects = 0, scripts = 0 }
+  runtime.scripts.worldState.capture = function()
+    snapshotCalls.world = snapshotCalls.world + 1
+    return { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } }
+  end
+  runtime.actors.captureObjects = function()
+    snapshotCalls.objects = snapshotCalls.objects + 1
+    return { schema = "g4-field-objects-v1", rng = { state = 1, calls = 0 }, actors = {} }
+  end
+  local ScriptSave = require("libs.script.src.ScriptSave")
+  local originalScriptCapture = ScriptSave.capture
+  ScriptSave.capture = function()
+    snapshotCalls.scripts = snapshotCalls.scripts + 1
+    return { schema = "g4-script-save-v1", capturedAtSimulationTick = 42 }
+  end
+  local playerMotion = runtime.session.player.motion
+  local ok, snapshot, reason = pcall(function()
+    return runtime:captureGameSave()
+  end)
+  ScriptSave.capture = originalScriptCapture
+  Assert.isTrue(ok, tostring(snapshot))
+  Assert.isNil(snapshot)
+  Assert.isTrue(type(reason) == "string" and reason:find("map entry", 1, true) ~= nil)
+  Assert.equal(activityReads, 1)
+  Assert.equal(snapshotCalls.world, 0)
+  Assert.equal(snapshotCalls.objects, 0)
+  Assert.equal(snapshotCalls.scripts, 0)
+  Assert.equal(runtime.session.player.motion, playerMotion)
+
+  local manual, manualReason = runtime.saveCoordinator:captureManual()
+  Assert.isNil(manual)
+  Assert.isTrue(type(manualReason) == "string" and manualReason ~= "")
+  Assert.equal(activityReads, 2)
+  Assert.equal(snapshotCalls.world, 0)
+  Assert.equal(snapshotCalls.objects, 0)
+  Assert.equal(snapshotCalls.scripts, 0)
 end
 
 function T.warp_completion_does_not_request_an_implicit_save()
