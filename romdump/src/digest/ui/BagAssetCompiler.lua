@@ -938,7 +938,8 @@ local function compileMoveSummary(moveArchive, messageArchive, dependencies, ass
   }
   local typeIcons, categoryIcons = {}, {}
   local MonSources = require("romdump.src.config.MonSources")
-  for typeId, key in pairs(MonSources.typeKeys) do
+  for typeId = 0, 17 do
+    local key = assert(MonSources.typeKeys[typeId], "move type semantic key is missing")
     local memberId = assert(facts.typeChars[typeId], "move type source member is missing")
     local sprite = {
       decode(
@@ -957,7 +958,8 @@ local function compileMoveSummary(moveArchive, messageArchive, dependencies, ass
       assets
     )
   end
-  for categoryId, key in pairs(MonSources.damageCategories) do
+  for categoryId = 0, 2 do
+    local key = assert(MonSources.damageCategories[categoryId], "move category semantic key is missing")
     local memberId = assert(facts.categoryChars[categoryId], "move category source member is missing")
     local sprite = {
       decode(

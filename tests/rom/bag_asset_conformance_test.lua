@@ -15,6 +15,7 @@ local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local HgssArchives = require("romdump.src.config.HgssArchives")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
+local MonSources = require("romdump.src.config.MonSources")
 local Hashing = require("romdump.src.digest.Hashing")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -348,6 +349,46 @@ function T.marker_dependencies_cover_messages_and_marker_member(romFs, versionId
   Assert.notNil(seen["bag_ui:member:37"], "the marker source member participates in the marker")
   Assert.deepEqual(bundle.dependencies.selection.messages, BagSources.messages)
   Assert.deepEqual(bundle.dependencies.selection.registration, BagSources.registration)
+end
+
+-- The move-summary NARC members enter the cache marker in semantic id order:
+-- shared palette/cell/animation first, then type members 0..17, then
+-- category members 0..2. The expected sequence is derived from the
+-- authoritative source tables in explicit numeric order, never from Lua
+-- table traversal, so the hashed dependency array has a defined order.
+function T.move_summary_marker_dependencies_follow_semantic_id_order(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local facts = assert(BagSources.moveSummary, "the bag sources must publish move summary facts")
+  local expected = {
+    "narc8:member:" .. facts.shared.palette,
+    "narc8:member:" .. facts.shared.cell,
+    "narc8:member:" .. facts.shared.animation,
+  }
+  for typeId = 0, 17 do
+    Assert.notNil(MonSources.typeKeys[typeId], "move type " .. typeId .. " must keep its semantic key")
+    local memberId = assert(facts.typeChars[typeId], "move type " .. typeId .. " must keep its source member")
+    expected[#expected + 1] = "narc8:member:" .. memberId
+  end
+  for categoryId = 0, 2 do
+    Assert.notNil(
+      MonSources.damageCategories[categoryId],
+      "move category " .. categoryId .. " must keep its semantic key"
+    )
+    local memberId =
+      assert(facts.categoryChars[categoryId], "move category " .. categoryId .. " must keep its source member")
+    expected[#expected + 1] = "narc8:member:" .. memberId
+  end
+  local actual = {}
+  for _, dependency in ipairs(bundle.dependencies.dependencies) do
+    if dependency.name:find("narc8:member:", 1, true) == 1 then
+      actual[#actual + 1] = dependency.name
+    end
+  end
+  Assert.deepEqual(
+    actual,
+    expected,
+    "move summary marker dependencies must follow shared, type id, then category id order"
+  )
 end
 
 function T.runtime_manifest_carries_no_source_identities(romFs, versionId)
