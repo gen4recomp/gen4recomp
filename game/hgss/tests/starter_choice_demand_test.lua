@@ -763,15 +763,15 @@ function T.turntable_and_ball_animation_timing_survives_demand_preparation()
   Assert.isTrue(ModelInstance ~= nil, "the live model records back the chooser")
 
   host:move("right")
-  for _ = 1, 10 do
+  for _ = 1, 5 do
     host:update()
   end
   Assert.isFalse(
     host._controller:snapshot().transition == "idle",
-    "the slot step still travels after ten fixed updates"
+    "the slot step still travels after five field updates"
   )
   host:update()
-  Assert.isTrue(settleRotation(host, 4), "the slot step completes on the eleventh fixed update")
+  Assert.equal(host._controller:snapshot().transition, "idle", "the slot step completes on the sixth field update")
   local status = host:status()
   Assert.equal(status.cursor, 1, "one settled right step advances exactly one candidate")
 

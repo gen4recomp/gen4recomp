@@ -253,9 +253,14 @@ function StarterChoiceState:update()
   if controller == nil then
     return
   end
-  local snapshot = controller:snapshot()
-  local observation = self._presentation and self._presentation:update(snapshot) or EMPTY_OBSERVATION
-  controller:update(observation)
+  for _ = 1, 2 do
+    if not controller:isActive() then
+      break
+    end
+    local snapshot = controller:snapshot()
+    local observation = self._presentation and self._presentation:update(snapshot) or EMPTY_OBSERVATION
+    controller:update(observation)
+  end
   assert(self._session, "an open choice owns its presentation session"):resolve(self:_measured(), self:_sessionView())
 end
 
