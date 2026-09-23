@@ -65,12 +65,25 @@ local function manifest()
           textRect = { x = 20, y = 144, width = 236, height = 48 },
         },
         actionMenu = {
-          buttons = {
-            { x = 8, y = 136, width = 80, height = 16 },
-            { x = 104, y = 136, width = 80, height = 16 },
-            { x = 8, y = 168, width = 80, height = 16 },
-            { x = 104, y = 168, width = 80, height = 16 },
+          slots = {
+            { hitRect = { x = 8, y = 136, width = 80, height = 16 } },
+            { hitRect = { x = 104, y = 136, width = 80, height = 16 } },
+            { hitRect = { x = 8, y = 168, width = 80, height = 16 } },
+            { hitRect = { x = 104, y = 168, width = 80, height = 16 } },
           },
+        },
+        quantity = {
+          controls = {
+            { delta = 100, role = "increment", hitRect = { x = 0, y = 128, width = 32, height = 32 } },
+            { delta = 10, role = "increment", hitRect = { x = 32, y = 128, width = 32, height = 32 } },
+            { delta = 1, role = "increment", hitRect = { x = 64, y = 128, width = 32, height = 32 } },
+            { delta = -100, role = "decrement", hitRect = { x = 0, y = 160, width = 32, height = 32 } },
+            { delta = -10, role = "decrement", hitRect = { x = 32, y = 160, width = 32, height = 32 } },
+            { delta = -1, role = "decrement", hitRect = { x = 64, y = 160, width = 32, height = 32 } },
+          },
+          pressTicks = 2,
+          cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
+          confirm = { hitRect = { x = 112, y = 160, width = 64, height = 32 } },
         },
       },
     },
@@ -127,14 +140,6 @@ end
 -- pointer taps can reach the same semantic actions keyboard input chooses.
 local function manifestWithButtons()
   local layoutManifest = manifest()
-  layoutManifest.interactive.overlays.actionMenu = {
-    buttons = {
-      { x = 8, y = 136, width = 80, height = 16 },
-      { x = 104, y = 136, width = 80, height = 16 },
-      { x = 8, y = 168, width = 80, height = 16 },
-      { x = 104, y = 168, width = 80, height = 16 },
-    },
-  }
   return layoutManifest
 end
 
@@ -174,10 +179,7 @@ local function openActionMenu(control)
   control:updateFixed({ confirmEvent() })
   local view = control:status()
   Assert.equal(view.state, "action_menu", "confirming an item must open the action menu")
-  Assert.isTrue(
-    type(view.actions) == "table" and #view.actions >= 2,
-    "the action menu must offer an action plus cancel"
-  )
+  Assert.isTrue(type(view.actions) == "table" and #view.actions >= 1, "the action menu must offer a dynamic action")
   return view
 end
 
@@ -190,26 +192,42 @@ local function hasAction(view, id)
   return false
 end
 
-local function selectedActionId(view)
-  local actions = assert(view.actions, "the action menu must list its actions")
-  local selection = view.selectedAction
-  assert(type(selection) == "number", "the action menu must expose its selection")
-  local record = assert(actions[selection + 1], "the selected action must resolve")
-  return assert(record.id, "the selected action must carry its id")
+local ACTION_NEIGHBORS = {
+  [0] = { up = 2, down = 2, left = 1, right = 1 },
+  [1] = { up = 3, down = 3, left = 0, right = 0 },
+  [2] = { up = 0, down = 0, left = 4, right = 3 },
+  [3] = { up = 1, down = 1, left = 2, right = 4 },
+  [4] = { up = 4, down = 4, left = 3, right = 2 },
+}
+
+local function actionSlot(view, id)
+  for _, action in ipairs(assert(view.actions, "the action menu must list its actions")) do
+    if action.id == id then
+      return assert(action.slot, "dynamic actions must carry a physical slot")
+    end
+  end
+  return nil
 end
 
--- Drive the action menu selection to the wanted semantic action through
--- ordinary vertical input, then confirm it.
+-- Drive the action menu selection to the wanted semantic action through the
+-- fixed five-node source adjacency table, then confirm it.
 local function chooseAction(control, id)
   local view = control:status()
   Assert.equal(view.state, "action_menu", "choosing an action requires the open action menu")
-  local count = #assert(view.actions, "the action menu must list its actions")
-  for _ = 1, count + 1 do
-    if selectedActionId(control:status()) == id then
+  local target = assert(actionSlot(view, id), "the requested dynamic action must be present")
+  local directions = { "up", "down", "left", "right" }
+  for _ = 1, 5 do
+    view = control:status()
+    if view.actionNode == target then
       control:updateFixed({ confirmEvent() })
       return control:status()
     end
-    control:updateFixed({ navigate("down") })
+    for _, direction in ipairs(directions) do
+      if ACTION_NEIGHBORS[view.actionNode][direction] == target then
+        control:updateFixed({ navigate(direction) })
+        break
+      end
+    end
   end
   error("the action menu never selects " .. id, 0)
 end
@@ -313,7 +331,7 @@ function T.action_menu_carries_only_inventory_local_actions()
   cursor:setPocket("medicine")
   local control = controller(bag, cursor)
   local revision = bag:revision()
-  local allowed = { toss = true, move = true, register = true, unregister = true, cancel = true }
+  local allowed = { toss = true, move = true, register = true, unregister = true }
   local view = openActionMenu(control)
   for _, action in ipairs(assert(view.actions, "the action menu must list its actions")) do
     Assert.isTrue(allowed[action.id] == true, "the action menu must stay inventory-local: " .. tostring(action.id))
@@ -348,7 +366,7 @@ function T.confirmed_toss_removes_once_and_returns_to_browsing()
   view = chooseAction(control, "toss")
   Assert.equal(view.state, "toss_quantity", "choosing toss must enter the quantity picker")
   Assert.equal(view.quantity, 1, "the picker preselects one copy")
-  control:updateFixed({ navigate("right") })
+  control:updateFixed({ navigate("up") })
   Assert.equal(control:status().quantity, 2, "east steps the quantity up")
   control:updateFixed({ confirmEvent() })
   view = control:status()
@@ -534,7 +552,7 @@ function T.pointer_button_tap_matches_the_keyboard_choice()
   local control = controller(bag, cursor, layoutManifest)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   openActionMenu(control)
-  tap(control, layout, 48, 144)
+  tap(control, layout, 144, 144)
   local view = control:status()
   Assert.equal(view.state, "toss_quantity", "tapping the first button chooses toss like the keyboard")
   local revision = bag:revision()
@@ -576,11 +594,23 @@ local function tapCell(control, layout, visibleIndex)
 end
 
 local function tapButton(control, layout, layoutManifest, buttonIndex)
-  local buttons = assert(
-    layoutManifest.interactive.overlays.actionMenu,
-    "the pointer journey needs the generated button geometry"
-  ).buttons
-  local rect = assert(buttons[buttonIndex], "the tapped button must be generated")
+  local view = control:status()
+  local overlay = assert(layoutManifest.interactive.overlays, "the pointer journey needs generated geometry")
+  local geometry
+  if view.state == "toss_quantity" or view.state == "toss_confirm" then
+    local controls = assert(overlay.quantity.controls, "the quantity controls must be generated")
+    geometry = buttonIndex == 1 and controls[6].hitRect
+      or buttonIndex == 2 and controls[3].hitRect
+      or buttonIndex == 3 and overlay.quantity.confirm.hitRect
+  elseif view.state == "action_menu" then
+    local action = assert(view.actions[buttonIndex], "the tapped dynamic action must be present")
+    geometry = assert(overlay.actionMenu.slots[action.slot + 1], "the action slot must be generated").hitRect
+  elseif view.state == "move_select" then
+    geometry = assert(overlay.actionMenu.slots[3], "the move confirm slot must be generated").hitRect
+  else
+    geometry = assert(overlay.actionMenu.slots[4], "the confirm slot must be generated").hitRect
+  end
+  local rect = assert(geometry, "the tapped control must be generated")
   tap(control, layout, rect.x + rect.width / 2, rect.y + rect.height / 2)
 end
 
@@ -596,10 +626,7 @@ local function openMenuByPointer(control, layout, visibleIndex)
   tapCell(control, layout, visibleIndex)
   local view = control:status()
   Assert.equal(view.state, "action_menu", "activating the selected cell opens the action menu by pointer alone")
-  Assert.isTrue(
-    type(view.actions) == "table" and #view.actions >= 2,
-    "the action menu must offer an action plus cancel"
-  )
+  Assert.isTrue(type(view.actions) == "table" and #view.actions >= 1, "the action menu must offer a dynamic action")
   return view
 end
 
@@ -619,31 +646,31 @@ function T.pointer_only_toss_picks_confirms_once_without_early_mutation()
   Assert.equal(view.state, "toss_quantity", "the first button enters the quantity picker by pointer alone")
   Assert.equal(view.quantity, 1, "the picker preselects one copy")
   tapButton(control, layout, layoutManifest, 1)
-  Assert.equal(control:status().quantity, 1, "the pointer decrement never drops below one copy")
+  Assert.equal(control:status().quantity, 5, "the pointer decrement wraps from one to the owned maximum")
   tapButton(control, layout, layoutManifest, 2)
   tapButton(control, layout, layoutManifest, 2)
-  Assert.equal(control:status().quantity, 3, "pointer increments step the quantity up")
+  Assert.equal(control:status().quantity, 2, "pointer increments follow the source wraparound")
   tapButton(control, layout, layoutManifest, 1)
-  Assert.equal(control:status().quantity, 2, "pointer decrements step the quantity down")
+  Assert.equal(control:status().quantity, 1, "pointer decrements step the quantity down")
   for _ = 1, 8 do
     tapButton(control, layout, layoutManifest, 2)
   end
-  Assert.equal(control:status().quantity, 5, "the pointer increment never exceeds the owned quantity")
+  Assert.equal(control:status().quantity, 4, "the pointer increment follows the source wraparound")
   tapButton(control, layout, layoutManifest, 1)
-  Assert.equal(control:status().quantity, 4, "the picker settles on four copies")
+  Assert.equal(control:status().quantity, 3, "the picker settles on three copies")
   tapButton(control, layout, layoutManifest, 3)
   view = control:status()
   Assert.equal(view.state, "toss_confirm", "the third button enters confirmation by pointer alone")
-  Assert.equal(view.quantity, 4, "the confirmation carries the picked quantity")
+  Assert.equal(view.quantity, 3, "the confirmation carries the picked quantity")
   Assert.equal(bag:revision(), revision, "entering confirmation never mutates the inventory")
   Assert.equal(bag:quantity("POTION"), 5, "entering confirmation changes no quantities")
   tapButton(control, layout, layoutManifest, 3)
   view = control:status()
   Assert.equal(view.state, "browsing", "a committed toss returns to browsing")
-  Assert.equal(bag:quantity("POTION"), 1, "the toss must remove exactly the confirmed quantity")
+  Assert.equal(bag:quantity("POTION"), 2, "the toss must remove exactly the confirmed quantity")
   Assert.equal(bag:revision(), revision + 1, "one pointer confirmation mutates the live service exactly once")
   tapButton(control, layout, layoutManifest, 3)
-  Assert.equal(bag:quantity("POTION"), 1, "a further tap where confirm was mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 2, "a further tap where confirm was mutates nothing")
   Assert.equal(bag:revision(), revision + 1, "a further tap bumps no service revision")
 end
 
@@ -694,8 +721,8 @@ function T.pointer_quantity_controls_match_press_and_release_targets()
   tapButton(control, layout, layoutManifest, 2)
   tapButton(control, layout, layoutManifest, 2)
   Assert.equal(control:status().quantity, 3, "setup picks three copies by pointer alone")
-  local incrementX, incrementY = hostAt(layout, 144, 144)
-  local decrementX, decrementY = hostAt(layout, 48, 144)
+  local incrementX, incrementY = hostAt(layout, 80, 144)
+  local decrementX, decrementY = hostAt(layout, 80, 176)
   control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = incrementX, y = incrementY } })
   control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = decrementX, y = decrementY } })
   Assert.equal(control:status().quantity, 3, "a release on a different control activates nothing")

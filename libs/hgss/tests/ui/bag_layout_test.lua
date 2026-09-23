@@ -58,12 +58,31 @@ local function manifest()
           textRect = { x = 20, y = 144, width = 236, height = 48 },
         },
         actionMenu = {
+          slots = {
+            { hitRect = { x = 8, y = 136, width = 80, height = 16 } },
+            { hitRect = { x = 104, y = 136, width = 80, height = 16 } },
+            { hitRect = { x = 8, y = 168, width = 80, height = 16 } },
+            { hitRect = { x = 104, y = 168, width = 80, height = 16 } },
+          },
           buttons = {
             { x = 8, y = 136, width = 80, height = 16 },
             { x = 104, y = 136, width = 80, height = 16 },
             { x = 8, y = 168, width = 80, height = 16 },
             { x = 104, y = 168, width = 80, height = 16 },
           },
+        },
+        quantity = {
+          controls = {
+            { delta = 100, role = "increment", hitRect = { x = 0, y = 128, width = 32, height = 32 } },
+            { delta = 10, role = "increment", hitRect = { x = 32, y = 128, width = 32, height = 32 } },
+            { delta = 1, role = "increment", hitRect = { x = 64, y = 128, width = 32, height = 32 } },
+            { delta = -100, role = "decrement", hitRect = { x = 0, y = 160, width = 32, height = 32 } },
+            { delta = -10, role = "decrement", hitRect = { x = 32, y = 160, width = 32, height = 32 } },
+            { delta = -1, role = "decrement", hitRect = { x = 64, y = 160, width = 32, height = 32 } },
+          },
+          pressTicks = 2,
+          cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
+          confirm = { hitRect = { x = 112, y = 160, width = 64, height = 32 } },
         },
       },
     },
@@ -83,7 +102,12 @@ local function manifestWithButtons()
   for index, rect in ipairs(BUTTON_RECTS) do
     buttons[index] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
   end
-  layoutManifest.interactive.overlays.actionMenu = { buttons = buttons }
+  layoutManifest.interactive.overlays.actionMenu.slots = {
+    { hitRect = buttons[1] },
+    { hitRect = buttons[2] },
+    { hitRect = buttons[3] },
+    { hitRect = buttons[4] },
+  }
   return layoutManifest
 end
 
@@ -184,22 +208,110 @@ function T.nested_states_offer_responsive_controls_from_the_generated_buttons()
     end
     return { state = state, visibleSlots = visibleSlots }
   end
-  local decrement = assert(resolved.hitTest(48, 144, stateFor("toss_quantity")), "the first button decrements")
+  local decrement = assert(resolved.hitTest(16, 176, stateFor("toss_quantity")), "the -100 control decrements")
   Assert.equal(decrement.kind, "quantity_delta")
-  Assert.equal(fieldOf(decrement, "delta"), -1)
-  local increment = assert(resolved.hitTest(144, 144, stateFor("toss_quantity")), "the second button increments")
+  Assert.equal(fieldOf(decrement, "delta"), -100)
+  local increment = assert(resolved.hitTest(80, 144, stateFor("toss_quantity")), "the +1 control increments")
   Assert.equal(increment.kind, "quantity_delta")
   Assert.equal(fieldOf(increment, "delta"), 1)
   local quantityConfirm =
-    assert(resolved.hitTest(48, 176, stateFor("toss_quantity")), "the third button confirms the quantity")
+    assert(resolved.hitTest(144, 176, stateFor("toss_quantity")), "the quantity confirm control confirms")
   Assert.equal(quantityConfirm.kind, "confirm")
-  local tossConfirm = assert(resolved.hitTest(48, 176, stateFor("toss_confirm")), "the confirmation state confirms")
+  local tossConfirm = assert(resolved.hitTest(144, 176, stateFor("toss_confirm")), "the confirmation state confirms")
   Assert.equal(tossConfirm.kind, "confirm")
   local cell = assert(resolved.hitTest(76, 56, stateFor("move_select")), "move keeps its cell targets")
   Assert.equal(cell.kind, "item")
   Assert.equal(cell.visibleIndex, 0)
   local moveConfirm = assert(resolved.hitTest(48, 176, stateFor("move_select")), "move confirms through its own button")
   Assert.equal(moveConfirm.kind, "confirm")
+end
+
+function T.v9_controls_resolve_physical_action_and_quantity_targets()
+  local layoutManifest = manifestWithButtons()
+  layoutManifest.interactive.overlays.actionMenu.slots = {
+    {
+      center = { x = 48, y = 144 },
+      textRect = { x = 32, y = 140, width = 32, height = 16 },
+      hitRect = { x = 0, y = 128, width = 96, height = 32 },
+    },
+    {
+      center = { x = 144, y = 144 },
+      textRect = { x = 128, y = 140, width = 32, height = 16 },
+      hitRect = { x = 96, y = 128, width = 96, height = 32 },
+    },
+    {
+      center = { x = 48, y = 176 },
+      textRect = { x = 32, y = 172, width = 32, height = 16 },
+      hitRect = { x = 0, y = 160, width = 96, height = 32 },
+    },
+    {
+      center = { x = 144, y = 176 },
+      textRect = { x = 128, y = 172, width = 32, height = 16 },
+      hitRect = { x = 96, y = 160, width = 96, height = 32 },
+    },
+  }
+  layoutManifest.interactive.overlays.quantity = {
+    pressTicks = 2,
+    digits = {
+      { x = 128, y = 112, width = 16, height = 24 },
+      { x = 160, y = 112, width = 16, height = 24 },
+      { x = 192, y = 112, width = 16, height = 24 },
+    },
+    controls = {
+      {
+        delta = 100,
+        role = "increment",
+        center = { x = 32, y = 144 },
+        hitRect = { x = 0, y = 128, width = 32, height = 32 },
+      },
+      {
+        delta = 10,
+        role = "increment",
+        center = { x = 64, y = 144 },
+        hitRect = { x = 32, y = 128, width = 32, height = 32 },
+      },
+      {
+        delta = 1,
+        role = "increment",
+        center = { x = 96, y = 144 },
+        hitRect = { x = 64, y = 128, width = 32, height = 32 },
+      },
+      {
+        delta = -100,
+        role = "decrement",
+        center = { x = 32, y = 176 },
+        hitRect = { x = 0, y = 160, width = 32, height = 32 },
+      },
+      {
+        delta = -10,
+        role = "decrement",
+        center = { x = 64, y = 176 },
+        hitRect = { x = 32, y = 160, width = 32, height = 32 },
+      },
+      {
+        delta = -1,
+        role = "decrement",
+        center = { x = 96, y = 176 },
+        hitRect = { x = 64, y = 160, width = 32, height = 32 },
+      },
+    },
+    cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
+    confirm = {
+      visual = { image = "bag/confirm.png", width = 64, height = 24 },
+      center = { x = 144, y = 176 },
+      hitRect = { x = 112, y = 160, width = 64, height = 32 },
+    },
+  }
+  local resolved = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local action = assert(resolved.hitTest(120, 144, { state = "action_menu", visibleSlots = {} }))
+  Assert.equal(action.kind, "action")
+  Assert.equal(action.actionNode, 1, "action hit identity is the physical node")
+  local quantity = assert(resolved.hitTest(16, 176, { state = "toss_quantity", visibleSlots = {} }))
+  Assert.equal(quantity.kind, "quantity_delta")
+  Assert.equal(quantity.quantityControlIndex, 3)
+  Assert.equal(quantity.delta, -100)
+  local cancel = assert(resolved.hitTest(200, 176, { state = "toss_quantity", visibleSlots = {} }))
+  Assert.equal(cancel.kind, "cancel", "quantity Cancel uses its dedicated hit rectangle")
 end
 
 function T.toss_states_hide_the_browsing_targets_underneath()

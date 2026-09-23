@@ -182,6 +182,29 @@ local function manifest()
           textRect = { x = 20, y = 144, width = 236, height = 48 },
         },
         actionMenu = {
+          face = { image = "bag/action-face.png", width = 96, height = 24 },
+          slots = {
+            {
+              center = { x = 48, y = 144 },
+              textRect = { x = 32, y = 140, width = 32, height = 16 },
+              hitRect = { x = 0, y = 128, width = 96, height = 32 },
+            },
+            {
+              center = { x = 144, y = 144 },
+              textRect = { x = 128, y = 140, width = 32, height = 16 },
+              hitRect = { x = 96, y = 128, width = 96, height = 32 },
+            },
+            {
+              center = { x = 48, y = 176 },
+              textRect = { x = 32, y = 172, width = 32, height = 16 },
+              hitRect = { x = 0, y = 160, width = 96, height = 32 },
+            },
+            {
+              center = { x = 144, y = 176 },
+              textRect = { x = 128, y = 172, width = 32, height = 16 },
+              hitRect = { x = 96, y = 160, width = 96, height = 32 },
+            },
+          },
           buttons = {
             { x = 8, y = 136, width = 80, height = 16 },
             { x = 104, y = 136, width = 80, height = 16 },
@@ -195,6 +218,61 @@ local function manifest()
             { x = 160, y = 112, width = 16, height = 24 },
             { x = 192, y = 112, width = 16, height = 24 },
           },
+          controls = {
+            {
+              delta = 100,
+              role = "increment",
+              center = { x = 32, y = 144 },
+              hitRect = { x = 0, y = 128, width = 32, height = 32 },
+            },
+            {
+              delta = 10,
+              role = "increment",
+              center = { x = 64, y = 144 },
+              hitRect = { x = 32, y = 128, width = 32, height = 32 },
+            },
+            {
+              delta = 1,
+              role = "increment",
+              center = { x = 96, y = 144 },
+              hitRect = { x = 64, y = 128, width = 32, height = 32 },
+            },
+            {
+              delta = -100,
+              role = "decrement",
+              center = { x = 32, y = 176 },
+              hitRect = { x = 0, y = 160, width = 32, height = 32 },
+            },
+            {
+              delta = -10,
+              role = "decrement",
+              center = { x = 64, y = 176 },
+              hitRect = { x = 32, y = 160, width = 32, height = 32 },
+            },
+            {
+              delta = -1,
+              role = "decrement",
+              center = { x = 96, y = 176 },
+              hitRect = { x = 64, y = 160, width = 32, height = 32 },
+            },
+          },
+          visuals = {
+            increment = {
+              normal = { image = "bag/quantity-increment.png", width = 24, height = 24 },
+              pressed = { image = "bag/quantity-increment-pressed.png", width = 24, height = 24 },
+            },
+            decrement = {
+              normal = { image = "bag/quantity-decrement.png", width = 24, height = 24 },
+              pressed = { image = "bag/quantity-decrement-pressed.png", width = 24, height = 24 },
+            },
+          },
+          pressTicks = 2,
+          confirm = {
+            visual = { image = "bag/quantity-confirm.png", width = 64, height = 24 },
+            center = { x = 144, y = 176 },
+            hitRect = { x = 112, y = 160, width = 64, height = 32 },
+          },
+          cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
         },
       },
     },
@@ -225,6 +303,16 @@ local function seedCache()
   paths[#paths + 1] = "bag/focus-items.png"
   paths[#paths + 1] = "bag/focus-cancel.png"
   paths[#paths + 1] = "bag/focus-actions.png"
+  paths[#paths + 1] = "bag/action-face.png"
+  for _, path in ipairs({
+    "bag/quantity-increment.png",
+    "bag/quantity-increment-pressed.png",
+    "bag/quantity-decrement.png",
+    "bag/quantity-decrement-pressed.png",
+    "bag/quantity-confirm.png",
+  }) do
+    paths[#paths + 1] = path
+  end
   paths[#paths + 1] = "bag/registration-slot-1.png"
   paths[#paths + 1] = "bag/registration-slot-2.png"
   for _, path in ipairs(paths) do
@@ -594,8 +682,8 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
     end
     local record = status({ state = state, quantity = 2, quantityMax = 5, moveTarget = 1 })
     if state == "action_menu" then
-      record.actions = { { id = "toss" }, { id = "cancel" } }
-      record.selectedAction = 0
+      record.actions = { { id = "toss", slot = 1 } }
+      record.actionNode = 0
     end
     draw:draw(record, plan(true), { icons = icons() })
     local key = state == "action_menu" and "background:action:balls"
@@ -740,11 +828,10 @@ local function actionStatus(overrides)
   local record = status({
     state = "action_menu",
     actions = {
-      { id = "toss", enabled = true },
-      { id = "move", enabled = true },
-      { id = "cancel", enabled = true },
+      { id = "toss", enabled = true, slot = 1 },
+      { id = "move", enabled = true, slot = 3 },
     },
-    selectedAction = 1,
+    actionNode = 1,
   })
   for key, value in pairs(overrides or {}) do
     record[key] = value
@@ -837,7 +924,6 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
     draw:draw(actionStatus(), plan(mode ~= "interactive_only"), { icons = icons() })
     Assert.isTrue(printedText(content, "TRASH"), "the menu labels its toss action in " .. mode)
     Assert.isTrue(printedText(content, "MOVE"), "the menu labels its move action in " .. mode)
-    Assert.isTrue(printedText(content, "BACK OUT"), "the menu labels its way out in " .. mode)
     Assert.isFalse(printedText(content, "toss"), "the raw toss id never reaches the screen in " .. mode)
     Assert.isFalse(printedText(content, "move"), "the raw move id never reaches the screen in " .. mode)
     Assert.isFalse(printedText(content, "cancel"), "the raw cancel id never reaches the screen in " .. mode)
@@ -863,6 +949,27 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
   end
 end
 
+function T.action_menu_acquires_faces_and_uses_physical_focus_nodes()
+  local reads = {}
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = BagRenderer.new({
+    cacheFs = trackingCache(reads),
+    manifest = manifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local record = actionStatus({
+    actions = { { id = "toss", enabled = true, slot = 1 }, { id = "move", enabled = true, slot = 3 } },
+    actionNode = 3,
+  })
+  draw:draw(record, plan(true), { icons = icons() })
+  Assert.isTrue(#readPathsContaining(reads, "bag/action-face.png") == 1, "the action state acquires its normal face")
+  Assert.isTrue(printedText(content, "TRASH"), "the populated slot keeps its semantic label")
+  draw:release()
+end
+
 function T.action_focus_indexes_from_the_selected_action_without_clamping()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local manifested = manifest()
@@ -876,14 +983,12 @@ function T.action_focus_indexes_from_the_selected_action_without_clamping()
   local actionFocus = manifested.interactive.focus.actions
   local lastX, lastY = focusOrigin(actionFocus, actionFocus.targets[4])
   local fullMenu = actionStatus({
-    actions = { { id = "toss" }, { id = "move" }, { id = "register" }, { id = "cancel" } },
-    selectedAction = 3,
+    actions = { { id = "toss", slot = 1 }, { id = "move", slot = 3 }, { id = "register", slot = 0 } },
+    actionNode = 3,
   })
   draw:draw(fullMenu, plan(true), { icons = icons() })
   Assert.isTrue(staticDrawnAt(graphics, lastX, lastY), "the last action resolves to the fourth target")
-  Assert.throws(function()
-    draw:draw(actionStatus({ selectedAction = 4 }), plan(true), { icons = icons() })
-  end, "an action selection outside the generated targets fails instead of clamping")
+  draw:draw(actionStatus({ actionNode = 4 }), plan(true), { icons = icons() })
   draw:release()
 end
 
@@ -902,8 +1007,8 @@ function T.action_menu_resolves_register_and_unregister_labels_independently()
       heroRenderer = heroSpy(nil),
     })
     local record = actionStatus({
-      actions = { { id = case.id, enabled = true }, { id = "cancel", enabled = true } },
-      selectedAction = 0,
+      actions = { { id = case.id, enabled = true, slot = 1 } },
+      actionNode = 0,
     })
     draw:draw(record, plan(true), { icons = icons() })
     Assert.isTrue(printedText(content, case.label), "the menu labels " .. case.id .. " independently")
@@ -935,17 +1040,15 @@ function T.action_menu_without_generated_buttons_is_a_composition_error()
   local content = text()
   local plain = manifest()
   plain.interactive.overlays.actionMenu = nil
-  local draw = BagRenderer.new({
-    cacheFs = seedCache(),
-    manifest = plain,
-    text = content,
-    graphics = graphics,
-    heroRenderer = heroSpy(nil),
-  })
   Assert.throws(function()
-    draw:draw(actionStatus(), plan(true), { icons = icons() })
-  end, "an action menu without generated button geometry fails instead of falling back to a list")
-  draw:release()
+    BagRenderer.new({
+      cacheFs = seedCache(),
+      manifest = plain,
+      text = content,
+      graphics = graphics,
+      heroRenderer = heroSpy(nil),
+    })
+  end, "an action menu without generated geometry fails instead of falling back to a list")
 end
 
 function T.browse_and_action_states_composite_distinct_generated_backgrounds()
@@ -988,6 +1091,33 @@ function T.quantity_state_draws_generated_layers_digits_and_prompt()
   Assert.isTrue(digit, "the picked quantity renders inside the generated digit geometry")
   Assert.equal(fillCount(graphics), 0, "no generic fill covers the generated quantity layers")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+function T.quantity_state_acquires_six_controls_and_no_text_surrogates()
+  local reads = {}
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = BagRenderer.new({
+    cacheFs = trackingCache(reads),
+    manifest = manifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  draw:draw(
+    status({ state = "toss_quantity", quantity = 2, quantityMax = 25, quantityPressedControl = 3 }),
+    plan(true),
+    {
+      icons = icons(),
+    }
+  )
+  Assert.equal(#readPathsContaining(reads, "bag/quantity-increment.png"), 1, "increment visuals are acquired")
+  Assert.equal(#readPathsContaining(reads, "bag/quantity-decrement.png"), 1, "decrement visuals are acquired")
+  Assert.equal(#readPathsContaining(reads, "bag/quantity-confirm.png"), 1, "confirm visual is acquired")
+  Assert.isFalse(printedText(content, "-"), "quantity controls are not textual minus signs")
+  Assert.isFalse(printedText(content, "+"), "quantity controls are not textual plus signs")
+  Assert.isFalse(printedText(content, "YES"), "quantity controls are not textual YES")
   draw:release()
 end
 
@@ -1140,9 +1270,9 @@ function T.nested_states_label_their_responsive_buttons()
     return graphics, content
   end
   local graphics, content = drawFor("toss_quantity")
-  Assert.isTrue(textInRect(content, "-", buttons[1]), "the quantity state labels its decrement button")
-  Assert.isTrue(textInRect(content, "+", buttons[2]), "the quantity state labels its increment button")
-  Assert.isTrue(textInRect(content, "YES", buttons[3]), "the quantity state labels its confirm button")
+  Assert.isFalse(printedText(content, "-"), "the quantity state has no textual decrement button")
+  Assert.isFalse(printedText(content, "+"), "the quantity state has no textual increment button")
+  Assert.isFalse(printedText(content, "YES"), "the quantity state has no textual confirm button")
   Assert.equal(#graphics.rectangles, 0, "nested states never fall back to primitive outlines")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   local confirmGraphics, confirmContent = drawFor("toss_confirm")
@@ -1156,7 +1286,7 @@ end
 function T.release_frees_images_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  Assert.equal(#graphics.images, 97, "the renderer acquires every generated state, tab, focus, and marker image")
+  Assert.equal(#graphics.images, 103, "the renderer acquires every generated state, tab, focus, and control image")
   draw:release()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every image releases exactly once")
@@ -1269,7 +1399,7 @@ function T.acquisition_failure_releases_every_image_acquired_before_it()
   local bound = renderer(probe)
   local total = #probe.images
   bound:release()
-  Assert.equal(total, 97, "setup binds every generated state, tab, focus, and marker image")
+  Assert.equal(total, 103, "setup binds every generated state, tab, focus, and control image")
   for _, failCall in ipairs({ 1, total }) do
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
     Assert.throws(function()

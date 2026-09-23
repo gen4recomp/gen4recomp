@@ -64,18 +64,43 @@ end
 -- always carries the four compiled buttons; layout treats them as strict
 -- geometry rather than an optional affordance.
 ---@param interactive table<string, unknown>
----@return table<integer, table<string, number>>
-local function actionButtons(interactive)
+---@return table<integer, table<string, unknown>>
+local function getActionSlots(interactive)
   local overlays = assert(interactive.overlays, "the manifest must carry its overlay geometry")
   assert(type(overlays) == "table", "the manifest must carry its overlay geometry")
   local menu = assert(overlays.actionMenu, "the manifest must carry its action button geometry")
   assert(type(menu) == "table", "the manifest must carry its action button geometry")
-  local buttons = assert(menu.buttons, "the manifest must carry its four action buttons")
-  assert(type(buttons) == "table" and #buttons == 4, "the manifest must carry its four action buttons")
-  for _, button in ipairs(buttons) do
-    checkRect(button, "action button")
+  local slots = assert(menu.slots, "the manifest must carry its four action slots")
+  assert(type(slots) == "table" and #slots == 4, "the manifest must carry its four action slots")
+  for _, slot in ipairs(slots) do
+    checkRect(assert(slot.hitRect, "action slots carry hit rectangles"), "action slot hit")
   end
-  return buttons
+  return slots
+end
+
+---@param interactive table<string, unknown>
+---@return table<integer, table<string, unknown>>, integer, table<string, number>, table<string, number>
+local function quantityControls(interactive)
+  local quantity = assert(interactive.overlays.quantity, "the manifest must carry quantity geometry")
+  local controls = assert(quantity.controls, "the manifest must carry six quantity controls")
+  assert(type(controls) == "table" and #controls == 6, "the manifest must carry six quantity controls")
+  for _, control in ipairs(controls) do
+    checkRect(assert(control.hitRect, "quantity controls carry hit rectangles"), "quantity control hit")
+    assert(
+      control.delta == -100
+        or control.delta == -10
+        or control.delta == -1
+        or control.delta == 1
+        or control.delta == 10
+        or control.delta == 100,
+      "quantity controls carry source deltas"
+    )
+    assert(control.role == "increment" or control.role == "decrement", "quantity controls carry source roles")
+  end
+  checkRect(assert(quantity.cancelHitRect, "quantity carries its cancel hit rectangle"), "quantity cancel")
+  local confirm = assert(quantity.confirm, "quantity carries its confirm control")
+  checkRect(assert(confirm.hitRect, "quantity confirm carries its hit rectangle"), "quantity confirm")
+  return controls, assert(quantity.pressTicks, "quantity carries press ticks"), quantity.cancelHitRect, confirm.hitRect
 end
 
 ---@param visibleSlots table<integer, BagLayout.VisibleSlot>?
@@ -100,8 +125,9 @@ end
 ---@field kind "description"|"pocket"|"item"|"cancel"|"action"|"quantity_delta"|"confirm"
 ---@field pocket string?
 ---@field visibleIndex integer?
----@field actionIndex integer?
----@field delta integer? -- exactly -1 or 1 only for quantity_delta
+---@field actionNode integer?
+---@field quantityControlIndex integer?
+---@field delta integer?
 
 ---@class BagLayout.Spec
 ---@field manifest table<string, unknown> the validated bag manifest carrying canonical interactive geometry
@@ -127,7 +153,11 @@ function BagLayout.resolve(spec)
   local fallback = interactive.overlays.descriptionFallback
   local fallbackFrame = fallback.frame
   local fallbackTextRect = fallback.textRect
-  local buttons = actionButtons(interactive)
+  local actionSlotRecords
+  local quantity
+  local quantityPressTicks = interactive.overlays.quantity and interactive.overlays.quantity.pressTicks
+  local quantityCancelRect
+  local quantityConfirmRect
 
   ---@param logicalX number
   ---@param logicalY number
@@ -159,35 +189,42 @@ function BagLayout.resolve(spec)
       buttonState = controllerState.state
     end
     if buttonState == "action_menu" then
-      for index, button in ipairs(buttons) do
-        if LayoutGeometry.containsPoint(button, logicalX, logicalY) then
-          return { kind = "action", actionIndex = index - 1 }
+      actionSlotRecords = actionSlotRecords or getActionSlots(interactive)
+      for index, slot in ipairs(actionSlotRecords) do
+        if LayoutGeometry.containsPoint(slot.hitRect, logicalX, logicalY) then
+          return { kind = "action", actionNode = index - 1 }
         end
       end
     elseif buttonState == "toss_quantity" then
-      if LayoutGeometry.containsPoint(buttons[1], logicalX, logicalY) then
-        return { kind = "quantity_delta", delta = -1 }
+      if quantity == nil then
+        quantity, quantityPressTicks, quantityCancelRect, quantityConfirmRect = quantityControls(interactive)
       end
-      if LayoutGeometry.containsPoint(buttons[2], logicalX, logicalY) then
-        return { kind = "quantity_delta", delta = 1 }
+      for index, control in ipairs(quantity) do
+        if LayoutGeometry.containsPoint(control.hitRect, logicalX, logicalY) then
+          return { kind = "quantity_delta", quantityControlIndex = index - 1, delta = control.delta }
+        end
       end
-      if LayoutGeometry.containsPoint(buttons[3], logicalX, logicalY) then
+      if LayoutGeometry.containsPoint(quantityConfirmRect, logicalX, logicalY) then
         return { kind = "confirm" }
       end
-      if LayoutGeometry.containsPoint(cancelRect, logicalX, logicalY) then
+      if LayoutGeometry.containsPoint(quantityCancelRect, logicalX, logicalY) then
         return { kind = "cancel" }
       end
       return nil
     elseif buttonState == "toss_confirm" then
-      if LayoutGeometry.containsPoint(buttons[3], logicalX, logicalY) then
+      if quantity == nil then
+        quantity, quantityPressTicks, quantityCancelRect, quantityConfirmRect = quantityControls(interactive)
+      end
+      if LayoutGeometry.containsPoint(quantityConfirmRect, logicalX, logicalY) then
         return { kind = "confirm" }
       end
-      if LayoutGeometry.containsPoint(cancelRect, logicalX, logicalY) then
+      if LayoutGeometry.containsPoint(quantityCancelRect, logicalX, logicalY) then
         return { kind = "cancel" }
       end
       return nil
     elseif buttonState == "move_select" then
-      if LayoutGeometry.containsPoint(buttons[3], logicalX, logicalY) then
+      actionSlotRecords = actionSlotRecords or getActionSlots(interactive)
+      if LayoutGeometry.containsPoint(actionSlotRecords[3].hitRect, logicalX, logicalY) then
         return { kind = "confirm" }
       end
       for index, slot in ipairs(slots) do
@@ -228,6 +265,7 @@ function BagLayout.resolve(spec)
       descriptionFallback = nil,
       descriptionTextRect = nil,
       hitTest = hitTest,
+      quantityPressTicks = quantityPressTicks,
     }
   end
   return {
@@ -245,6 +283,7 @@ function BagLayout.resolve(spec)
       height = fallbackTextRect.height,
     },
     hitTest = hitTest,
+    quantityPressTicks = quantityPressTicks,
   }
 end
 

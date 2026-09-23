@@ -334,7 +334,7 @@ local function openActionMenu(game, state)
   local view = bagView(game)
   Assert.equal(view.state, "action_menu", "confirming an item must open the action menu")
   local actions = assert(view.actions, "the action menu must list its actions")
-  Assert.isTrue(#actions >= 2, "the action menu must offer an action plus cancel")
+  Assert.isTrue(#actions >= 1, "the action menu must offer its dynamic inventory actions")
   return view
 end
 
@@ -347,15 +347,8 @@ local function actionIds(view)
   return ids
 end
 
--- The action menu selection is a zero-based index into the action list.
-local function selectedActionId(view)
-  local actions = assert(view.actions, "the action menu must list its actions")
-  local selection = view.selectedAction
-  assert(type(selection) == "number", "the action menu must expose its selection")
-  local record = assert(actions[selection + 1], "the selected action must resolve")
-  return assert(record.id, "the selected action must carry its id")
-end
-
+-- The action menu selection is a physical source node; Cancel is node four and
+-- is intentionally absent from the dynamic action records.
 local function hasAction(view, id)
   for _, candidate in ipairs(actionIds(view)) do
     if candidate == id then
@@ -365,26 +358,71 @@ local function hasAction(view, id)
   return false
 end
 
--- Drive the action menu selection to the wanted semantic action through
--- ordinary vertical input, then confirm it.
+local function actionSlot(view, id)
+  for _, action in ipairs(assert(view.actions, "the action menu must list its actions")) do
+    if action.id == id then
+      return assert(action.slot, "dynamic actions must carry their physical slot")
+    end
+  end
+  return nil
+end
+
+local ACTION_NEIGHBORS = {
+  [0] = { up = 2, down = 2, left = 1, right = 1 },
+  [1] = { up = 3, down = 3, left = 0, right = 0 },
+  [2] = { up = 0, down = 0, left = 4, right = 3 },
+  [3] = { up = 1, down = 1, left = 2, right = 4 },
+  [4] = { up = 4, down = 4, left = 3, right = 2 },
+}
+
+-- Drive the action menu selection to the wanted semantic action through the
+-- fixed five-node adjacency table, then confirm it.
 local function chooseAction(game, state, id)
   local view = bagView(game)
   Assert.equal(view.state, "action_menu", "choosing an action requires the open action menu")
-  local count = #assert(view.actions, "the action menu must list its actions")
-  for _ = 1, count + 1 do
-    if selectedActionId(bagView(game)) == id then
+  local target = actionSlot(view, id)
+  Assert.notNil(target, "the requested dynamic action must be present")
+  local directions = { "up", "down", "left", "right" }
+  for _ = 1, 8 do
+    view = bagView(game)
+    if view.actionNode == target then
       confirm(game)
       game:step()
       game:step()
       return bagView(game)
     end
-    tapDirection(game, state, "s")
+    local node = assert(view.actionNode, "the action menu must expose its physical node")
+    local queue = { { node = node, path = {} } }
+    local seen = { [node] = true }
+    local path
+    local head = 1
+    while head <= #queue and path == nil do
+      local current = queue[head]
+      head = head + 1
+      for _, direction in ipairs(directions) do
+        local nextNode = ACTION_NEIGHBORS[current.node][direction]
+        if not seen[nextNode] then
+          local nextPath = {}
+          for index, step in ipairs(current.path) do
+            nextPath[index] = step
+          end
+          nextPath[#nextPath + 1] = direction
+          if nextNode == target then
+            path = nextPath
+            break
+          end
+          seen[nextNode] = true
+          queue[#queue + 1] = { node = nextNode, path = nextPath }
+        end
+      end
+    end
+    local direction = assert(path and path[1], "the action node must be reachable")
+    tapDirection(game, state, ({ up = "w", down = "s", left = "a", right = "d" })[direction])
   end
   error("the action menu never selects " .. id, 0)
 end
 
--- Drive the quantity picker to the wanted amount through ordinary horizontal
--- input.
+-- Drive the quantity picker to the wanted amount through its D-pad rules.
 local function setQuantity(game, state, wanted)
   for _ = 1, 2 * 999 + 4 do
     local view = bagView(game)
@@ -394,9 +432,9 @@ local function setQuantity(game, state, wanted)
     if current == wanted then
       return view
     elseif current < wanted then
-      tapDirection(game, state, "d")
+      tapDirection(game, state, "w")
     else
-      tapDirection(game, state, "a")
+      tapDirection(game, state, "s")
     end
   end
   error("the quantity picker never reaches " .. tostring(wanted), 0)

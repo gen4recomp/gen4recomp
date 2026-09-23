@@ -38,7 +38,7 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field _overlay boolean
 ---@field _state "browsing"|"action_menu"|"toss_quantity"|"toss_confirm"|"move_select"
 ---@field _actions table<string, unknown>[]
----@field _selectedAction integer
+---@field _actionNode integer
 ---@field _actionItemKey string?
 ---@field _actionPocket string?
 ---@field _quantity integer
@@ -50,6 +50,8 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field _closed boolean
 ---@field _pressId string?
 ---@field _pressCapture table<string, unknown>?
+---@field _quantityPressedControl integer?
+---@field _quantityPressedTicks integer
 local BagController = {}
 BagController.__index = BagController
 
@@ -72,6 +74,29 @@ end
 -- cell index, tabs name their pocket key, and cancel is a singleton; the
 -- strings double as focus-graph node ids.
 local CANCEL_NODE = "cancel"
+
+local ACTION_NEIGHBORS = {
+  [0] = { up = 2, down = 2, left = 1, right = 1 },
+  [1] = { up = 3, down = 3, left = 0, right = 0 },
+  [2] = { up = 0, down = 0, left = 4, right = 3 },
+  [3] = { up = 1, down = 1, left = 2, right = 4 },
+  [4] = { up = 4, down = 4, left = 3, right = 2 },
+}
+
+---@param actions table<string, unknown>[]
+local function validateActions(actions)
+  local seen = {}
+  for _, action in ipairs(actions) do
+    assert(type(action) == "table", "dynamic actions are records")
+    assert(type(action.id) == "string" and action.id ~= "cancel", "dynamic actions carry supported ids")
+    assert(
+      type(action.slot) == "number" and action.slot % 1 == 0 and action.slot >= 0 and action.slot <= 3,
+      "dynamic actions carry a valid physical slot"
+    )
+    assert(not seen[action.slot], "dynamic action slots are unique")
+    seen[action.slot] = true
+  end
+end
 
 ---@param absolute integer
 ---@return string
@@ -143,7 +168,7 @@ function BagController.new(opts)
     _overlay = false,
     _state = "browsing",
     _actions = {},
-    _selectedAction = 0,
+    _actionNode = 4,
     _actionItemKey = nil,
     _actionPocket = nil,
     _quantity = 1,
@@ -155,6 +180,8 @@ function BagController.new(opts)
     _closed = false,
     _pressId = nil,
     _pressCapture = nil,
+    _quantityPressedControl = nil,
+    _quantityPressedTicks = 0,
   }, BagController)
   self._view = self:_refresh()
   self:_reconcile()
@@ -428,11 +455,13 @@ end
 function BagController:_toBrowsing()
   self._state = "browsing"
   self._actions = {}
-  self._selectedAction = 0
+  self._actionNode = 4
   self._actionItemKey = nil
   self._actionPocket = nil
   self._quantity = 1
   self._quantityMax = 1
+  self._quantityPressedControl = nil
+  self._quantityPressedTicks = 0
   self._moveFromKey = nil
   self._moveFromPos = 0
   self._moveTarget = 0
@@ -468,9 +497,15 @@ function BagController:_openActionMenu()
     return
   end
   local actions = self._resolveActions(self._view)
-  assert(type(actions) == "table" and #actions >= 1, "the action policy always offers a way out")
+  assert(type(actions) == "table", "the action policy returns dynamic actions")
+  validateActions(actions)
   self._actions = actions
-  self._selectedAction = 0
+  self._actionNode = 4
+  for _, action in ipairs(actions) do
+    if action.slot < self._actionNode then
+      self._actionNode = action.slot
+    end
+  end
   self._actionItemKey = selected.item
   self._actionPocket = self:_pocket()
   self._overlay = false
@@ -481,16 +516,17 @@ end
 -- previous menu position when the list still covers it.
 function BagController:_toActionMenu()
   local actions = self._resolveActions(self._view)
-  assert(type(actions) == "table" and #actions >= 1, "the action policy always offers a way out")
+  assert(type(actions) == "table", "the action policy returns dynamic actions")
+  validateActions(actions)
   self._actions = actions
-  if self._selectedAction > #actions - 1 then
-    self._selectedAction = 0
-  end
+  assert(self._actionNode >= 0 and self._actionNode <= 4, "action focus is a physical node")
+  self:_clearQuantityPress()
   self._state = "action_menu"
 end
 
----@param index integer zero-based action position
-function BagController:_chooseActionIndex(index)
+---@param node integer physical action node
+function BagController:_chooseActionNode(node)
+  assert(node >= 0 and node <= 4 and node % 1 == 0, "action focus is a physical node")
   -- An external revision may have moved the selection under the open menu:
   -- re-resolve onto the current selection instead of dispatching the
   -- snapshotted action at a ghost. An empty pocket simply closes the menu.
@@ -500,14 +536,21 @@ function BagController:_chooseActionIndex(index)
     self:_openActionMenu()
     return
   end
-  local action = self._actions[index + 1]
+  if node == 4 then
+    self:_toBrowsing()
+    return
+  end
+  local action
+  for _, candidate in ipairs(self._actions) do
+    if candidate.slot == node then
+      action = candidate
+    end
+  end
   if type(action) ~= "table" or type(action.id) ~= "string" then
     return
   end
   local id = action.id
-  if id == "cancel" then
-    self:_toBrowsing()
-  elseif id == "toss" then
+  if id == "toss" then
     self:_enterQuantity()
   elseif id == "move" then
     self:_enterMoveSelect()
@@ -519,16 +562,9 @@ function BagController:_chooseActionIndex(index)
 end
 
 ---@param direction string
-function BagController:_cycleAction(direction)
-  local count = #self._actions
-  if count == 0 then
-    return
-  end
-  if direction == "down" then
-    self._selectedAction = (self._selectedAction + 1) % count
-  elseif direction == "up" then
-    self._selectedAction = (self._selectedAction - 1) % count
-  end
+function BagController:_moveAction(direction)
+  assert(ACTION_NEIGHBORS[self._actionNode][direction], "unknown action direction")
+  self._actionNode = ACTION_NEIGHBORS[self._actionNode][direction]
 end
 
 -- Enters the quantity picker for the snapshotted item, preselecting one
@@ -548,11 +584,43 @@ end
 
 ---@param direction string
 function BagController:_adjustQuantity(direction)
-  if direction == "left" then
-    self._quantity = math.max(1, self._quantity - 1)
+  if direction == "up" then
+    self._quantity = self._quantity == self._quantityMax and 1 or self._quantity + 1
+  elseif direction == "down" then
+    self._quantity = self._quantity == 1 and self._quantityMax or self._quantity - 1
+  elseif direction == "left" then
+    self._quantity = math.max(1, self._quantity - 10)
   elseif direction == "right" then
-    self._quantity = math.min(self._quantityMax, self._quantity + 1)
+    self._quantity = math.min(self._quantityMax, self._quantity + 10)
   end
+end
+
+---@param delta integer
+function BagController:_adjustQuantityByTouch(delta)
+  assert(
+    delta == -100 or delta == -10 or delta == -1 or delta == 1 or delta == 10 or delta == 100,
+    "quantity touch deltas are source controls"
+  )
+  if delta > 0 then
+    self._quantity = self._quantity == self._quantityMax and 1 or math.min(self._quantityMax, self._quantity + delta)
+  else
+    self._quantity = self._quantity == 1 and self._quantityMax or math.max(1, self._quantity + delta)
+  end
+end
+
+function BagController:_clearQuantityPress()
+  self._quantityPressedControl = nil
+  self._quantityPressedTicks = 0
+end
+
+---@param controlIndex integer
+function BagController:_pressQuantityControl(controlIndex)
+  assert(controlIndex >= 0 and controlIndex <= 5 and controlIndex % 1 == 0, "quantity control index is physical")
+  local layout = self._resolveLayout()
+  local ticks = assert(layout.quantityPressTicks, "the quantity layout carries press ticks")
+  assert(ticks > 0 and ticks % 1 == 0, "quantity press ticks are positive")
+  self._quantityPressedControl = controlIndex
+  self._quantityPressedTicks = ticks
 end
 
 -- Confirms the picked quantity into the confirmation state, clamping to
@@ -568,6 +636,7 @@ function BagController:_enterTossConfirm()
   local owned = checkQuantity(selected.quantity, "selected slots carry a quantity")
   self._quantityMax = owned
   self._quantity = math.min(self._quantity, owned)
+  self:_clearQuantityPress()
   self._state = "toss_confirm"
 end
 
@@ -751,7 +820,7 @@ function BagController:_confirm()
     return
   end
   if self._state == "action_menu" then
-    self:_chooseActionIndex(self._selectedAction)
+    self:_chooseActionNode(self._actionNode)
   elseif self._state == "toss_quantity" then
     self:_enterTossConfirm()
   elseif self._state == "toss_confirm" then
@@ -840,7 +909,8 @@ local function sameTarget(a, b)
   return a.kind == b.kind
     and a.pocket == b.pocket
     and a.visibleIndex == b.visibleIndex
-    and a.actionIndex == b.actionIndex
+    and a.actionNode == b.actionNode
+    and a.quantityControlIndex == b.quantityControlIndex
     and a.delta == b.delta
 end
 
@@ -870,8 +940,9 @@ function BagController:_activate(target)
   end
   if state == "action_menu" then
     if target.kind == "action" then
-      assert(type(target.actionIndex) == "number", "action targets name their button")
-      self:_chooseActionIndex(target.actionIndex)
+      assert(type(target.actionNode) == "number", "action targets name their physical node")
+      self._actionNode = target.actionNode
+      self:_chooseActionNode(target.actionNode)
     elseif target.kind == "cancel" then
       self:_cancel()
     end
@@ -880,12 +951,8 @@ function BagController:_activate(target)
   if state == "toss_quantity" then
     if target.kind == "quantity_delta" then
       local delta = assert(target.delta, "quantity targets carry their step")
-      assert(delta == -1 or delta == 1, "quantity targets step one copy")
-      if delta == -1 then
-        self:_adjustQuantity("left")
-      else
-        self:_adjustQuantity("right")
-      end
+      self:_adjustQuantityByTouch(delta)
+      self:_pressQuantityControl(assert(target.quantityControlIndex, "quantity targets name their control"))
     elseif target.kind == "confirm" then
       self:_enterTossConfirm()
     elseif target.kind == "cancel" then
@@ -967,7 +1034,8 @@ function BagController:_pointerDown(event)
       kind = target.kind,
       pocket = target.pocket,
       visibleIndex = target.visibleIndex,
-      actionIndex = target.actionIndex,
+      actionNode = target.actionNode,
+      quantityControlIndex = target.quantityControlIndex,
       delta = target.delta,
     }
   end
@@ -1018,7 +1086,7 @@ function BagController:_handleNavigate(event)
     return
   end
   if self._state == "action_menu" then
-    self:_cycleAction(event.direction)
+    self:_moveAction(event.direction)
   elseif self._state == "toss_quantity" then
     self:_adjustQuantity(event.direction)
   elseif self._state == "move_select" then
@@ -1033,6 +1101,12 @@ function BagController:updateFixed(uiInput)
   assert(type(uiInput) == "table", "the bag input must be an event list")
   if self._closed then
     return
+  end
+  if self._quantityPressedTicks > 0 then
+    self._quantityPressedTicks = self._quantityPressedTicks - 1
+    if self._quantityPressedTicks == 0 then
+      self:_clearQuantityPress()
+    end
   end
   local previousRevision = self._observedRevision
   local view = self:_refresh()
@@ -1140,10 +1214,13 @@ function BagController:status()
   }
   if self._state == "action_menu" and not self._overlay then
     record.actions = self._actions
-    record.selectedAction = self._selectedAction
+    record.actionNode = self._actionNode
   elseif (self._state == "toss_quantity" or self._state == "toss_confirm") and not self._overlay then
     record.quantity = self._quantity
     record.quantityMax = self._quantityMax
+    if self._state == "toss_quantity" and self._quantityPressedTicks > 0 then
+      record.quantityPressedControl = self._quantityPressedControl
+    end
   elseif self._state == "move_select" and not self._overlay then
     record.moveTarget = self._moveTarget
   end
@@ -1161,6 +1238,7 @@ function BagController:takeResult()
 end
 
 function BagController:dispose()
+  self:_clearQuantityPress()
   self._result = nil
   self._closed = true
 end

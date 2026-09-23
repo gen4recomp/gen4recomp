@@ -22,7 +22,7 @@
 local BagActionPolicy = {}
 
 ---@param facts BagActionPolicyFacts
----@return { id: string, enabled: boolean }[]
+---@return { id: string, enabled: boolean, slot: integer }[]
 function BagActionPolicy.actionsFor(facts)
   assert(type(facts) == "table", "the action policy needs its semantic facts")
   assert(
@@ -46,21 +46,19 @@ function BagActionPolicy.actionsFor(facts)
     assert(type(facts.preventToss) == "boolean", "the action policy needs the source toss metadata")
     assert(type(facts.registerable) == "boolean", "the action policy needs registerability")
     assert(type(facts.registered) == "boolean", "the action policy needs the registration state")
-    if not facts.preventToss then
-      actions[#actions + 1] = { id = "toss", enabled = true }
-    end
-    if facts.pocketOrdering == "manual" and facts.pocketCount >= 2 then
-      actions[#actions + 1] = { id = "move", enabled = true }
-    end
     if facts.registerable then
       if facts.registered then
-        actions[#actions + 1] = { id = "unregister", enabled = true }
+        actions[#actions + 1] = { id = "unregister", enabled = true, slot = 1 }
       elseif facts.registeredCount < 2 then
-        actions[#actions + 1] = { id = "register", enabled = true }
+        actions[#actions + 1] = { id = "register", enabled = true, slot = 1 }
       end
+    elseif not facts.preventToss then
+      actions[#actions + 1] = { id = "toss", enabled = true, slot = 1 }
+    end
+    if facts.pocketOrdering == "manual" and facts.pocketCount >= 2 then
+      actions[#actions + 1] = { id = "move", enabled = true, slot = 3 }
     end
   end
-  actions[#actions + 1] = { id = "cancel", enabled = true }
   return actions
 end
 
@@ -69,7 +67,7 @@ end
 -- registration list for the view's current selection. Composition owns this
 -- binding; the controller only calls the closure with its refreshed view.
 ---@param service HgssBagService
----@return fun(view: table<string, unknown>): { id: string, enabled: boolean }[]
+---@return fun(view: table<string, unknown>): { id: string, enabled: boolean, slot: integer }[]
 function BagActionPolicy.forService(service)
   assert(type(service) == "table", "the action policy binding needs the live bag service")
   assert(type(service.catalog) == "function", "the action policy binding needs the item catalog")

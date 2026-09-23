@@ -81,12 +81,25 @@ local function manifest()
           textRect = { x = 20, y = 144, width = 236, height = 48 },
         },
         actionMenu = {
-          buttons = {
-            { x = 8, y = 136, width = 80, height = 16 },
-            { x = 104, y = 136, width = 80, height = 16 },
-            { x = 8, y = 168, width = 80, height = 16 },
-            { x = 104, y = 168, width = 80, height = 16 },
+          slots = {
+            { hitRect = { x = 8, y = 136, width = 80, height = 16 } },
+            { hitRect = { x = 104, y = 136, width = 80, height = 16 } },
+            { hitRect = { x = 8, y = 168, width = 80, height = 16 } },
+            { hitRect = { x = 104, y = 168, width = 80, height = 16 } },
           },
+        },
+        quantity = {
+          controls = {
+            { delta = 100, role = "increment", hitRect = { x = 0, y = 128, width = 32, height = 32 } },
+            { delta = 10, role = "increment", hitRect = { x = 32, y = 128, width = 32, height = 32 } },
+            { delta = 1, role = "increment", hitRect = { x = 64, y = 128, width = 32, height = 32 } },
+            { delta = -100, role = "decrement", hitRect = { x = 0, y = 160, width = 32, height = 32 } },
+            { delta = -10, role = "decrement", hitRect = { x = 32, y = 160, width = 32, height = 32 } },
+            { delta = -1, role = "decrement", hitRect = { x = 64, y = 160, width = 32, height = 32 } },
+          },
+          pressTicks = 2,
+          cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
+          confirm = { hitRect = { x = 112, y = 160, width = 64, height = 32 } },
         },
       },
     },
@@ -212,7 +225,7 @@ function T.toss_flow_mutates_once_through_the_live_service()
   Assert.equal(state:status().state, "action_menu", "confirming an item opens the action menu")
   state:updateFixed({ { type = "confirm" } })
   Assert.equal(state:status().state, "toss_quantity", "confirming toss enters the quantity picker")
-  state:updateFixed({ { type = "navigate", direction = "right" } })
+  state:updateFixed({ { type = "navigate", direction = "up" } })
   state:updateFixed({ { type = "confirm" } })
   Assert.equal(state:status().state, "toss_confirm", "confirming a quantity asks for confirmation")
   state:updateFixed({ { type = "confirm" } })
@@ -227,14 +240,6 @@ function T.pointer_only_register_flows_through_the_live_service()
   local options, _, bag = composition()
   Assert.isTrue(bag:add("BICYCLE", 1), "setup stocks a registerable key item through the live service")
   local withButtons = manifest()
-  withButtons.interactive.overlays.actionMenu = {
-    buttons = {
-      { x = 8, y = 136, width = 80, height = 16 },
-      { x = 104, y = 136, width = 80, height = 16 },
-      { x = 8, y = 168, width = 80, height = 16 },
-      { x = 104, y = 168, width = 80, height = 16 },
-    },
-  }
   options.manifest = withButtons
   options.cursor:setPocket("key_items")
   local state = BagScreenState.new(options)
@@ -256,7 +261,7 @@ function T.pointer_only_register_flows_through_the_live_service()
     "activating the selected cell opens the action menu by pointer alone"
   )
   Assert.equal(bag:revision(), revision, "opening the menu never mutates the inventory")
-  tapLogical(48, 144)
+  tapLogical(144, 144)
   local status = state:status()
   Assert.equal(status.state, "browsing", "the pointer registration returns to browsing")
   Assert.deepEqual(bag:registeredItems(), { "BICYCLE" }, "the pointer registration reaches the live service")
@@ -499,6 +504,75 @@ local function composedManifest()
     backgrounds.browse = browse
   end
   manifested.interactive.backgrounds = backgrounds
+  local actionSlots = manifested.interactive.overlays.actionMenu.slots
+  for index, slot in ipairs(actionSlots) do
+    local x = index % 2 == 1 and 48 or 144
+    local y = index <= 2 and 144 or 176
+    slot.center = { x = x, y = y }
+    slot.textRect = { x = x - 40, y = y - 8, width = 80, height = 16 }
+  end
+  manifested.interactive.overlays.actionMenu.face = {
+    image = "test/bag/action-face.png",
+    width = 96,
+    height = 24,
+  }
+  manifested.interactive.overlays.quantity = {
+    controls = {
+      {
+        delta = 100,
+        role = "increment",
+        center = { x = 16, y = 144 },
+        hitRect = { x = 0, y = 128, width = 32, height = 32 },
+      },
+      {
+        delta = 10,
+        role = "increment",
+        center = { x = 48, y = 144 },
+        hitRect = { x = 32, y = 128, width = 32, height = 32 },
+      },
+      {
+        delta = 1,
+        role = "increment",
+        center = { x = 80, y = 144 },
+        hitRect = { x = 64, y = 128, width = 32, height = 32 },
+      },
+      {
+        delta = -100,
+        role = "decrement",
+        center = { x = 16, y = 176 },
+        hitRect = { x = 0, y = 160, width = 32, height = 32 },
+      },
+      {
+        delta = -10,
+        role = "decrement",
+        center = { x = 48, y = 176 },
+        hitRect = { x = 32, y = 160, width = 32, height = 32 },
+      },
+      {
+        delta = -1,
+        role = "decrement",
+        center = { x = 80, y = 176 },
+        hitRect = { x = 64, y = 160, width = 32, height = 32 },
+      },
+    },
+    pressTicks = 2,
+    confirm = {
+      center = { x = 144, y = 176 },
+      hitRect = { x = 112, y = 160, width = 64, height = 32 },
+      visual = { image = "test/bag/quantity-confirm.png", width = 64, height = 24 },
+    },
+    cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
+    visuals = {
+      increment = {
+        normal = { image = "test/bag/quantity-increment.png", width = 24, height = 24 },
+        pressed = { image = "test/bag/quantity-increment-pressed.png", width = 24, height = 24 },
+      },
+      decrement = {
+        normal = { image = "test/bag/quantity-decrement.png", width = 24, height = 24 },
+        pressed = { image = "test/bag/quantity-decrement-pressed.png", width = 24, height = 24 },
+      },
+    },
+  }
   local tabs = {}
   local strips = {}
   for index = 0, 7 do
@@ -626,6 +700,12 @@ local function seedComposedCache()
   put("test/bag/focus-items.png")
   put("test/bag/focus-cancel.png")
   put("test/bag/focus-actions.png")
+  put("test/bag/action-face.png")
+  put("test/bag/quantity-increment.png")
+  put("test/bag/quantity-increment-pressed.png")
+  put("test/bag/quantity-decrement.png")
+  put("test/bag/quantity-decrement-pressed.png")
+  put("test/bag/quantity-confirm.png")
   put("test/bag/registration-slot-1.png")
   put("test/bag/registration-slot-2.png")
   return cache
@@ -744,8 +824,8 @@ function T.production_bag_draws_pocket_specific_presentation()
   end
   draw:draw(menu, assert(menu.presentation, "the menu status carries its presentation plan"), { icons = icons })
   local actionFocus = manifested.interactive.focus.actions
-  local selectedAction = assert(tonumber(menu.selectedAction), "the menu status carries its selected action")
-  local actionTarget = assert(actionFocus.targets[selectedAction + 1], "the menu selection resolves a target")
+  local actionNode = assert(tonumber(menu.actionNode), "the menu status carries its physical selection")
+  local actionTarget = assert(actionFocus.targets[actionNode + 1], "the menu selection resolves a target")
   local actionOffset = actionFocus.visual.offset or { x = 0, y = 0 }
   Assert.isTrue(
     staticDrawnAt(graphics, actionTarget.x + actionOffset.x, actionTarget.y + actionOffset.y),

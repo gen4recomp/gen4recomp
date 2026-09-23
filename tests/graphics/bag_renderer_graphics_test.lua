@@ -54,7 +54,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v8", versionId .. " renders the v8 bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v9", versionId .. " renders the v9 bag manifest")
   return cacheFs, manifest
 end
 
@@ -585,8 +585,8 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
       owned,
       presentation(firstIcon, secondIcon, heroStatus, {
         state = "action_menu",
-        actions = { { id = "toss" }, { id = "cancel" } },
-        selectedAction = 0,
+        actions = { { id = "toss", slot = 1 } },
+        actionNode = 1,
       }),
       layout
     )
@@ -597,6 +597,7 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
         state = "toss_quantity",
         quantity = 2,
         quantityMax = 5,
+        quantityPressedControl = 3,
       }),
       layout
     )
@@ -1214,7 +1215,7 @@ function T.action_focus_follows_the_selected_action(scope, context)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local focus = assert(interactive.focus, versionId .. " carries its generated focus")
     local actionFocus = assert(focus.actions, versionId .. " carries its action focus")
-    Assert.equal(#actionFocus.targets, 4, versionId .. " targets one action focus per button")
+    Assert.equal(#actionFocus.targets, 4, versionId .. " targets one action focus per source slot")
     local interactiveFrame = interactiveFrameOf(layout, versionId)
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
@@ -1223,8 +1224,8 @@ function T.action_focus_follows_the_selected_action(scope, context)
       owned,
       presentation(firstIcon, secondIcon, heroStatus, {
         state = "action_menu",
-        actions = { { id = "toss" }, { id = "move" }, { id = "cancel" } },
-        selectedAction = 0,
+        actions = { { id = "toss", slot = 1 }, { id = "move", slot = 3 } },
+        actionNode = 1,
       }),
       layout
     )
@@ -1233,8 +1234,8 @@ function T.action_focus_follows_the_selected_action(scope, context)
       owned,
       presentation(firstIcon, secondIcon, heroStatus, {
         state = "action_menu",
-        actions = { { id = "toss" }, { id = "move" }, { id = "cancel" } },
-        selectedAction = 2,
+        actions = { { id = "toss", slot = 1 }, { id = "move", slot = 3 } },
+        actionNode = 3,
       }),
       layout
     )

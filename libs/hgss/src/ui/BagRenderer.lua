@@ -305,6 +305,21 @@ function BagRenderer.new(opts)
     acquire("focus:items", assert(focus.items.visual, "the bag manifest carries its item focus"))
     acquire("focus:cancel", assert(focus.cancel.visual, "the bag manifest carries its cancel focus"))
     acquire("focus:actions", assert(focus.actions.visual, "the bag manifest carries its action focus"))
+    local actionMenu = assert(interactive.overlays.actionMenu, "the bag manifest carries its action menu")
+    acquire("actionFace", assert(actionMenu.face, "the bag manifest carries its action face"))
+    local quantity = assert(interactive.overlays.quantity, "the bag manifest carries its quantity overlay")
+    local quantityVisuals = assert(quantity.visuals, "the quantity overlay carries its controls")
+    acquire("quantityIncrement", assert(quantityVisuals.increment.normal, "the quantity carries increment visuals"))
+    acquire(
+      "quantityIncrementPressed",
+      assert(quantityVisuals.increment.pressed, "the quantity carries pressed increment visuals")
+    )
+    acquire("quantityDecrement", assert(quantityVisuals.decrement.normal, "the quantity carries decrement visuals"))
+    acquire(
+      "quantityDecrementPressed",
+      assert(quantityVisuals.decrement.pressed, "the quantity carries pressed decrement visuals")
+    )
+    acquire("quantityConfirm", assert(quantity.confirm.visual, "the quantity carries its confirm visual"))
     local registration =
       assert(interactive.itemSlots.registration, "the bag manifest must carry its registration markers")
     local slot1 = assert(registration.slot1, "the bag manifest must carry its first registration marker")
@@ -433,7 +448,7 @@ function BagRenderer:_drawHeroForeground(presentation, descriptionPalette)
   local textRect = manifest.hero.description.textRect
   local contextual = contextualText(presentation, manifest)
   if contextual ~= nil then
-    setColor(graphics, WHITE)
+    setColor(self._graphics, WHITE)
     self:_drawPaletteLines(contextual, textRect.x, textRect.y, descriptionPalette, 3)
   end
 end
@@ -594,18 +609,24 @@ end
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawActionFocus(presentation)
   local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
-  local actions = assert(presentation.actions, "the action menu carries its actions")
-  assert(type(actions) == "table" and #actions >= 1, "the action menu carries its actions")
-  local selectedAction = assert(presentation.selectedAction, "the action menu carries its selection")
+  local selectedNode = assert(presentation.actionNode, "the action menu carries its physical selection")
   assert(
-    type(selectedAction) == "number" and selectedAction == math.floor(selectedAction) and selectedAction >= 0,
-    "the selected action is a valid index"
+    type(selectedNode) == "number"
+      and selectedNode == math.floor(selectedNode)
+      and selectedNode >= 0
+      and selectedNode <= 4,
+    "the selected action node is valid"
   )
-  assert(selectedAction < #actions, "the selected action stays inside the offered actions")
+  if selectedNode == 4 then
+    local cancel = assert(focus.cancel, "the manifest carries its cancel focus")
+    local target = assert(cancel.target, "the cancel focus carries its target")
+    drawVisual(self._graphics, assert(self._visuals["focus:cancel"]), target.x, target.y)
+    return
+  end
   local actionFocus = assert(focus.actions, "the bag manifest carries its action focus")
   local targets = assert(actionFocus.targets, "the action focus carries its targets")
-  assert(type(targets) == "table" and #targets == 4, "the action focus targets its four buttons")
-  local target = assert(targets[selectedAction + 1], "the selected action maps to a generated target")
+  assert(type(targets) == "table" and #targets == 4, "the action focus targets its four nodes")
+  local target = assert(targets[selectedNode + 1], "the selected action maps to a generated target")
   drawVisual(self._graphics, assert(self._visuals["focus:actions"]), target.x, target.y)
 end
 
@@ -693,8 +714,9 @@ function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
   if presentation.state == "description_overlay" and content.heroVisible == false then
     self:_drawDescriptionOverlay(presentation, icons, iconImage)
   elseif presentation.state == "action_menu" then
+    self:_drawActionFaces(presentation)
     self:_drawActionFocus(presentation)
-    self:_drawActionMenu(presentation)
+    self:_drawActionLabels(presentation)
   elseif presentation.state == "toss_quantity" then
     self:_drawQuantityState(presentation)
   elseif presentation.state == "toss_confirm" then
@@ -709,27 +731,49 @@ end
 -- action into its generated button rectangle. An offered action without a
 -- generated label, or more actions than generated buttons, fails instead
 -- of printing an internal id or inventing geometry.
+---@return table<integer, table<string, unknown>>
+function BagRenderer:_actionSlots()
+  local menu = assert(self._manifest.interactive.overlays.actionMenu, "the action menu needs its generated slots")
+  local slots = assert(menu.slots, "the action menu needs its generated slots")
+  assert(type(slots) == "table" and #slots == 4, "the action menu needs its four generated slots")
+  return slots
+end
+
 ---@param presentation table<string, unknown>
-function BagRenderer:_drawActionMenu(presentation)
-  local graphics = self._graphics
+function BagRenderer:_drawActionFaces(presentation)
   local actions = assert(presentation.actions, "the action menu carries its actions")
-  assert(type(actions) == "table" and #actions >= 1, "the action menu carries its actions")
+  assert(type(actions) == "table", "the action menu carries its actions")
+  local slots = self:_actionSlots()
+  for _, action in ipairs(actions) do
+    assert(type(action.slot) == "number" and action.slot >= 0 and action.slot <= 3, "actions carry physical slots")
+    local slot = assert(slots[action.slot + 1], "the action maps to a generated slot")
+    local center = assert(slot.center, "action slots carry centers")
+    drawVisual(self._graphics, assert(self._visuals.actionFace), center.x, center.y)
+  end
+end
+
+---@param presentation table<string, unknown>
+function BagRenderer:_drawActionLabels(presentation)
+  local actions = assert(presentation.actions, "the action menu carries its actions")
+  assert(type(actions) == "table", "the action menu carries its actions")
+  local slots = self:_actionSlots()
   local manifest = self._manifest
-  local menu = assert(manifest.interactive.overlays.actionMenu, "the action menu needs its generated button geometry")
-  local buttons = assert(menu.buttons, "the action menu needs its generated button geometry")
-  assert(type(buttons) == "table", "the action menu needs its generated button geometry")
-  assert(#actions <= #buttons, "the offered actions fit their generated buttons")
   local labels = assert(
     manifest.interactive.text and manifest.interactive.text.actions,
     "the action menu needs its generated labels"
   )
-  for index, action in ipairs(actions) do
-    local rect = assert(buttons[index], "the offered actions fit their generated buttons")
+  local palette = self:_palettes().description
+  for _, action in ipairs(actions) do
+    assert(type(action.slot) == "number" and action.slot >= 0 and action.slot <= 3, "actions carry physical slots")
+    local slot = assert(slots[action.slot + 1], "the action maps to a generated slot")
     assert(type(action.id) == "string", "menu actions carry a semantic id")
     local label = labels[action.id]
     assert(type(label) == "string" and label ~= "", "every offered action carries a generated label")
-    setColor(graphics, WHITE)
-    self._text:drawText(label, rect.x + 4, rect.y + 2)
+    setColor(self._graphics, WHITE)
+    local rect = assert(slot.textRect, "action slots carry label rectangles")
+    local content = plainText(label)
+    local width = self._text:textWidth(content)
+    self._text:drawTextWithPalette(content, rect.x + (rect.width - width) / 2, rect.y, palette)
   end
 end
 
@@ -755,9 +799,13 @@ end
 ---@return table<integer, table<string, number>>
 function BagRenderer:_actionButtons()
   local menu = assert(self._manifest.interactive.overlays.actionMenu, "the nested states need their generated buttons")
-  local buttons = assert(menu.buttons, "the nested states need their generated buttons")
-  assert(type(buttons) == "table" and #buttons == 4, "the nested states need their four generated buttons")
-  return buttons
+  local slots = assert(menu.slots, "the nested states need their generated slots")
+  assert(type(slots) == "table" and #slots == 4, "the nested states need their four generated slots")
+  local textRects = {}
+  for index, slot in ipairs(slots) do
+    textRects[index] = assert(slot.textRect, "action slots carry label rectangles")
+  end
+  return textRects
 end
 
 ---@return string
@@ -800,7 +848,23 @@ function BagRenderer:_drawQuantityState(presentation)
     local width = self._text:textWidth(glyph)
     self._text:drawText(glyph, cell.x + (cell.width - width) / 2, cell.y + 2)
   end
-  self:_drawResponsiveButtons(self:_actionButtons(), { "-", "+", self:_confirmLabel() })
+  local overlay = assert(self._manifest.interactive.overlays.quantity, "the quantity overlay is required")
+  local controls = assert(overlay.controls, "the quantity overlay carries controls")
+  local pressed = presentation.quantityPressedControl
+  if pressed ~= nil then
+    assert(type(pressed) == "number" and pressed >= 0 and pressed < #controls, "the pressed quantity control is valid")
+  end
+  for index, control in ipairs(controls) do
+    local key = control.role == "increment" and "quantityIncrement" or "quantityDecrement"
+    if pressed == index - 1 then
+      key = key .. "Pressed"
+    end
+    local center = assert(control.center, "quantity controls carry centers")
+    drawVisual(self._graphics, assert(self._visuals[key]), center.x, center.y)
+  end
+  local confirm = assert(overlay.confirm, "the quantity overlay carries confirm")
+  local center = assert(confirm.center, "quantity confirm carries a center")
+  drawVisual(self._graphics, assert(self._visuals.quantityConfirm), center.x, center.y)
 end
 
 -- The toss confirmation rests on its distinct generated screen; the item

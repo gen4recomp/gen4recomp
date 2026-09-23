@@ -35,6 +35,15 @@ local function ids(actions)
   return out
 end
 
+local function slots(actions)
+  local out = {}
+  for index, action in ipairs(actions) do
+    Assert.equal(type(action.slot), "number", "dynamic actions carry a physical slot")
+    out[index] = action.slot
+  end
+  return out
+end
+
 local function has(actions, id)
   for _, action in ipairs(actions) do
     if action.id == id then
@@ -92,15 +101,25 @@ function T.full_registration_omits_register_without_a_replacement()
   )
 end
 
-function T.cancel_is_always_present_and_empty_selections_offer_only_cancel()
-  Assert.isTrue(has(BagActionPolicy.actionsFor(facts()), "cancel"), "every menu offers the way out")
+function T.dynamic_actions_use_retail_slots_and_never_include_cancel()
+  local ordinary = BagActionPolicy.actionsFor(facts())
+  Assert.deepEqual(slots(ordinary), { 1, 3 }, "toss and move occupy their source slots")
+  Assert.isFalse(has(ordinary, "cancel"), "fixed cancel is not a dynamic policy action")
+  local registered = BagActionPolicy.actionsFor(
+    facts({ registerable = true, registered = true, registeredCount = 1, pocketOrdering = "native_id" })
+  )
+  Assert.deepEqual(slots(registered), { 1 }, "deselect owns the registration slot")
+  Assert.equal(registered[1].id, "unregister")
+  local registerable = BagActionPolicy.actionsFor(facts({ registerable = true, pocketOrdering = "native_id" }))
+  Assert.deepEqual(slots(registerable), { 1 }, "register owns the registration slot")
+  Assert.equal(registerable[1].id, "register")
   local empty = facts()
   empty.itemKey = nil
-  Assert.deepEqual(ids(BagActionPolicy.actionsFor(empty)), { "cancel" }, "no selection means no inventory action")
+  Assert.deepEqual(ids(BagActionPolicy.actionsFor(empty)), {}, "no selection has no dynamic inventory action")
 end
 
 function T.menus_stay_inside_the_inventory_local_set()
-  local allowed = { toss = true, move = true, register = true, unregister = true, cancel = true }
+  local allowed = { toss = true, move = true, register = true, unregister = true }
   local cases = {
     facts(),
     facts({ preventToss = true }),

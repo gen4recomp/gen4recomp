@@ -62,12 +62,31 @@ local function manifest()
           textRect = { x = 20, y = 144, width = 236, height = 48 },
         },
         actionMenu = {
+          slots = {
+            { hitRect = { x = 8, y = 136, width = 80, height = 16 } },
+            { hitRect = { x = 104, y = 136, width = 80, height = 16 } },
+            { hitRect = { x = 8, y = 168, width = 80, height = 16 } },
+            { hitRect = { x = 104, y = 168, width = 80, height = 16 } },
+          },
           buttons = {
             { x = 8, y = 136, width = 80, height = 16 },
             { x = 104, y = 136, width = 80, height = 16 },
             { x = 8, y = 168, width = 80, height = 16 },
             { x = 104, y = 168, width = 80, height = 16 },
           },
+        },
+        quantity = {
+          controls = {
+            { delta = 100, role = "increment", hitRect = { x = 0, y = 128, width = 32, height = 32 } },
+            { delta = 10, role = "increment", hitRect = { x = 32, y = 128, width = 32, height = 32 } },
+            { delta = 1, role = "increment", hitRect = { x = 64, y = 128, width = 32, height = 32 } },
+            { delta = -100, role = "decrement", hitRect = { x = 0, y = 160, width = 32, height = 32 } },
+            { delta = -10, role = "decrement", hitRect = { x = 32, y = 160, width = 32, height = 32 } },
+            { delta = -1, role = "decrement", hitRect = { x = 64, y = 160, width = 32, height = 32 } },
+          },
+          pressTicks = 2,
+          cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
+          confirm = { hitRect = { x = 112, y = 160, width = 64, height = 32 } },
         },
       },
     },
@@ -140,7 +159,12 @@ local function manifestWithButtons()
   for index, rect in ipairs(BUTTON_RECTS) do
     buttons[index] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
   end
-  layoutManifest.interactive.overlays.actionMenu = { buttons = buttons }
+  layoutManifest.interactive.overlays.actionMenu.slots = {
+    { hitRect = buttons[1] },
+    { hitRect = buttons[2] },
+    { hitRect = buttons[3] },
+    { hitRect = buttons[4] },
+  }
   return layoutManifest
 end
 
@@ -477,6 +501,34 @@ function T.confirm_on_an_item_opens_the_action_menu_without_mutation()
   Assert.equal(bag:revision(), revision, "cancelling the menu never mutates inventory")
 end
 
+function T.action_menu_uses_physical_nodes_and_fixed_cancel()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5))
+  Assert.isTrue(bag:add("ITEM_1", 2))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control = controllerWithButtons(bag, cursor)
+  control:updateFixed({ { type = "confirm" } })
+  local status = control:status()
+  Assert.equal(status.state, "action_menu")
+  Assert.equal(status.actionNode, 1, "the first populated source slot owns initial focus")
+  control:updateFixed({ navigate("right") })
+  Assert.equal(control:status().actionNode, 0, "navigation follows the retail node table through empty slots")
+  control:updateFixed({ navigate("right") })
+  Assert.equal(control:status().actionNode, 1, "navigation returns to the physical slot")
+  control:updateFixed({ navigate("up") })
+  Assert.equal(control:status().actionNode, 3, "vertical navigation uses source adjacency")
+  control:updateFixed({ navigate("left") })
+  Assert.equal(control:status().actionNode, 2, "empty nodes remain focusable")
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "action_menu", "confirming an empty node is inert")
+  control:updateFixed({ navigate("right") })
+  control:updateFixed({ navigate("right") })
+  Assert.equal(control:status().actionNode, 4)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "browsing", "node four is fixed Cancel")
+end
+
 function T.external_revision_removal_clamps_the_cursor_while_focus_may_go_empty()
   local bag = stockTwoPockets(service())
   local pocketCursor = BagCursor.new()
@@ -624,12 +676,32 @@ function T.pointer_action_button_tap_chooses_the_offered_button_position()
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   tap(control, layout, 76, 56)
   Assert.equal(control:status().state, "action_menu", "activating the selected cell opens the action menu")
-  tap(control, layout, 144, 144)
+  tap(control, layout, 144, 176)
   Assert.equal(
     control:status().state,
     "move_select",
     "the second button chooses the second offered action through pointer alone"
   )
+end
+
+function T.quantity_keyboard_and_pointer_use_source_control_identity()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 25))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controllerWithButtons(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  tap(control, layout, 76, 56)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_quantity")
+  control:updateFixed({ navigate("right") })
+  Assert.equal(control:status().quantity, 11, "keyboard right advances by ten")
+  control:updateFixed({ navigate("left") })
+  Assert.equal(control:status().quantity, 1, "keyboard left subtracts ten with a lower clamp")
+  tap(control, layout, 16, 176)
+  local status = control:status()
+  Assert.equal(status.quantity, 25, "the source -100 touch control wraps at one")
+  Assert.equal(status.quantityPressedControl, 3, "pointer state identifies the physical control")
 end
 
 function T.pointer_quantity_steps_confirm_and_nested_cancel_hold_across_updates()
@@ -641,19 +713,18 @@ function T.pointer_quantity_steps_confirm_and_nested_cancel_hold_across_updates(
   local revision = bag:revision()
   tap(control, layout, 76, 56)
   Assert.equal(control:status().state, "action_menu", "activating the selected cell opens the action menu")
-  tap(control, layout, 48, 144)
+  tap(control, layout, 144, 144)
   Assert.equal(control:status().state, "toss_quantity", "the first offered action starts the quantity picker")
-  tap(control, layout, 144, 144)
+  tap(control, layout, 80, 144)
   Assert.equal(control:status().quantity, 2, "the increment affordance steps the picked quantity")
-  tap(control, layout, 48, 144)
+  tap(control, layout, 80, 176)
   Assert.equal(control:status().quantity, 1, "the decrement affordance steps the picked quantity back")
-  tap(control, layout, 144, 144)
-  tap(control, layout, 48, 176)
+  tap(control, layout, 144, 176)
   Assert.equal(control:status().state, "toss_confirm", "the confirm affordance asks for confirmation")
-  tap(control, layout, 48, 176)
+  tap(control, layout, 144, 176)
   local status = control:status()
   Assert.equal(status.state, "browsing", "confirming the toss returns to browsing")
-  Assert.equal(bag:quantity("POTION"), 3, "one pointer toss removes the picked copies")
+  Assert.equal(bag:quantity("POTION"), 4, "one pointer toss removes the picked copies")
   Assert.equal(bag:revision(), revision + 1, "one pointer toss mutates exactly once")
   tap(control, layout, 76, 56)
   Assert.equal(control:status().state, "action_menu", "a later activation reopens the action menu")
@@ -693,7 +764,7 @@ function T.dismiss_from_a_toss_state_closes_without_unwinding()
   local revision = bag:revision()
   tap(control, layout, 76, 56)
   Assert.equal(control:status().state, "action_menu", "setup opens the action menu")
-  tap(control, layout, 48, 144)
+  tap(control, layout, 144, 144)
   Assert.equal(control:status().state, "toss_quantity", "setup enters the nested quantity picker")
   control:updateFixed({ { type = "dismiss" } })
   Assert.deepEqual(control:takeResult(), { kind = "closed" }, "dismiss closes instead of popping to the menu")
