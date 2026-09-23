@@ -269,11 +269,11 @@ local function idleDisplayOffset(phase)
   return 0
 end
 
-local function buildAnimatedIdlePose(sourcePose, context)
+local function buildAnimatedPose(sourcePose, context)
   if sourcePose.durationTicks ~= 20 then
     Errors.raise(
       "FIELD_ACTOR_IDLE_DURATION_UNEXPECTED",
-      "animated idle source duration must be 20, got " .. tostring(sourcePose.durationTicks),
+      "animated source duration must be 20, got " .. tostring(sourcePose.durationTicks),
       { durationTicks = sourcePose.durationTicks, context = context }
     )
   end
@@ -339,7 +339,7 @@ local function buildPoses(perRange, ranges, idleMode)
     for _, direction in ipairs(order) do
       local idle
       if idleMode == "animated" then
-        idle = buildAnimatedIdlePose(pose, { direction = direction })
+        idle = buildAnimatedPose(pose, { direction = direction, pose = "idle" })
       else
         idle = {
           frames = { { frameIndex = pose.frames[1].frameIndex, ticks = 1, displayOffsetY = 0 } },
@@ -347,7 +347,10 @@ local function buildPoses(perRange, ranges, idleMode)
           durationTicks = 1,
         }
       end
-      directions[direction] = { idle = idle, walk = pose }
+      directions[direction] = {
+        idle = idle,
+        walk = idleMode == "animated" and buildAnimatedPose(pose, { direction = direction, pose = "walk" }) or pose,
+      }
     end
     return directions, idlePresentation(idleMode)
   end
@@ -355,7 +358,7 @@ local function buildPoses(perRange, ranges, idleMode)
     local walk = poseFor(i)
     local idle
     if idleMode == "animated" then
-      idle = buildAnimatedIdlePose(walk, { direction = direction })
+      idle = buildAnimatedPose(walk, { direction = direction, pose = "idle" })
     else
       -- Ordinary actors hold the first displayed frame of their facing range.
       idle = {
@@ -366,7 +369,7 @@ local function buildPoses(perRange, ranges, idleMode)
     end
     directions[direction] = {
       idle = idle,
-      walk = walk,
+      walk = idleMode == "animated" and buildAnimatedPose(walk, { direction = direction, pose = "walk" }) or walk,
     }
   end
   return directions, idlePresentation(idleMode)

@@ -122,6 +122,17 @@ local function assertIdleShiftWindow(visual, direction, expected, label)
   Assert.equal(count, 1, label .. " " .. direction .. " idle reuses one bob magnitude")
 end
 
+local function assertWalkShiftWindow(visual, direction, expected, label)
+  local pose = assert(visual.directions[direction].walk, label .. " " .. direction .. " walk pose is required")
+  local offsets = idleOffsetsPerTick(pose)
+  Assert.equal(#offsets, 20, label .. " " .. direction .. " walk runs on the 20-tick clock")
+  for tick = 0, 19 do
+    local offset = offsets[tick + 1]
+    local want = expected[tick] == true and -0.125 or 0
+    Assert.equal(offset, want, label .. " " .. direction .. " walk tick " .. tick .. " bob offset")
+  end
+end
+
 T["starter follower visuals are directional atlases with cardinal idle and walk poses"] = function(romFs)
   local compiled = compiledFor(romFs)
   local starters = {
@@ -228,6 +239,16 @@ function T.follower_idle_bob_phase_matches_facing_for_the_flagged_species(romFs)
   assertIdleShiftWindow(butterfree, "south", PARTNER_SOUTH_SHIFTED_TICKS, "butterfree follower")
   for _, direction in ipairs({ "north", "west", "east" }) do
     assertIdleShiftWindow(butterfree, direction, PARTNER_SIDE_SHIFTED_TICKS, "butterfree follower")
+  end
+end
+
+function T.follower_walk_bob_phase_reuses_the_shared_field_actor_policy(romFs)
+  local compiled = compiledFor(romFs)
+  local parameterIndex =
+    assert(MonSources.followerParamIndex(152, 0, false), "chikorita resolves a follower parameter index")
+  local visual = assert(compiled.visuals[MonSources.followerVisualId(parameterIndex)])
+  for _, direction in ipairs(manifest.directionOrder) do
+    assertWalkShiftWindow(visual, direction, DEFAULT_SHIFTED_TICKS, "chikorita follower")
   end
 end
 

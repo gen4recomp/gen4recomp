@@ -241,17 +241,40 @@ local function assertIdleShiftWindow(visual, direction, expected, label)
   Assert.equal(count, 1, label .. " " .. direction .. " idle reuses one bob magnitude")
 end
 
+local function assertWalkShiftWindow(visual, direction, expected, label)
+  local pose = assert(visual.directions[direction].walk, label .. " " .. direction .. " walk pose is required")
+  local offsets = idleOffsetsPerTick(pose)
+  Assert.equal(#offsets, 20, label .. " " .. direction .. " walk runs on the 20-tick clock")
+  for tick = 0, 19 do
+    local offset = offsets[tick + 1]
+    local want = expected[tick] == true and -0.125 or 0
+    Assert.equal(offset, want, label .. " " .. direction .. " walk tick " .. tick .. " bob offset")
+  end
+end
+
 function T.compiled_visuals_animate_pokemon_idle_from_the_source_range(romFs)
   local bundle = assert(FieldActorCompiler.compile(romFs))
   local marill = assert(bundle.visuals[1032], "static Marill visual 1032 must be compiled")
   assertIdleUsesSourceRange(marill, "marill")
   local marillWalkSouth = marill.directions.south.walk
   Assert.equal(marillWalkSouth.durationTicks, 20, "marill south keeps its uneven source loop")
-  Assert.deepEqual(
-    { marillWalkSouth.frames[1].ticks, marillWalkSouth.frames[2].ticks, marillWalkSouth.frames[3].ticks },
-    { 5, 10, 5 },
-    "marill south keeps its 5/10/5 source timing"
-  )
+  local marillSouthFrameIndices = {}
+  for _, segment in ipairs(marillWalkSouth.frames) do
+    for _ = 1, segment.ticks do
+      marillSouthFrameIndices[#marillSouthFrameIndices + 1] = segment.frameIndex
+    end
+  end
+  local firstFrame = marillSouthFrameIndices[1]
+  local middleFrame = marillSouthFrameIndices[6]
+  for tick = 1, 5 do
+    Assert.equal(marillSouthFrameIndices[tick], firstFrame, "marill south keeps its first five-tick source cadence")
+  end
+  for tick = 6, 15 do
+    Assert.equal(marillSouthFrameIndices[tick], middleFrame, "marill south keeps its ten-tick source cadence")
+  end
+  for tick = 16, 20 do
+    Assert.equal(marillSouthFrameIndices[tick], firstFrame, "marill south keeps its final five-tick source cadence")
+  end
   Assert.equal(marill.directions.south.idle.durationTicks, 20, "marill south idle runs on the same 20-tick clock")
 
   -- A family-16 field Pokemon idles on the same native clock.
@@ -280,6 +303,28 @@ function T.marill_idle_bob_phase_uses_the_generic_shift_windows(romFs)
   assertIdleUsesSourceRange(marill, "marill")
   for _, direction in ipairs(manifest.directionOrder) do
     assertIdleShiftWindow(marill, direction, DEFAULT_SHIFTED_TICKS, "marill")
+  end
+end
+
+function T.pokemon_walk_bob_phase_matches_idle_without_changing_the_source_timeline(romFs)
+  local bundle = assert(FieldActorCompiler.compile(romFs))
+  local marill = assert(bundle.visuals[1032], "static Marill visual 1032 must be compiled")
+  for _, direction in ipairs(manifest.directionOrder) do
+    local idle = assert(marill.directions[direction].idle)
+    local walk = assert(marill.directions[direction].walk)
+    local idleFrames, walkFrames = {}, {}
+    for _, segment in ipairs(idle.frames) do
+      for _ = 1, segment.ticks do
+        idleFrames[#idleFrames + 1] = segment.frameIndex
+      end
+    end
+    for _, segment in ipairs(walk.frames) do
+      for _ = 1, segment.ticks do
+        walkFrames[#walkFrames + 1] = segment.frameIndex
+      end
+    end
+    Assert.deepEqual(walkFrames, idleFrames, "marill " .. direction .. " walk keeps the source frame timeline")
+    assertWalkShiftWindow(marill, direction, DEFAULT_SHIFTED_TICKS, "marill")
   end
 end
 
@@ -343,8 +388,23 @@ function T.marill_keeps_its_uneven_south_loop(romFs)
   local bundle = assert(FieldActorCompiler.compile(romFs))
   local south = bundle.visuals[1032].directions.south.walk
   Assert.equal(south.durationTicks, 20)
-  Assert.deepEqual({ south.frames[1].ticks, south.frames[2].ticks, south.frames[3].ticks }, { 5, 10, 5 })
-  Assert.equal(south.frames[1].frameIndex, south.frames[3].frameIndex, "the loop returns to its first slot")
+  local frameIndices = {}
+  for _, segment in ipairs(south.frames) do
+    for _ = 1, segment.ticks do
+      frameIndices[#frameIndices + 1] = segment.frameIndex
+    end
+  end
+  local firstFrame = frameIndices[1]
+  local middleFrame = frameIndices[6]
+  for tick = 1, 5 do
+    Assert.equal(frameIndices[tick], firstFrame, "the first source frame keeps its five-tick cadence")
+  end
+  for tick = 6, 15 do
+    Assert.equal(frameIndices[tick], middleFrame, "the middle source frame keeps its ten-tick cadence")
+  end
+  for tick = 16, 20 do
+    Assert.equal(frameIndices[tick], firstFrame, "the loop returns to its first slot for five ticks")
+  end
 end
 
 function T.compiled_visuals_publish_semantic_gesture_clips(romFs)

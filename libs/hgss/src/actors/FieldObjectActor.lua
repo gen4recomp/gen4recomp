@@ -779,7 +779,9 @@ function FieldObjectActor:settlePresentation()
   assert(self._motion == nil, "cannot settle presentation while an action is active")
   local state = self:_numeric()
   self.pose = "idle"
-  state.poseTick = 0
+  if self._idlePresentation.mode == "static" then
+    state.poseTick = 0
+  end
   state.presentationOffsetX, state.presentationOffsetY, state.presentationOffsetZ = 0, 0, 0
   self._gesturePose = nil
   setGestureTick(state, nil)
