@@ -215,8 +215,9 @@ local FIELD_PLANNING_JOBS = {
 
 -- The static generated services the field runtime consumes eagerly: world
 -- and cell catalogs, presentation services, actor/mon/item/bag catalogs,
--- the pinned Start Menu label bank, the audio catalog and the script
--- summary. It never contains intro setup, whole-family summaries, or a
+-- the pinned Start Menu label bank, the shared transition/door sound-effect
+-- bank (transition exitSound/door symbols live in Lua constant tables no map
+-- closure can reach), the audio catalog and the script summary. It never contains intro setup, whole-family summaries, or a
 -- per-map/per-bank corpus enumeration.
 local FIELD_RUNTIME_JOBS = {
   "world-catalog:global",
@@ -233,7 +234,8 @@ local FIELD_RUNTIME_JOBS = {
   "items:global",
   "bag:global",
   "starter-choice:global",
-  "message-bank:219",
+  "message-bank:196",
+  "audio-bank:750",
   "audio-catalog:global",
   "script-summary:global",
 }

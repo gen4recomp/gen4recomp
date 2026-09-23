@@ -89,6 +89,9 @@ local function readyHost()
     requestMonPortraitPage = function()
       return true
     end,
+    requestLogicalField = function()
+      return true
+    end,
     status = function()
       return {}
     end,
@@ -493,14 +496,23 @@ end
 local function withProductionLoaderObservation(worldOrNil, fn)
   local CacheFs = require("libs.storage.src.CacheFs")
   local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
   local originalForVersion = CacheFs.forVersion
   local originalLoaderNew = FieldMapLoader.new
   local observation = { worldReads = 0, loaderBuilds = 0, world = worldOrNil }
   rawset(CacheFs, "forVersion", function(_)
     local cacheFs = {}
-    function cacheFs:loadLua(_)
-      observation.worldReads = observation.worldReads + 1
-      return observation.world
+    -- Only the world-manifest path counts as a world read: entry geometry
+    -- demand reads sibling records (warp-exit field data) through the same
+    -- filesystem after readiness, and those must not masquerade as
+    -- manifest reads. Best-effort prewarming treats an unreadable record
+    -- as absent, so the count stays exact without weakening the contract.
+    function cacheFs.loadLua(_, path)
+      if path == MapAssetCache.worldPath() then
+        observation.worldReads = observation.worldReads + 1
+        return observation.world
+      end
+      return nil
     end
     return cacheFs
   end)

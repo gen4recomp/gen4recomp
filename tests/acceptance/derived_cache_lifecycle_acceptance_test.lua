@@ -177,8 +177,14 @@ function T.tests.continue_waits_for_readiness_then_validates_before_field()
       end
       return false
     end,
-    requestField = function(mapId, _)
-      requestedMaps[#requestedMaps + 1] = mapId
+    requestField = function(mapId, urgency)
+      requestedMaps[#requestedMaps + 1] = { mapId = mapId, urgency = urgency }
+      if geometryReady then
+        return true
+      end
+      return false
+    end,
+    requestLogicalField = function(_, _)
       if geometryReady then
         return true
       end
@@ -229,9 +235,24 @@ function T.tests.continue_waits_for_readiness_then_validates_before_field()
         waited = waited + 1
       end
       Assert.isTrue(#requestedMaps >= 1, "the saved location geometry is requested once entry is ready")
-      for _, mapId in ipairs(requestedMaps) do
-        Assert.equal(mapId, 60, "only the saved location geometry is awaited")
+      local requiredIds, nearIds = {}, {}
+      for _, demand in ipairs(requestedMaps) do
+        if demand.urgency == "required" then
+          requiredIds[demand.mapId] = true
+        else
+          nearIds[demand.mapId] = true
+        end
       end
+      Assert.isTrue(requiredIds[60], "the saved destination is demanded required")
+      for mapId in pairs(requiredIds) do
+        Assert.equal(mapId, 60, "only the saved destination is a required transition gate")
+      end
+      Assert.isTrue(nearIds[60] == nil, "the destination itself is never a near prefetch")
+      local nearCount = 0
+      for _ in pairs(nearIds) do
+        nearCount = nearCount + 1
+      end
+      Assert.isTrue(nearCount <= 8, "neighbor visuals stay a bounded halo, never a corpus walk")
       geometryReady = true
       waited = 0
       while #fieldCalls == 0 and waited < 60 do
@@ -333,8 +354,14 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
       end
       return { state = "pending", ready = 0, total = nil }
     end,
-    requestField = function(mapId, _)
-      requested.maps[#requested.maps + 1] = mapId
+    requestField = function(mapId, urgency)
+      requested.maps[#requested.maps + 1] = { mapId = mapId, urgency = urgency }
+      if geometryReady then
+        return true
+      end
+      return false
+    end,
+    requestLogicalField = function(_, _)
       if geometryReady then
         return true
       end
@@ -422,15 +449,23 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
             waited = waited + 1
           end
           Assert.equal(#fieldCalls, 0, "the handoff still waits for initial location geometry")
-          local distinctMaps = {}
-          for _, mapId in ipairs(requested.maps) do
-            distinctMaps[mapId] = true
+          local requiredMaps, nearMaps = {}, {}
+          for _, demand in ipairs(requested.maps) do
+            if demand.urgency == "required" then
+              requiredMaps[demand.mapId] = true
+            else
+              nearMaps[demand.mapId] = true
+            end
           end
-          local distinctCount = 0
-          for _ in pairs(distinctMaps) do
-            distinctCount = distinctCount + 1
+          local requiredCount, nearCount = 0, 0
+          for _ in pairs(requiredMaps) do
+            requiredCount = requiredCount + 1
           end
-          Assert.equal(distinctCount, 1, "only the initial location geometry is awaited")
+          for _ in pairs(nearMaps) do
+            nearCount = nearCount + 1
+          end
+          Assert.equal(requiredCount, 1, "only the initial location geometry is a required gate")
+          Assert.isTrue(nearCount <= 8, "neighbor visuals stay a bounded halo, never a corpus walk")
           Assert.equal(requested.pages, 0, "unrelated portrait pages remain sweep while entering field")
           geometryReady = true
           waited = 0
@@ -577,6 +612,12 @@ local function passHost()
       return true
     end,
     requestMonPortraitPage = function()
+      return true
+    end,
+    requestLogicalField = function()
+      return true
+    end,
+    ensureLogicalField = function()
       return true
     end,
   }

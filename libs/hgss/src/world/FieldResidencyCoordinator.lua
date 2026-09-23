@@ -292,7 +292,7 @@ end
 
 ---@param mapId integer
 ---@param suppliedRuntimeMap RuntimeFieldMap|LogicalFieldMap?
----@return FieldResidencyCoordinator.StagedResident
+---@return FieldResidencyCoordinator.StagedResident?
 function FieldResidencyCoordinator:_stageResident(mapId, suppliedRuntimeMap)
   assert(not self.residents[mapId], "logical map is already resident")
   local logicalMap
@@ -300,6 +300,20 @@ function FieldResidencyCoordinator:_stageResident(mapId, suppliedRuntimeMap)
     local composedRuntimeMap = suppliedRuntimeMap --[[@as FieldResidencyCoordinator.ComposedRuntimeMap]]
     logicalMap = composedRuntimeMap.logicalMap or suppliedRuntimeMap
   else
+    -- A halo resident whose logical closure is still compiling is omitted
+    -- rather than raised: live prefetch acquires it once its demand
+    -- resolves. A failed closure still fails loudly below. Loaders without
+    -- the demand operation keep the historical synchronous behavior.
+    local host = self.mapLoader.derivedAssets
+    if host ~= nil and type(host.requestLogicalField) == "function" then
+      local ready, failure = host.requestLogicalField(mapId, "required")
+      if failure ~= nil then
+        error(failure, 0)
+      end
+      if not ready then
+        return nil
+      end
+    end
     logicalMap = self.mapLoader:loadLogical(mapId)
   end
   assert(logicalMap.mapId == mapId, "staged logical map identity mismatch")
@@ -394,8 +408,10 @@ function FieldResidencyCoordinator:prepareTransition(destinationRuntimeMap, dest
       else
         local supplied = mapId == destinationMapId and destinationRuntimeMap or nil
         local staged = self:_stageResident(mapId, supplied)
-        transaction.staged[#transaction.staged + 1] = staged
-        transaction.targetResidents[mapId] = staged.resident
+        if staged ~= nil then
+          transaction.staged[#transaction.staged + 1] = staged
+          transaction.targetResidents[mapId] = staged.resident
+        end
       end
     end
   end)

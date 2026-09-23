@@ -713,10 +713,14 @@ function FieldMapLoader:globalPosition(idOrSymbol, localX, localZ)
   return { x = localX + originX, z = localZ + originZ }
 end
 
--- Nonblocking location demand: requests the logical map and, for a
--- destination with physical cells, every valid descriptor in the existing
--- radius-1 committed footprint. Performs no scene, terrain, or GPU
--- acquisition. Returns ready/pending/error without blocking.
+-- Nonblocking location demand: requests the destination full field
+-- closure and, for a destination with physical cells, every valid
+-- descriptor in the existing radius-1 committed footprint. Every loadable
+-- map represented by those committed descriptors additionally enrolls its
+-- logical field closure at the caller's urgency (the destination reuses
+-- its own full closure instead), while non-destination maps enroll their
+-- full visual closure as near prefetch only. Performs no scene, terrain,
+-- or GPU acquisition. Returns ready/pending/error without blocking.
 ---@param idOrSymbol integer|string
 ---@param fieldX integer
 ---@param fieldZ integer
@@ -747,6 +751,7 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
   if mapFailure ~= nil then
     return false, mapFailure
   end
+  local seen = {}
   local matrix = record.matrix
   if type(matrix) == "table" and type(matrix.memberId) == "number" then
     if self.fieldCellIndex == nil then
@@ -757,10 +762,61 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
       self.fieldCellIndex = indexOrError
     end
     local anchorX, anchorZ = math.floor(fieldX / 32), math.floor(fieldZ / 32)
-    for _, descriptor in ipairs(FieldCoverage.descriptorsAt(self.fieldCellIndex, matrix.memberId, anchorX, anchorZ)) do
+    local committed = FieldCoverage.descriptorsAt(self.fieldCellIndex, matrix.memberId, anchorX, anchorZ)
+    for _, descriptor in ipairs(committed) do
       local cellFailure = consume(host.requestCell(descriptor, urgency))
       if cellFailure ~= nil then
         return false, cellFailure
+      end
+    end
+    -- The committed footprint is also the logical residency closure:
+    -- every represented loadable map must be semantically ready before
+    -- the destination commits, because residency may publish it
+    -- immediately. Filler headers own cells but no logical map, so they
+    -- enroll nothing. Neighbor visuals stay opportunistic near prefetch:
+    -- their pending state or failure never gates the destination.
+    for _, descriptor in ipairs(committed) do
+      local header = descriptor.mapHeaderId
+      if type(header) == "number" and header % 1 == 0 and not seen[header] then
+        seen[header] = true
+        local headerId = math.floor(header)
+        if headerId ~= record.id and self:definesMap(headerId) then
+          local logicalFailure = consume(host.requestLogicalField(headerId, urgency))
+          if logicalFailure ~= nil then
+            return false, logicalFailure
+          end
+          host.requestField(headerId, "near")
+        end
+      end
+    end
+  end
+  -- Warp exits are one level of required-logical demand beyond the
+  -- represented set: an indoor footprint can never represent the outdoor
+  -- map its door reaches, yet ENVIRONMENT-mode warps read the destination
+  -- record synchronously at warp start. No transitive chase: when the
+  -- player arrives, that map's own record enrolls its exits in turn.
+  -- Warp visuals stay opportunistic near prefetch like neighbor visuals.
+  -- The record read is best-effort prewarming: when it is absent or
+  -- unreadable the represented closure still governs readiness, and
+  -- a corrupt record still fails loudly at load time.
+  local warpOk, destFieldData = pcall(function()
+    return self:_destinationFieldData(record.id)
+  end)
+  if warpOk and destFieldData ~= nil then
+    for _, warp in ipairs(destFieldData.events.warps) do
+      if type(warp) == "table" then
+        local destId = warp.destinationMapId
+        if type(destId) == "number" and destId % 1 == 0 then
+          local warpId = math.floor(destId)
+          if warpId ~= record.id and not seen[warpId] and self:definesMap(warpId) then
+            seen[warpId] = true
+            local warpFailure = consume(host.requestLogicalField(warpId, urgency))
+            if warpFailure ~= nil then
+              return false, warpFailure
+            end
+            host.requestField(warpId, "near")
+          end
+        end
       end
     end
   end
@@ -788,6 +844,17 @@ function FieldMapLoader:requestWarp(sourceMap, warp)
   if type(warp.destinationMapId) ~= "number" or warp.destinationMapId % 1 ~= 0 then
     return false, "warp destination map is missing"
   end
+  -- The warp itself is the demand event for its destination: enroll the
+  -- destination logical closure before reading so a not-yet-compiled
+  -- record waits instead of failing. Indoor destinations are never matrix
+  -- neighbors, so no other closure can demand them.
+  local logicalReady, logicalFailure = self.derivedAssets.requestLogicalField(warp.destinationMapId, "required")
+  if logicalFailure ~= nil then
+    return false, logicalFailure
+  end
+  if not logicalReady then
+    return false
+  end
   local fieldData, fieldError = self:_destinationFieldData(warp.destinationMapId)
   if fieldData == nil then
     return false, fieldError
@@ -807,12 +874,11 @@ end
 ---@return table<string, unknown>?
 ---@return string|nil
 function FieldMapLoader:_destinationFieldData(mapId)
-  local fieldData, loadError = self.cacheFs:loadLua(FieldMapDataCache.fieldPath(mapId))
+  local fieldData = self.cacheFs:loadLua(FieldMapDataCache.fieldPath(mapId))
   if fieldData == nil then
-    return nil,
-      "destination field record is unavailable: " .. (Errors.is(loadError) and Errors.format(loadError) or tostring(
-        loadError
-      ))
+    -- Absent record file: the destination closure is still compiling, so
+    -- the warp waits. Corruption below still fails loudly.
+    return nil
   end
   if
     type(fieldData) ~= "table"

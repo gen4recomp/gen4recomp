@@ -173,6 +173,9 @@ local function readyHost()
     requestMonPortraitPage = function()
       return true
     end,
+    requestLogicalField = function()
+      return true
+    end,
     status = function()
       return {}
     end,

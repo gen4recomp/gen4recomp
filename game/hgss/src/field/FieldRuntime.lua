@@ -659,6 +659,19 @@ function FieldRuntime:_load()
       return assert(mapRecord.matrix.memberId, "outdoor map matrix member is required")
     end
 
+    -- Structural outdoor check: matrix membership comes from the world
+    -- catalog and holds before (and without) visual realization.
+    local function hasMatrixMembership(mapId)
+      local byId = self.mapLoader.world.byId
+      local maps = self.mapLoader.world.maps
+      if type(byId) ~= "table" or type(maps) ~= "table" then
+        return false
+      end
+      local mapIndex = byId[mapId]
+      local mapRecord = type(mapIndex) == "number" and maps[mapIndex] or nil
+      return type(mapRecord) == "table" and type(mapRecord.matrix) == "table"
+    end
+
     -- Initial boot has no live source owner to protect. It is the only path
     -- allowed to publish a newly created initial coverage.
     local function composeInitialMap(logicalMap, position)
@@ -672,8 +685,11 @@ function FieldRuntime:_load()
 
     -- Logical zone changes reuse the committed owner. A matrix mismatch here
     -- indicates that a logical seam was routed through the wrong boundary.
+    -- Outdoor-ness is structural matrix membership, not visual readiness:
+    -- a scene-less outdoor halo still gets the shared physical window so
+    -- permission, projection, and camera math keep working.
     local function composeCurrentMap(logicalMap, coverage)
-      if logicalMap.scene.type ~= "outdoor" then
+      if not hasMatrixMembership(logicalMap.mapId) then
         return logicalMap
       end
       coverage = coverage or assert(self.physicalCoverage, "current outdoor coverage is required")
@@ -787,29 +803,83 @@ function FieldRuntime:_load()
     local doorAt
     local escalatorAt
     if self.presentation or self.runtimeMap.sceneRuntime or self.runtimeMap.scene then
+      -- Outdoor realized maps carry no central collision by design (tiles
+      -- stream through the shared window): graft the window fields onto a
+      -- disposable view mirroring syncPhysicalFields so the facade and its
+      -- queries share one coordinate space. Window-relative facades are
+      -- never cached: the window recenters under them.
+      local function windowView(runtimeMap)
+        local coverage = assert(self.physicalCoverage, "window grafting requires shared physical coverage")
+        local region = assert(coverage.region, "window grafting requires the coverage region")
+        assert(region.collision ~= nil, "window grafting requires region collision")
+        local origin = assert(coverage.origin, "window grafting requires the coverage origin")
+        local view = {}
+        for key, value in pairs(runtimeMap) do
+          view[key] = value
+        end
+        view.fieldRegion = region
+        view.collision = region.collision
+        view.terrain = region.terrain
+        view.terrainDependencyHash = coverage.terrainDependencyHash
+        view.coordinateOrigin = { x = origin.x, z = origin.z }
+        view.physicalOrigin = origin
+        return view
+      end
       local function resolveDoorAt(runtimeMap, doorFieldX, doorFieldZ)
+        -- A scene-less logical map carries no placements or collision:
+        -- door identity is unknowable, so the warp resolves no door and
+        -- the transition raises its unresolved-door failure rather than
+        -- degrading to a plain fade or a synthetic open sound. Door-kind
+        -- warps gate on source visual readiness before choreography, so
+        -- this backstop only fires for hostless loaders.
+        if runtimeMap.scene == nil and runtimeMap.sceneRuntime == nil then
+          return nil
+        end
         local sceneRuntime = runtimeMap.sceneRuntime
         if sceneRuntime and sceneRuntime.mapProps then
           return sceneRuntime.mapProps:doorAt(runtimeMap, doorFieldX, doorFieldZ)
         end
-        local props = headlessProps[runtimeMap.mapId]
-        if not props then
-          props = headlessMapProps(runtimeMap, cacheFs)
-          headlessProps[runtimeMap.mapId] = props
+        local target, cacheable = runtimeMap, true
+        if runtimeMap.collision == nil then
+          local view = windowView(runtimeMap)
+          if view == nil then
+            return nil
+          end
+          target, cacheable = view, false
         end
-        return props:doorAt(runtimeMap, doorFieldX, doorFieldZ)
+        local props = cacheable and headlessProps[target.mapId] or nil
+        if not props then
+          props = headlessMapProps(target, cacheFs)
+          if cacheable then
+            headlessProps[target.mapId] = props
+          end
+        end
+        return props:doorAt(target, doorFieldX, doorFieldZ)
       end
       local function resolveEscalatorAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+        if runtimeMap.scene == nil and runtimeMap.sceneRuntime == nil then
+          return nil
+        end
         local sceneRuntime = runtimeMap.sceneRuntime
         if sceneRuntime and sceneRuntime.mapProps then
           return sceneRuntime.mapProps:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
         end
-        local props = headlessProps[runtimeMap.mapId]
-        if not props then
-          props = headlessMapProps(runtimeMap, cacheFs)
-          headlessProps[runtimeMap.mapId] = props
+        local target, cacheable = runtimeMap, true
+        if runtimeMap.collision == nil then
+          local view = windowView(runtimeMap)
+          if view == nil then
+            return nil
+          end
+          target, cacheable = view, false
         end
-        return props:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+        local props = cacheable and headlessProps[target.mapId] or nil
+        if not props then
+          props = headlessMapProps(target, cacheFs)
+          if cacheable then
+            headlessProps[target.mapId] = props
+          end
+        end
+        return props:propAt(target, escalatorFieldX, escalatorFieldZ)
       end
       doorAt = resolveDoorAt
       escalatorAt = resolveEscalatorAt
@@ -1086,8 +1156,15 @@ function FieldRuntime:_load()
       self.scripts:onZoneChange(runtimeMap)
     end
     local function applyWeather(runtimeMap)
-      self:_applyEffectiveWeather(runtimeMap)
+      -- A scene-less logical halo carries no visuals to fog: carry the
+      -- live weather across the seam and leave presentation application
+      -- to the map's visual entry, which resolves against its own scene.
       self.weatherRuntime = { mapId = runtimeMap.mapId }
+      if runtimeMap.scene ~= nil then
+        self:_applyEffectiveWeather(runtimeMap)
+      else
+        runtimeMap.effectiveWeatherId = self.lastEffectiveWeatherId
+      end
     end
     local function enterAudio(runtimeMap)
       if self.audio and self.audio.enterZone then
@@ -1647,6 +1724,9 @@ function FieldRuntime:_composeAudio(cacheFs, restoredAudio)
         error("unknown map symbol " .. tostring(mapIdOrSymbol))
       end
       local mapData = cacheFs:loadLua(FieldMapDataCache.fieldPath(mapId))
+      if mapData == nil then
+        return nil
+      end
       if type(mapData) ~= "table" then
         error("missing field data for map " .. tostring(mapIdOrSymbol) .. " (" .. tostring(mapId) .. ")")
       end
@@ -1749,6 +1829,7 @@ function FieldRuntime:_setLiveWeather(runtimeMap, weatherId)
   local catalogPreset = assert(self.weatherCatalog.presets[weatherId], "live weather id has no catalog preset")
   local preset = weatherId == runtimeMap.scene.weatherId and runtimeMap.scene.fog or catalogPreset
   runtimeMap.effectiveWeatherId = weatherId
+  self.lastEffectiveWeatherId = weatherId
   if runtimeMap.sceneRuntime then
     runtimeMap.sceneRuntime.fog = preset
   end

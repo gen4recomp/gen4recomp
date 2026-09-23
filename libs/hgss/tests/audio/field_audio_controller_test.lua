@@ -1131,7 +1131,7 @@ function T.forced_processing_clears_memory_without_pre_stop_and_restarts_same_pl
   )
 end
 
-function T.begin_warp_raises_when_generated_field_data_is_missing()
+local function warpControllerWithDestinationData(destData)
   local keyA = AudioFixture.key(1)
   local bgm =
     seq(10, "SEQ_GS_T_WAKABA", 12, 1, { { op = "note", key = 60, velocity = 127, duration = 1 }, { op = "end" } })
@@ -1155,14 +1155,40 @@ function T.begin_warp_raises_when_generated_field_data_is_missing()
       return "day"
     end,
     fieldDataForMap = function()
-      return nil
+      return destData
     end,
   })
   controller:enterMap({ fieldData = fd }, { play = true })
   sound:playMusic(10)
-  Assert.throws(function()
-    controller:beginWarp(9999)
-  end)
+  return controller, sound
+end
+
+function T.begin_warp_skips_the_prefade_when_destination_field_data_is_not_yet_available()
+  local controller, sound = warpControllerWithDestinationData(nil)
+  controller:beginWarp(9999)
+  Assert.isFalse(sound:isMusicFadeActive(), "a not-yet-available destination must not start a warp fade")
+  Assert.equal(sound:currentMusic(), 10, "a not-yet-available destination must keep current BGM")
+end
+
+function T.begin_warp_fails_loudly_when_destination_field_data_is_corrupt()
+  local cases = {}
+  cases[#cases + 1] = { name = "malformed", destData = 42 }
+  local wrongSchema = fieldDataWithSoundplates({}, nil)
+  wrongSchema.schema = "other-schema"
+  cases[#cases + 1] = { name = "stale_schema", destData = wrongSchema }
+  local noIdentity = fieldDataWithSoundplates({}, nil)
+  noIdentity.mapId = nil
+  cases[#cases + 1] = { name = "unidentified", destData = noIdentity }
+  local otherMap = fieldDataWithSoundplates({}, nil)
+  otherMap.mapId = 63
+  cases[#cases + 1] = { name = "other_destination", destData = otherMap }
+  for _, case in ipairs(cases) do
+    local controller = warpControllerWithDestinationData(case.destData)
+    local ok = pcall(function()
+      controller:beginWarp(9999)
+    end)
+    Assert.isFalse(ok, "a corrupt destination (" .. case.name .. ") must fail loudly")
+  end
 end
 
 function T.audio_owned_traversal_mutation_is_not_a_supported_operation()

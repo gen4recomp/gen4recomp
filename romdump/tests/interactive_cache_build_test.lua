@@ -4444,7 +4444,8 @@ function T.runtime_milestone_carries_bounded_static_services()
     "items:global",
     "bag:global",
     "starter-choice:global",
-    "message-bank:219",
+    "message-bank:196",
+    "audio-bank:750",
     "audio-catalog:global",
     "script-summary:global",
   }
@@ -4461,12 +4462,15 @@ function T.runtime_milestone_carries_bounded_static_services()
   end
   for identityKey in pairs(set) do
     local kind, key = identityKey:match("^([^:]+):(.+)$")
-    Assert.isTrue(kind ~= "audio-bank", "runtime enrolls no audio bank: " .. identityKey)
+    Assert.isTrue(
+      kind ~= "audio-bank" or key == "750",
+      "runtime enrolls no audio bank but the shared transition bank: " .. identityKey
+    )
     Assert.isTrue(kind ~= "script-member", "runtime enrolls no script member: " .. identityKey)
     Assert.isTrue(kind ~= "map-data", "runtime enrolls no field record: " .. identityKey)
     Assert.isTrue(kind ~= "map", "runtime enrolls no visual map: " .. identityKey)
     if kind == "message-bank" then
-      Assert.equal(key, "219", "runtime carries only the pinned label bank")
+      Assert.equal(key, "196", "runtime carries only the pinned label bank")
     end
   end
 end
