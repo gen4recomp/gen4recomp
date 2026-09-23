@@ -65,7 +65,7 @@ end
 ---@field _focusImage love.Image?
 ---@field _quads table<integer, table<integer, love.Quad>>? glyph quads per color band, band 0 built eagerly
 ---@field _maskQuads table<integer, love.Quad>? mask-atlas glyph quads, built lazily
----@field _focusQuads table<integer, love.Quad>? focus-indicator frame quads, built lazily
+---@field _focusQuads table<integer, table<integer, love.Quad>>? focus-indicator layer quads, built lazily
 local FieldTextRenderer = {}
 FieldTextRenderer.__index = FieldTextRenderer
 
@@ -460,15 +460,14 @@ function FieldTextRenderer.lastVisibleFocusField(visibleLines)
   return field
 end
 
--- Draws the source screen-focus indicator frame (the YESNO printer control
--- graphic) at the caller's position: the imported 24x32 frame rect of the
--- requested field at identity tint. The method owns no placement decision --
--- window-specific renderers place the indicator at their content edges. An
--- out-of-range field fails loudly instead of clamping.
+-- Draws the source screen-focus indicator as four mask layers tinted by the
+-- actual destination window palette. Window-specific renderers own palette
+-- selection and placement; this renderer only maps source slots to colors.
 ---@param field integer
 ---@param x number
 ---@param y number
-function FieldTextRenderer:drawFocusIndicator(field, x, y)
+---@param palette { [integer]: { r: integer, g: integer, b: integer } }
+function FieldTextRenderer:drawFocusIndicator(field, x, y, palette)
   if type(field) ~= "number" or field % 1 ~= 0 or field < 0 or field >= FieldMessageText.FOCUS_INDICATOR_COUNT then
     Errors.raise(
       FieldErrors.FONT_FOCUS_FIELD_INVALID,
@@ -479,18 +478,38 @@ function FieldTextRenderer:drawFocusIndicator(field, x, y)
       { field = field }
     )
   end
+  assert(type(palette) == "table", "focus indicators require the owning window palette")
+  for slot = 0, 15 do
+    local color = palette[slot]
+    assert(type(color) == "table", "focus palette must contain slots 0..15")
+    for _, component in ipairs({ "r", "g", "b" }) do
+      local value = color[component]
+      assert(
+        type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 255,
+        "focus palette colors must use byte RGB components"
+      )
+    end
+  end
   local lg = assert(self._graphics)
   local focusImage = assert(self._focusImage)
-  local rect = self.fontDef.focusIndicators.frames[field]
+  local layers = self.fontDef.focusIndicators.frames[field].layers
   local quads = self._focusQuads or {}
-  local quad = quads[field]
-  if quad == nil then
-    quad = lg.newQuad(rect.x, rect.y, rect.width, rect.height, focusImage:getWidth(), focusImage:getHeight())
-    quads[field] = quad
+  local fieldQuads = quads[field]
+  if fieldQuads == nil then
+    fieldQuads = {}
+    for _, slot in ipairs({ 11, 12, 13, 14 }) do
+      local rect = assert(layers[slot], "focus source-slot layer is missing")
+      fieldQuads[slot] =
+        lg.newQuad(rect.x, rect.y, rect.width, rect.height, focusImage:getWidth(), focusImage:getHeight())
+    end
+    quads[field] = fieldQuads
     self._focusQuads = quads
   end
-  lg.setColor(1, 1, 1, 1)
-  lg.draw(focusImage, quad, x, y)
+  for _, slot in ipairs({ 11, 12, 13, 14 }) do
+    local color = assert(palette[slot], "focus indicator palette slot is missing")
+    lg.setColor(color.r / 255, color.g / 255, color.b / 255, 1)
+    lg.draw(focusImage, fieldQuads[slot], x, y)
+  end
 end
 
 function FieldTextRenderer:release()

@@ -270,6 +270,18 @@ function FieldWindowRenderer:frameQuads(frameIndex)
   return quads
 end
 
+-- Returns the immutable generated palette for the selected dialogue frame.
+---@param frameIndex integer
+---@return { [integer]: { r: integer, g: integer, b: integer } }
+function FieldWindowRenderer:framePalette(frameIndex)
+  local frames = assert(self._manifest.dialogueFrames, "the field-UI manifest must carry dialogue frames")
+  assert(
+    frames.frameTiles[frameIndex] ~= nil,
+    "dialogue frame index " .. tostring(frameIndex) .. " is outside the generated frame set"
+  )
+  return assert(frames.palettes[frameIndex], "dialogue frame palette is missing")
+end
+
 -- Draws the application border around the content box from the selected
 -- frame row: one exterior side column per side plus the bottom and top
 -- caps, sampling whole keyed source tiles with no artwork rotation. The

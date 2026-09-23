@@ -799,6 +799,7 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
   local atlasHeight = cfg.frameCount * 8
   local rgba = newRgba(atlasWidth, atlasHeight)
   local frameTiles = {}
+  local palettes = {}
   local cursorCharBytes = decodeMember(archive, cfg.continueCursorMember, "dialogue continuation cursor")
   local cursorChar, cursorErr = G2dDecoder.decodeChar(cursorCharBytes, { label = "dialogue continuation cursor" })
   cursorChar = must(cursorChar, cursorErr)
@@ -812,6 +813,13 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
     local framePal, palErr = G2dDecoder.decodePalette(framePalBytes, { label = "frame " .. frame .. " palette" })
     frameChar = must(frameChar, charErr)
     framePal = must(framePal, palErr)
+    if #framePal.colors < 16 then
+      Errors.raise(
+        FieldUiCompiler.ERROR.SOURCE_INVALID,
+        "dialogue frame " .. frame .. " palette must contain 16 colors",
+        { frame = frame, colors = #framePal.colors }
+      )
+    end
     local tiles = math.floor(#frameChar.tiles / (frameChar.depth == 3 and 32 or 64))
     if tiles ~= FieldUiAssetCache.GEOMETRY.FRAME_TILES then
       Errors.raise(
@@ -844,6 +852,11 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
       )
     end
     frameTiles[frame] = { x = 0, y = frame * 8, width = atlasWidth, height = 8 }
+    local palette = {}
+    for slot = 0, 15 do
+      palette[slot] = framePal.colors[slot + 1]
+    end
+    palettes[frame] = palette
     deps[#deps + 1] = {
       name = manifestConfig.dialogueFrames.alias .. ":member:" .. (cfg.firstFrameMember + frame),
       sha1 = sha1hex(frameCharBytes),
@@ -868,6 +881,7 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
   return {
     count = cfg.frameCount,
     frameTiles = frameTiles,
+    palettes = palettes,
     continueCursor = {
       asset = FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
       cycle = { 0, 1, 2, 1 },

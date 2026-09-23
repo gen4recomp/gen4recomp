@@ -229,9 +229,8 @@ end
 
 function T.compiled_font_def_matches_the_real_focus_and_color_contract(romFs, _)
   -- The compiled field-font definition and its cache marker must reflect the
-  -- ROM's font member 6: seven color bands (the protocol COLOR_VARIANT_COUNT),
-  -- four 24x32 focus frames with in-bounds rects, and the member bytes
-  -- participating in the dependency record.
+  -- ROM's font member 6: seven color bands, four source-slot masks per focus
+  -- frame, and the member bytes participating in the dependency record.
   local bundle = assert(FieldFontCompiler.compile(romFs)) --[[@as table]]
   local def = bundle.fonts[0].font
   local variants = def.colorVariants
@@ -247,31 +246,33 @@ function T.compiled_font_def_matches_the_real_focus_and_color_contract(romFs, _)
   Assert.equal(focus.height, 32)
   local focusW, focusH, _ = PngReader.rgba(bundle.fonts[0].focusIndicators)
   for field = 0, focus.count - 1 do
-    local rect = focus.frames[field]
-    Assert.equal(rect.width, 24, "focus frame " .. field .. " must be 24 wide")
-    Assert.equal(rect.height, 32, "focus frame " .. field .. " must be 32 tall")
-    Assert.isTrue(
-      rect.x + rect.width <= focusW and rect.y + rect.height <= focusH,
-      "focus frame " .. field .. " must lie inside the focus PNG"
-    )
+    for _, slot in ipairs({ 0x0B, 0x0C, 0x0D, 0x0E }) do
+      local rect = assert(focus.frames[field].layers[slot])
+      Assert.equal(rect.width, 24, "focus slot " .. slot .. " must be 24 wide")
+      Assert.equal(rect.height, 32, "focus slot " .. slot .. " must be 32 tall")
+      Assert.isTrue(
+        rect.x + rect.width <= focusW and rect.y + rect.height <= focusH,
+        "focus slot " .. slot .. " must lie inside the focus PNG"
+      )
+    end
   end
   Assert.equal(bundle.dependencies.focusIndicatorMemberId, 6)
   local member6 = assert(assert(romFs:openNarc("font")):readMember(6))
   Assert.equal(bundle.dependencies.focusIndicatorMemberSha1, Hashing.sha1hex(member6))
 
-  local sourceIndices = def.focusIndicators.sourceIndices
-  Assert.notNil(sourceIndices, "the generated focus indicator must retain source palette-index semantics")
-  local used = {}
-  for _, frame in pairs(sourceIndices) do
-    for _, row in ipairs(frame) do
-      for _, value in ipairs(row) do
-        used[value] = true
-      end
+  Assert.deepEqual(focus.sourcePaletteSlots, { 0x0B, 0x0C, 0x0D, 0x0E })
+  for field = 0, focus.count - 1 do
+    local layers = focus.frames[field].layers
+    Assert.notNil(layers, "focus frame " .. field .. " must publish its source-slot mask layers")
+    for _, slot in ipairs(focus.sourcePaletteSlots) do
+      local rect = assert(layers[slot], "source slot " .. slot .. " must have a layer rect")
+      Assert.equal(rect.width, 24)
+      Assert.equal(rect.height, 32)
+      Assert.isTrue(
+        rect.x >= 0 and rect.y >= 0 and rect.x + rect.width <= focusW and rect.y + rect.height <= focusH,
+        "focus mask layer must lie inside the generated PNG"
+      )
     end
-  end
-  Assert.isTrue(used[0] == true, "focus source index 0 must remain transparent")
-  for value = 0x0B, 0x0E do
-    Assert.isTrue(used[value] == true, "focus source index must remain distinguishable: " .. tostring(value))
   end
 
   -- The default band keeps the pre-change palette mapping: visible pixels

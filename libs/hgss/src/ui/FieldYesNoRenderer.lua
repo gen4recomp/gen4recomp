@@ -3,7 +3,7 @@
 ---@class FieldYesNoRenderer
 ---@field _graphics love.graphics
 ---@field _text table<string, unknown>
----@field _window table<string, unknown>
+---@field _window { drawWindow: fun(self: unknown, box: table<string, number>, frameIndex: integer?, background: number[]), framePalette: fun(self: unknown, frameIndex: integer): { [integer]: { r: integer, g: integer, b: integer } } }
 local FieldYesNoRenderer = {}
 FieldYesNoRenderer.__index = FieldYesNoRenderer
 
@@ -27,7 +27,7 @@ function FieldYesNoRenderer.new(opts)
   assert(graphics and graphics.setColor, "yes/no renderer requires love.graphics")
   assert(opts.text and type(opts.text.drawText) == "function", "yes/no renderer requires the field text renderer")
   assert(
-    opts.window and type(opts.window.drawWindow) == "function",
+    opts.window and type(opts.window.drawWindow) == "function" and type(opts.window.framePalette) == "function",
     "yes/no renderer requires the field window renderer"
   )
   return setmetatable({ _graphics = graphics, _text = opts.text, _window = opts.window }, FieldYesNoRenderer)
@@ -100,7 +100,13 @@ function FieldYesNoRenderer:draw(status, layout)
   for index, label in ipairs(labels) do
     self._graphics.setColor(1, 1, 1, 1)
     if index - 1 == status.selectedIndex then
-      self._text:drawFocusIndicator(status.selectedIndex, box.x, box.y + (index - 1) * 16 * scale)
+      local frameIndex = assert(status.frameIndex, "focus indicator choice has no dialogue frame index")
+      self._text:drawFocusIndicator(
+        status.selectedIndex,
+        box.x,
+        box.y + (index - 1) * 16 * scale,
+        self._window:framePalette(frameIndex)
+      )
     end
     self._text:drawText(label, box.x + 16 * scale, box.y + 4 * scale + (index - 1) * 16 * scale)
   end

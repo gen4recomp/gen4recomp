@@ -45,7 +45,7 @@ FieldDialogueRenderer.__index = FieldDialogueRenderer
 ---@field fontDef FieldFontDef
 ---@field _atlas love.Image?
 ---@field drawLine fun(self: FieldDialogueRenderer.TextRenderer, tokens: MessageToken[], x: number, y: number)
----@field drawFocusIndicator fun(self: FieldDialogueRenderer.TextRenderer, field: integer, x: number, y: number)
+---@field drawFocusIndicator fun(self: FieldDialogueRenderer.TextRenderer, field: integer, x: number, y: number, palette: { [integer]: { r: integer, g: integer, b: integer } })
 ---@field windowBackgroundColor fun(self: FieldDialogueRenderer.TextRenderer): number[]
 
 -- opts.cacheFs: version-scoped private cache holding the generated field-UI
@@ -92,7 +92,9 @@ function FieldDialogueRenderer.new(opts)
   local borrowedWindow = opts.windowRenderer
   if borrowedWindow ~= nil then
     assert(
-      type(borrowedWindow) == "table" and type(borrowedWindow.drawWindow) == "function",
+      type(borrowedWindow) == "table"
+        and type(borrowedWindow.drawWindow) == "function"
+        and type(borrowedWindow.framePalette) == "function",
       "FieldDialogueRenderer requires a borrowed window renderer with the shared frame interface"
     )
   end
@@ -212,10 +214,12 @@ function FieldDialogueRenderer:_drawFocusIndicator(status, layout)
   end
   local field = FieldTextRenderer.lastVisibleFocusField(tokensByLine)
   if field ~= nil then
+    local frameIndex = assert(status.frameIndex, "focus indicator dialogue has no frame index")
     self._text:drawFocusIndicator(
       field,
       layout.box.x + layout.box.width - FieldFontCache.FOCUS_FRAME_WIDTH,
-      layout.box.y
+      layout.box.y,
+      assert(self._window):framePalette(frameIndex)
     )
   end
 end

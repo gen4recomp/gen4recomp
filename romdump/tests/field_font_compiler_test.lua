@@ -140,10 +140,10 @@ end
 -- only those bytes. Each carries the 24x32 4bpp protocol shape (48 tiles).
 local function focusMembers()
   local a = table.concat({
-    indicatorsFrame(0x0B, 0x0D),
+    indicatorsFrame(0x0B, 0x0E),
     indicatorsFrame(0x0C, 0x0D),
-    indicatorsFrame(0x0B, 0x0D),
-    indicatorsFrame(0x0C, 0x0D),
+    indicatorsFrame(0x0D, 0x0B),
+    indicatorsFrame(0x0E, 0x0C),
   })
   local b = table.concat({
     indicatorsFrame(0x0D, 0x0B),
@@ -267,7 +267,7 @@ function T.compiles_font_zero_and_four_as_one_deterministic_class()
   Assert.equal(bundle.dependencies.glyphMembers[1].memberId, 0)
   Assert.equal(bundle.dependencies.glyphMembers[2].memberId, 4)
   Assert.equal(bundle.dependencies.glyphMembers[2].sha1, "font4-member-sha")
-  Assert.equal(bundle.marker, "field-font-cache-v4:rom-sha:dependency-sha")
+  Assert.equal(bundle.marker, "field-font-cache-v5:rom-sha:dependency-sha")
 end
 
 function T.changing_font_four_source_bytes_changes_the_class_marker()
@@ -307,7 +307,7 @@ function T.compiles_font_def_and_atlas()
   Assert.equal(bundle.dependencies.paletteMemberSha1, "palette-member-sha")
   Assert.equal(bundle.dependencies.glyphMembers[1].memberId, 0)
   Assert.equal(bundle.dependencies.paletteMemberId, 7)
-  Assert.equal(bundle.marker, "field-font-cache-v4:rom-sha:dependency-sha")
+  Assert.equal(bundle.marker, "field-font-cache-v5:rom-sha:dependency-sha")
 
   -- The 8x8 sub-tile is repeated for all four quadrants: each row is
   -- (right=0xAA shadow, left=0x55 fg), so every quadrant's left half is
@@ -425,8 +425,8 @@ function T.corrupt_palette_member_is_typed()
   Assert.equal(assert(err).code, "FONT_FORMAT_INVALID")
 end
 
--- The font derived class imports font member 6 and reports four 24x32 focus
--- frames with explicit in-bounds rects plus the dependency record.
+-- The font derived class imports member 6 and reports four source-slot masks
+-- per 24x32 focus frame, with explicit in-bounds rects and the dependency record.
 function T.font_def_exposes_four_24x32_focus_frames_and_member6_dependencies()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldFontCompiler.compile(romFs, sha1, hashLua)) --[[@as table]]
@@ -438,15 +438,16 @@ function T.font_def_exposes_four_24x32_focus_frames_and_member6_dependencies()
   Assert.equal(focus.height, 32)
   local focusW, focusH, _ = PngReader.rgba(bundle.fonts[0].focusIndicators)
   for field = 0, focus.count - 1 do
-    local rect = focus.frames[field]
-    Assert.notNil(rect, "focus frame " .. field .. " must have a rect")
-    Assert.equal(rect.width, 24, "focus frame " .. field .. " must be 24 wide")
-    Assert.equal(rect.height, 32, "focus frame " .. field .. " must be 32 tall")
-    Assert.isTrue(rect.x >= 0 and rect.y >= 0, "focus frame rects are non-negative")
-    Assert.isTrue(
-      rect.x + rect.width <= focusW and rect.y + rect.height <= focusH,
-      "focus frame " .. field .. " must lie inside the focus PNG"
-    )
+    for _, slot in ipairs({ 11, 12, 13, 14 }) do
+      local rect = assert(focus.frames[field].layers[slot])
+      Assert.equal(rect.width, 24, "focus mask " .. slot .. " must be 24 wide")
+      Assert.equal(rect.height, 32, "focus mask " .. slot .. " must be 32 tall")
+      Assert.isTrue(rect.x >= 0 and rect.y >= 0, "focus mask rects are non-negative")
+      Assert.isTrue(
+        rect.x + rect.width <= focusW and rect.y + rect.height <= focusH,
+        "focus mask " .. slot .. " must lie inside the focus PNG"
+      )
+    end
   end
   Assert.equal(bundle.dependencies.focusIndicatorMemberId, 6)
   Assert.equal(bundle.dependencies.focusIndicatorMemberSha1, "focus-member-a-sha")
@@ -538,27 +539,44 @@ function T.variant_zero_keeps_the_previous_default_palette_slots()
   )
 end
 
--- The focus-indicator PNG keeps visible source palette slots while the
--- background index composites transparent.
-function T.focus_indicator_png_keeps_ink_slots_and_makes_the_background_transparent()
+-- Each source focus role is retained as a white alpha mask, while source zero
+-- remains transparent in every role layer.
+function T.focus_indicator_layers_preserve_source_roles_and_transparency()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldFontCompiler.compile(romFs, sha1, hashLua)) --[[@as table]]
   local focus = bundle.fonts[0].font.focusIndicators
   Assert.notNil(focus, "the font definition must expose focusIndicators")
+  Assert.deepEqual(focus.sourcePaletteSlots, { 11, 12, 13, 14 })
   local focusW, _, rgba = PngReader.rgba(bundle.fonts[0].focusIndicators)
-  local rect = focus.frames[0]
-  local r, g, b, a = PngReader.pixel(rgba, focusW, rect.x + 2, rect.y + 2)
-  Assert.equal(a, 255, "visible indicator pixels must stay opaque")
-  Assert.deepEqual(
-    { r = r, g = g, b = b },
-    bundle.fonts[0].font.palette[0x0B + 1],
-    "visible indicator pixels keep their source slot"
-  )
-  local rb, gb, bb, ab = PngReader.pixel(rgba, focusW, rect.x + 12, rect.y + 16)
-  Assert.equal(ab, 0, "the indicator background index must composite transparent")
-  Assert.equal(rb, 0)
-  Assert.equal(gb, 0)
-  Assert.equal(bb, 0)
+  local sourceSlots = { 11, 12, 13, 14 }
+  local fillSlots = { 11, 12, 13, 14 }
+  local borderSlots = { 14, 13, 11, 12 }
+  for field = 0, 3 do
+    local layers = assert(focus.frames[field].layers)
+    for _, sourceSlot in ipairs(sourceSlots) do
+      local rect = assert(layers[sourceSlot])
+      local fillX = rect.x + 2
+      local fillY = rect.y + 2
+      local fillR, fillG, fillB, fillA = PngReader.pixel(rgba, focusW, fillX, fillY)
+      local expectedFill = sourceSlot == fillSlots[field + 1]
+      Assert.deepEqual(
+        { fillR, fillG, fillB, fillA },
+        expectedFill and { 255, 255, 255, 255 } or { 0, 0, 0, 0 },
+        "field " .. field .. " fill belongs only to source slot " .. fillSlots[field + 1]
+      )
+      local borderX = rect.x
+      local borderY = rect.y
+      local borderR, borderG, borderB, borderA = PngReader.pixel(rgba, focusW, borderX, borderY)
+      local expectedBorder = sourceSlot == borderSlots[field + 1]
+      Assert.deepEqual(
+        { borderR, borderG, borderB, borderA },
+        expectedBorder and { 255, 255, 255, 255 } or { 0, 0, 0, 0 },
+        "field " .. field .. " border belongs only to source slot " .. borderSlots[field + 1]
+      )
+      local holeR, holeG, holeB, holeA = PngReader.pixel(rgba, focusW, rect.x + 12, rect.y + 16)
+      Assert.deepEqual({ holeR, holeG, holeB, holeA }, { 0, 0, 0, 0 }, "source zero is transparent")
+    end
+  end
 end
 
 -- When only the member 6 bytes change, the font dependency marker
@@ -594,12 +612,12 @@ function T.cache_missing_font_four_is_not_ready()
   Assert.isFalse(FieldFontCache.isReady(cache, bundle.marker), "a cache without font 4 must not be ready")
 end
 
--- The compiled definition names the required v3 semantic glyph mask atlas,
+-- The compiled definition names the required v4 semantic glyph mask atlas,
 -- and the bundle carries the mask PNG bytes themselves.
-function T.v3_definition_names_the_mask_atlas_and_the_bundle_carries_its_bytes()
+function T.v4_definition_names_the_mask_atlas_and_the_bundle_carries_its_bytes()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldFontCompiler.compile(romFs, sha1, hashLua)) --[[@as table]]
-  Assert.equal(bundle.fonts[0].font.schema, "g4-field-font-v3")
+  Assert.equal(bundle.fonts[0].font.schema, "g4-field-font-v4")
   Assert.equal(bundle.fonts[0].font.maskAtlasPath, FieldFontCache.maskAtlasPath(0))
   Assert.isTrue(
     type(bundle.fonts[0].maskAtlas) == "string" and #bundle.fonts[0].maskAtlas > 0,

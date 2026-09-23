@@ -32,6 +32,24 @@ local function openWindow(lg, manifest, cache)
   })
 end
 
+function T.frame_palette_returns_the_selected_manifest_bank_by_identity()
+  local manifest = FieldUiFixture.manifest()
+  local palettes = {
+    [0] = { [11] = { r = 11, g = 21, b = 31 } },
+    [1] = { [11] = { r = 41, g = 51, b = 61 } },
+  }
+  manifest.dialogueFrames.palettes = palettes
+  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local window = openWindow(lg, manifest)
+
+  Assert.equal(window:framePalette(0), palettes[0])
+  Assert.equal(window:framePalette(1), palettes[1])
+  Assert.throws(function()
+    window:framePalette(2)
+  end, "an invalid frame index must fail")
+  window:release()
+end
+
 local function syntheticImageData(width, height)
   local pixels = {}
   for y = 0, height - 1 do
@@ -329,7 +347,6 @@ function T.application_frame_draws_only_the_direct_selected_border()
   -- The fixture's solid tile colors provide no edge boundary, so the
   -- structural profile retains each full source tile. Real patterned rows
   -- exercise the measured offsets in the graphics smoke tests.
-  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
   local tileSize = FieldDialogueTheme.frameTileSize
   local function expectQuad(tile, kind)
     if kind == "side" then

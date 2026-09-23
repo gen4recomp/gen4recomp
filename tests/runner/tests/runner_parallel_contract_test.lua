@@ -96,21 +96,6 @@ local function runData(results, overrides)
   return run
 end
 
-local function shellQuote(value)
-  return "'" .. value:gsub("'", "'\\''") .. "'"
-end
-
-local function withTempDirectory(fn)
-  local path = os.tmpname()
-  os.remove(path)
-  os.execute("mkdir -p " .. shellQuote(path))
-  local ok, message = pcall(fn, path)
-  os.execute("rm -rf -- " .. shellQuote(path))
-  if not ok then
-    error(message, 0)
-  end
-end
-
 local function mixedCorpus(withBrokenRom)
   local function case()
     return function() end

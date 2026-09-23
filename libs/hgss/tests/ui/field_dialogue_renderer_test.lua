@@ -118,7 +118,7 @@ end
 -- alive; the renderer itself acquires nothing before the strip read fails.
 function T.missing_frame_strip_is_a_typed_error()
   local cache = FieldDialogueFixture.cacheWithFont()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 } } })
   local text = withTextRenderer(cache, lg)
   local err = Assert.throws(function()
     FieldDialogueRenderer.new({ cacheFs = cache, manifest = MANIFEST, text = text, graphics = lg })
@@ -173,7 +173,7 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
     cullMode = "back",
     color = { 0.2, 0.4, 0.6, 0.8 },
     scissor = { 4, 8, 32, 16 },
-    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } },
+    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } },
     failOnDrawCall = 1,
   })
   local renderer = FieldDialogueRenderer.new({
@@ -208,7 +208,7 @@ function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
       cullMode = "back",
       color = { 0.2, 0.4, 0.6, 0.8 },
       scissor = { 40, 5, 20, 20 },
-      imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } },
+      imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } },
       failOnDrawCall = options and options.failOnDrawCall,
     })
   end
@@ -258,7 +258,7 @@ end
 -- strips, creates no third slice source image, and draws the frame from the
 -- generated strip tiles.
 function T.no_nine_slice_assets_are_built()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
   local renderer = FieldDialogueRenderer.new({
     cacheFs = uiCache(),
     manifest = MANIFEST,
@@ -279,7 +279,7 @@ end
 -- canonical DrawFrameAndWindow2 tilemap around the content box.
 function T.frame_index_resolves_the_manifest_strip_tiles()
   local function renderedDraws(frameIndex)
-    local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+    local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
     local renderer = FieldDialogueRenderer.new({
       cacheFs = uiCache(),
       manifest = MANIFEST,
@@ -325,7 +325,7 @@ end
 -- A request without a frame index (a host that carries no player options)
 -- still draws its text; no frame tiles are fabricated.
 function T.request_without_a_frame_index_draws_no_frame_tiles()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
   local renderer = FieldDialogueRenderer.new({
     cacheFs = uiCache(),
     manifest = MANIFEST,
@@ -346,7 +346,7 @@ end
 -- and repeated draws do not advance the controller-owned phase.
 function T.waiting_dialogue_draws_the_generated_cursor_phase_without_blinking()
   local lg = fakeGraphics({
-    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 32 }, { 144, 32 }, { 48, 320 } },
+    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 32 }, { 144, 32 }, { 48, 320 } },
   })
   local cache = cursorCache()
   local text = withTextRenderer(cache, lg)
@@ -388,7 +388,7 @@ end
 -- into an arbitrary host rectangle without changing the generated phase quad.
 function T.compact_presentation_places_the_cursor_inside_its_window()
   local lg = fakeGraphics({
-    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 32 }, { 144, 32 }, { 48, 320 } },
+    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 32 }, { 144, 32 }, { 48, 320 } },
   })
   local cache = cursorCache()
   local text = withTextRenderer(cache, lg)
@@ -439,7 +439,7 @@ end
 -- The content rectangle is an opaque fill using the compiled field-font
 -- palette's source slot 15, drawn before the frame and glyphs.
 function T.dialogue_content_uses_the_source_background_palette_slot()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
   local text = withTextRenderer(uiCache(), lg)
   text.fontDef.palette = {}
   for index = 1, 16 do
@@ -486,6 +486,7 @@ local function openedWithTokens(tokens, opts)
   controller:open({
     id = "focus",
     message = { bankId = 543, messageId = 6, text = "x", tokens = tokens, hadUnresolvedSubstitutions = false },
+    frameIndex = opts.frameIndex or 0,
     allowCancel = false,
   })
   return controller
@@ -501,7 +502,7 @@ local focusDraws = FieldDialogueFixture.focusDraws
 -- The indicator stays hidden while the reveal cursor has not reached
 -- its source position (the controller keeps the token out of visibleLines).
 function T.focus_indicator_not_reached_by_reveal_is_not_drawn()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
   local renderer = FieldDialogueRenderer.new({
     cacheFs = uiCache(),
     manifest = MANIFEST,
@@ -524,7 +525,7 @@ end
 -- semantics -- the two are distinct source concepts, never mutually
 -- suppressed.
 function T.reached_focus_indicator_draws_at_the_content_window_right_edge()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
   local renderer = FieldDialogueRenderer.new({
     cacheFs = uiCache(),
     manifest = MANIFEST,
@@ -543,7 +544,7 @@ function T.reached_focus_indicator_draws_at_the_content_window_right_edge()
 
   renderer:draw(controller, presentation)
   local focus = focusDraws(lg)
-  Assert.equal(#focus, 1, "exactly one indicator frame is drawn")
+  Assert.equal(#focus, 4, "one mask for each source palette slot is drawn")
   Assert.equal(
     focus[1].x,
     presentation.box.x + presentation.box.width - 24,
@@ -553,9 +554,9 @@ function T.reached_focus_indicator_draws_at_the_content_window_right_edge()
   Assert.deepEqual(
     { focus[1].quad.x, focus[1].quad.y, focus[1].quad.w, focus[1].quad.h },
     { 0, 0, 24, 32 },
-    "field 0 samples its imported strip rect"
+    "field 0 slot 11 samples its mask rect"
   )
-  Assert.equal(lg.draws[#lg.draws].quad, focus[1].quad, "the indicator draws after the frame and text")
+  Assert.equal(lg.draws[#lg.draws - 1].quad, focus[4].quad, "the indicator draws after text and before the cursor")
   Assert.equal(#lg.primitives, 1, "only the opaque window fill is a primitive")
   renderer:release()
 end
@@ -563,7 +564,7 @@ end
 -- When several indicator tokens are visible in one window state, the
 -- last one in source order wins; exactly one frame draws.
 function T.the_last_visible_focus_field_wins()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
   local renderer = FieldDialogueRenderer.new({
     cacheFs = uiCache(),
     manifest = MANIFEST,
@@ -575,8 +576,8 @@ function T.the_last_visible_focus_field_wins()
   controller:step({ actionPressed = true })
   renderer:draw(controller, presentation)
   local focus = focusDraws(lg)
-  Assert.equal(#focus, 1, "multiple visible controls still draw one frame")
-  Assert.equal(focus[1].quad.x, 3 * 24, "the last visible field in source order wins")
+  Assert.equal(#focus, 4, "the last visible field draws all four masks")
+  Assert.equal(focus[1].quad.y, 3 * 32, "the last visible field in source order wins")
   Assert.equal(
     focus[1].x,
     presentation.box.x + presentation.box.width - 24,
@@ -594,10 +595,41 @@ local function recordingTextRenderer(focusCalls, lineCalls)
     drawLine = function()
       lineCalls[#lineCalls + 1] = true
     end,
-    drawFocusIndicator = function(_, field, x, y)
-      focusCalls[#focusCalls + 1] = { field = field, x = x, y = y }
+    drawFocusIndicator = function(_, field, x, y, palette)
+      focusCalls[#focusCalls + 1] = { field = field, x = x, y = y, palette = palette }
     end,
   }
+end
+
+function T.focus_indicator_uses_the_selected_dialogue_frame_palette()
+  local palettes = {
+    [0] = { [11] = { r = 11, g = 1, b = 101 } },
+    [1] = { [11] = { r = 22, g = 2, b = 102 } },
+  }
+  for frameIndex = 0, 1 do
+    local lg = fakeGraphics({ imageSizes = { { 96, 128 }, { 144, 16 } } })
+    local focusCalls = {}
+    local window = {
+      drawWindow = function() end,
+      framePalette = function(_, requestedFrame)
+        Assert.equal(requestedFrame, frameIndex)
+        return palettes[requestedFrame]
+      end,
+    }
+    local renderer = FieldDialogueRenderer.new({
+      cacheFs = uiCache(),
+      manifest = MANIFEST,
+      text = recordingTextRenderer(focusCalls, {}),
+      graphics = lg,
+      windowRenderer = window,
+    })
+    local controller = openedWithTokens({ glyphToken(1), focusToken(0) }, { frameIndex = frameIndex })
+    controller:step({ actionPressed = true })
+    renderer:draw(controller, presentationAtFieldScale(1))
+    Assert.equal(#focusCalls, 1)
+    Assert.equal(focusCalls[1].palette, palettes[frameIndex], "focus color ownership follows the selected frame")
+    renderer:release()
+  end
 end
 
 -- Focus-indicator visibility is renderer composition policy: the default
@@ -605,7 +637,7 @@ end
 -- and its dialogue window without publishing a focus-indicator call.
 function T.focus_indicator_visibility_follows_renderer_policy()
   local function drawWithPolicy(disabled)
-    local lg = fakeGraphics({ imageSizes = { { 96, 32 }, { 144, 16 } } })
+    local lg = fakeGraphics({ imageSizes = { { 96, 128 }, { 144, 16 } } })
     local cache = uiCache()
     local focusCalls = {}
     local lineCalls = {}
@@ -636,12 +668,15 @@ end
 -- A borrowed window renderer stays caller-owned: standard dialogue draws
 -- through it, and releasing the dialogue renderer never releases it.
 function T.injected_window_renderer_is_borrowed_and_never_released()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
   local borrowed = {
     released = false,
     windowCalls = 0,
     drawWindow = function(self)
       self.windowCalls = self.windowCalls + 1
+    end,
+    framePalette = function()
+      return MANIFEST.dialogueFrames.palettes[0]
     end,
     release = function(self)
       self.released = true
@@ -666,12 +701,15 @@ end
 -- A construction failure after borrowing must clean only local resources:
 -- the caller's window owner survives a missing continuation cursor.
 function T.borrowed_window_survives_a_later_construction_failure()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
   local cache = uiCache()
   cache:remove(FieldUiFixture.CONTINUE_CURSOR_PATH)
   local borrowed = {
     released = false,
     drawWindow = function() end,
+    framePalette = function()
+      return MANIFEST.dialogueFrames.palettes[0]
+    end,
     release = function(self)
       self.released = true
     end,
@@ -695,7 +733,7 @@ end
 -- A closed controller draws nothing and requires no presentation: the
 -- inactive path returns before touching graphics state or validating.
 function T.closed_controller_ignores_a_missing_presentation()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 16 } } })
   local renderer = FieldDialogueRenderer.new({
     cacheFs = uiCache(),
     manifest = MANIFEST,

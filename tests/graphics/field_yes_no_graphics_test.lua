@@ -87,17 +87,66 @@ function T.single_display_choice_stays_inside_portrait_safe_area()
 end
 
 function T.focus_indicator_draw_uses_the_focus_asset_without_black_tint()
-  local graphics = require("tests.support.FakeGraphics").new({ imageSizes = { { 512, 224 }, { 512, 16 }, { 96, 32 } } })
+  local graphics =
+    require("tests.support.FakeGraphics").new({ imageSizes = { { 512, 224 }, { 512, 16 }, { 96, 128 } } })
   local text = FieldTextRenderer.new({
     cacheFs = FieldDialogueFixture.cacheWithFont(),
     graphics = graphics,
   })
-  text:drawFocusIndicator(0, 8, 16)
+  local palette = {}
+  for slot = 0, 15 do
+    palette[slot] = { r = slot, g = slot, b = slot }
+  end
+  text:drawFocusIndicator(0, 8, 16, palette)
   local draws = FieldDialogueFixture.focusDraws(graphics)
-  Assert.equal(#draws, 1)
-  Assert.equal(draws[1].image, graphics.images[3], "focus rendering must use the focus-indicator asset")
-  Assert.deepEqual(draws[1].color, { 1, 1, 1, 1 }, "focus rendering must not apply a black tint")
+  Assert.equal(#draws, 4, "one mask for each source palette slot is drawn")
+  for index, slot in ipairs({ 11, 12, 13, 14 }) do
+    Assert.equal(draws[index].image, graphics.images[3], "focus rendering must use the focus-indicator asset")
+    Assert.deepEqual(
+      draws[index].color,
+      { slot / 255, slot / 255, slot / 255, 1 },
+      "focus rendering uses its owning palette without a black tint"
+    )
+  end
   text:release()
+end
+
+function T.yes_no_focus_indicator_uses_its_selected_window_frame_palette()
+  local rendererModule = loadYesNoRenderer()
+  local graphics = require("tests.support.FakeGraphics").new()
+  local selectedPalette = { [11] = { r = 17, g = 83, b = 149 } }
+  local focusCalls = {}
+  local window = {
+    drawWindow = function() end,
+    framePalette = function(_, frameIndex)
+      Assert.equal(frameIndex, 1)
+      return selectedPalette
+    end,
+  }
+  local text = {
+    drawText = function() end,
+    drawFocusIndicator = function(_, field, x, y, palette)
+      focusCalls[#focusCalls + 1] = { field = field, x = x, y = y, palette = palette }
+    end,
+    windowBackgroundColor = function()
+      return { 0, 0, 0, 1 }
+    end,
+  }
+  local renderer = rendererModule.new({ text = text, window = window, graphics = graphics })
+  local status = { active = true, selectedIndex = 0, yesText = "YES", noText = "NO", frameIndex = 1 }
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    role = "world",
+    touch = false,
+  })
+  local layout = renderer:layout(status, topology, nil)
+
+  renderer:draw(status, layout)
+
+  Assert.equal(#focusCalls, 1)
+  Assert.equal(focusCalls[1].field, 0)
+  Assert.equal(focusCalls[1].palette, selectedPalette, "focus tint uses the selected frame palette")
 end
 
 return GraphicsSmoke.suite(T)

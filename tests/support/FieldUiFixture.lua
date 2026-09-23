@@ -373,12 +373,23 @@ function FieldUiFixture.cardFontDef()
       count = FieldMessageText.FOCUS_INDICATOR_COUNT,
       width = FieldFontCache.FOCUS_FRAME_WIDTH,
       height = FieldFontCache.FOCUS_FRAME_HEIGHT,
-      frames = {
-        [0] = { x = 0, y = 0, width = FieldFontCache.FOCUS_FRAME_WIDTH, height = FieldFontCache.FOCUS_FRAME_HEIGHT },
-        [1] = { x = 24, y = 0, width = FieldFontCache.FOCUS_FRAME_WIDTH, height = FieldFontCache.FOCUS_FRAME_HEIGHT },
-        [2] = { x = 48, y = 0, width = FieldFontCache.FOCUS_FRAME_WIDTH, height = FieldFontCache.FOCUS_FRAME_HEIGHT },
-        [3] = { x = 72, y = 0, width = FieldFontCache.FOCUS_FRAME_WIDTH, height = FieldFontCache.FOCUS_FRAME_HEIGHT },
-      },
+      sourcePaletteSlots = { 11, 12, 13, 14 },
+      frames = (function()
+        local frames = {}
+        for field = 0, FieldMessageText.FOCUS_INDICATOR_COUNT - 1 do
+          local layers = {}
+          for index, slot in ipairs({ 11, 12, 13, 14 }) do
+            layers[slot] = {
+              x = (index - 1) * FieldFontCache.FOCUS_FRAME_WIDTH,
+              y = field * FieldFontCache.FOCUS_FRAME_HEIGHT,
+              width = FieldFontCache.FOCUS_FRAME_WIDTH,
+              height = FieldFontCache.FOCUS_FRAME_HEIGHT,
+            }
+          end
+          frames[field] = { layers = layers }
+        end
+        return frames
+      end)(),
     },
     glyphs = glyphs,
     charmap = charmap,
@@ -533,6 +544,20 @@ function FieldUiFixture.manifest()
         [0] = { x = 0, y = 0, width = 144, height = 8 },
         [1] = { x = 0, y = 8, width = 144, height = 8 },
       },
+      palettes = (function()
+        local palettes = {}
+        for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
+          palettes[frame] = {}
+          for slot = 0, 15 do
+            palettes[frame][slot] = {
+              r = frame * 32 + slot,
+              g = frame * 16 + slot * 2,
+              b = 255 - frame * 32 - slot,
+            }
+          end
+        end
+        return palettes
+      end)(),
       continueCursor = {
         asset = FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
         cycle = { 0, 1, 2, 1 },

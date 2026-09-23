@@ -4,7 +4,7 @@
 -- (variant y = glyph.y + colorIndex * colorVariants.strideY), built lazily
 -- per color; plain drawText stays on color 0 and color never changes glyph
 -- advance or measured width; the focus-indicator strip is renderer-owned and
--- drawFocusIndicator(field, x, y) selects the imported frame rect at the
+-- drawFocusIndicator(field, x, y, palette) selects the imported layer rects at the
 -- caller's position without deciding placement; out-of-range color indices
 -- and focus fields fail loudly instead of clamping; release frees every owned
 -- resource exactly once. The palette-driven drawLineWithPalette path draws
@@ -24,12 +24,20 @@ local T = {}
 -- The fake graphics namespace records every draw and created image; the
 -- shared helper is tests/support/FakeGraphics.lua. Image sizes: the glyph
 -- atlas (16px-wide base band), the 16x16 semantic glyph mask atlas, and the
--- 96x32 focus-indicator strip, in the order the ready font bundle's assets
+-- 96x128 focus-indicator mask atlas, in the order the ready font bundle's assets
 -- are acquired.
 local fakeGraphics = require("tests.support.FakeGraphics").new
 
 local MASK_ATLAS_SIZE = { 16, 16 }
-local FOCUS_STRIP_SIZE = { 96, 32 }
+local FOCUS_STRIP_SIZE = { 96, 128 }
+
+local function focusPalette()
+  local palette = {}
+  for slot = 0, 15 do
+    palette[slot] = { r = slot, g = slot * 2, b = slot * 3 }
+  end
+  return palette
+end
 
 local function textRenderer(lg)
   return FieldTextRenderer.new({ cacheFs = FieldDialogueFixture.cacheWithFont(), graphics = lg })
@@ -102,21 +110,63 @@ function T.plain_draw_text_stays_on_color_zero()
   text:release()
 end
 
--- drawFocusIndicator() selects the imported frame rect of the requested
--- field and draws it at exactly the caller's position; the method owns no
--- placement decision.
+-- drawFocusIndicator() selects all imported palette-layer rects for the
+-- requested field and draws them at exactly the caller's position; the method
+-- owns no placement decision.
 function T.draw_focus_indicator_selects_the_requested_frame_rect()
   local lg = fakeGraphics({ imageSizes = imageSizes() })
   local text = textRenderer(lg)
+  local sourceSlots = { 11, 12, 13, 14 }
   for field = 0, 3 do
-    text:drawFocusIndicator(field, 200 + field, 152)
-    local call = lg.draws[#lg.draws]
-    Assert.equal(call.quad.x, field * 24, "field " .. field .. " samples its own strip rect")
-    Assert.equal(call.quad.y, 0)
-    Assert.equal(call.quad.w, 24, "the indicator frame is 24px wide")
-    Assert.equal(call.quad.h, 32, "the indicator frame is 32px tall")
-    Assert.equal(call.x, 200 + field, "the caller's x is passed through")
-    Assert.equal(call.y, 152, "the caller's y is passed through")
+    local firstDraw = #lg.draws + 1
+    text:drawFocusIndicator(field, 200 + field, 152, focusPalette())
+    Assert.equal(#lg.draws - firstDraw + 1, #sourceSlots, "all palette layers are drawn")
+    for index, _ in ipairs(sourceSlots) do
+      local call = lg.draws[firstDraw + index - 1]
+      Assert.equal(call.quad.x, (index - 1) * 24, "source slot layer keeps its atlas column")
+      Assert.equal(call.quad.y, field * 32, "field " .. field .. " samples its own strip row")
+      Assert.equal(call.quad.w, 24, "the indicator frame is 24px wide")
+      Assert.equal(call.quad.h, 32, "the indicator frame is 32px tall")
+      Assert.equal(call.x, 200 + field, "the caller's x is passed through")
+      Assert.equal(call.y, 152, "the caller's y is passed through")
+    end
+  end
+  text:release()
+end
+
+function T.focus_indicator_layers_use_the_supplied_window_palette()
+  local lg = fakeGraphics({ imageSizes = imageSizes() })
+  local text = textRenderer(lg)
+  local palette = {}
+  for slot = 0, 15 do
+    palette[slot] = { r = slot * 10, g = 255 - slot * 10, b = slot * 3 }
+  end
+
+  text:drawFocusIndicator(0, 200, 152, palette)
+
+  local expectedSlots = { 11, 12, 13, 14 }
+  local nextPalette = {}
+  for slot = 0, 15 do
+    nextPalette[slot] = { r = 255 - slot, g = slot * 9, b = 200 - slot * 5 }
+  end
+  text:drawFocusIndicator(0, 200, 152, nextPalette)
+
+  Assert.equal(#lg.draws, #expectedSlots * 2, "both palette banks draw the four focus roles")
+  for paletteIndex, activePalette in ipairs({ palette, nextPalette }) do
+    for index, slot in ipairs(expectedSlots) do
+      local call = lg.draws[(paletteIndex - 1) * #expectedSlots + index]
+      Assert.deepEqual(
+        call.color,
+        { activePalette[slot].r / 255, activePalette[slot].g / 255, activePalette[slot].b / 255, 1 },
+        "source slot " .. slot .. " follows the supplied owning palette"
+      )
+      Assert.equal(call.x, 200)
+      Assert.equal(call.y, 152)
+      if paletteIndex == 2 then
+        Assert.equal(call.image, lg.draws[index].image, "palette changes reuse the same focus image")
+        Assert.isTrue(call.color[1] ~= lg.draws[index].color[1], "palette changes recolor the same source layer")
+      end
+    end
   end
   text:release()
 end
@@ -140,7 +190,7 @@ function T.invalid_focus_fields_fail_loudly()
   local text = textRenderer(lg)
   for _, bad in ipairs({ -1, 4 }) do
     local err = Assert.throws(function()
-      text:drawFocusIndicator(bad, 0, 0)
+      text:drawFocusIndicator(bad, 0, 0, focusPalette())
     end, "focus field " .. tostring(bad) .. " must raise")
     Assert.isTrue(Errors.is(err), "the invalid focus field raises a typed error")
   end
