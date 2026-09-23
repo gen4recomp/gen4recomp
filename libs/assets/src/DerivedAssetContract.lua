@@ -208,6 +208,11 @@ DerivedAssetContract.font = {
 }
 
 DerivedAssetContract.scripts = {
+  -- v7 carries the deterministic per-member transitive script-audio closure
+  -- (memberAudioSequences, keyed by decimal member id, possibly empty) and
+  -- the v2 member attestation sidecar with per-resource direct audio and
+  -- cross-script targets, so a sparse field can demand exactly the audio
+  -- its scripts reach; older generated script data rebuilds.
   -- v6 keeps the v5 layout and requires every complete-index resource
   -- entry to carry its canonical decoded-resource hash (published per
   -- member beside the bodies, joined into the index by the summary), so a
@@ -219,7 +224,7 @@ DerivedAssetContract.scripts = {
   -- v4 shards the generated corpus into immutable generations and member
   -- roots. The active selector is separate from the generation contents.
   cacheFormat = "script-cache-v5",
-  indexSchema = "g4-script-index-v3",
+  indexSchema = "g4-script-index-v4",
   provenanceSchema = "g4-script-provenance-v2",
 }
 

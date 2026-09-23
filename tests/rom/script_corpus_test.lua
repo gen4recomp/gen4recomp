@@ -92,6 +92,7 @@ T["corpus decodes validates and sound partition remains closed"] = function(romF
     waitEffect = {},
   }
   local variableFanfares = 0
+  local variableFanfareSites = {}
   local unexpectedProblems = {}
 
   local archive, memberIrs = FieldScripts.decode(romFs)
@@ -154,12 +155,17 @@ T["corpus decodes validates and sound partition remains closed"] = function(romF
       end
       local op = step.op
       if op == "play_music" then
+        Assert.isTrue(type(step.music) == "string", "play_music operands are constants")
+        players.bgm[resolvePlayerId(step.music)] = true
+      elseif op == "temporary_music" then
+        Assert.isTrue(type(step.music) == "string", "temporary_music operands are constants")
         players.bgm[resolvePlayerId(step.music)] = true
       elseif op == "play_fanfare" then
         if type(step.fanfare) == "string" then
           players.fanfare[resolvePlayerId(step.fanfare)] = true
         else
           variableFanfares = variableFanfares + 1
+          variableFanfareSites[#variableFanfareSites + 1] = { member = member, scriptIndex = index }
         end
       elseif op == "play_sound" or op == "stop_sound" then
         Assert.isTrue(type(step.sound) == "string", op .. " operands are constants")
@@ -244,6 +250,15 @@ T["corpus decodes validates and sound partition remains closed"] = function(romF
   Assert.equal(semanticCount, raw726, "every raw 726 callsite must survive as a semantic process_soundplate")
 
   Assert.isTrue(variableFanfares >= 1, "retail scripts select fanfares dynamically")
+  Assert.equal(#variableFanfareSites, variableFanfares, "every dynamic fanfare site is recorded")
+  Assert.equal(variableFanfares, 2, "the retail corpus keeps exactly the two pinned dex-evaluation fanfare sites")
+  for _, site in ipairs(variableFanfareSites) do
+    Assert.equal(
+      site.member,
+      148,
+      ("dynamic fanfare outside the pinned member: member %d script %d"):format(site.member, site.scriptIndex)
+    )
+  end
   Assert.isTrue(next(players.bgm) ~= nil, "field scripts play BGM")
   Assert.isTrue(next(players.effect) ~= nil, "field scripts play effects")
 

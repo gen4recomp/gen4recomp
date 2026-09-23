@@ -12,6 +12,8 @@
 
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
+local ScriptCompileSession = require("romdump.src.digest.script.ScriptCompileSession")
+local ScriptSounds = require("romdump.src.reference.hgss.sndseq")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local Coverage = require("romdump.src.digest.script.Coverage")
 local Errors = require("libs.errors.src.Errors")
@@ -232,6 +234,26 @@ local function canonicalResourceHash(resource)
   return Sha256.hex(LuaWriter.encode(resource))
 end
 
+-- True when the value is a sorted unique array of non-empty strings (the
+-- shape of every persisted dependency list, so identical inputs always
+-- encode identically and duplicates can never mask a missing edge).
+local function isSortedUniqueStrings(value)
+  if not Validate.isArray(value) then
+    return false
+  end
+  local previous
+  for _, entry in ipairs(value) do
+    if type(entry) ~= "string" or entry == "" then
+      return false
+    end
+    if previous ~= nil and previous >= entry then
+      return false
+    end
+    previous = entry
+  end
+  return true
+end
+
 -- Validate a staged or published hash sidecar against its planned member:
 -- current schema, generation, member identity and marker, plus an exact
 -- bijection between the sidecar records and the planned member resources.
@@ -269,6 +291,12 @@ local function checkSidecar(plan, memberId, memberMarker, sidecar)
     end
     if byId[record.id] ~= nil or not Validate.isSha256Key(record.resourceHash) then
       return nil, "script member " .. tostring(memberId) .. " resource hash is invalid"
+    end
+    if not isSortedUniqueStrings(record.audioSequences) then
+      return nil, "script member " .. tostring(memberId) .. " audio dependency metadata is malformed"
+    end
+    if not isSortedUniqueStrings(record.scriptTargets) then
+      return nil, "script member " .. tostring(memberId) .. " script dependency metadata is malformed"
     end
     byId[record.id] = record.resourceHash
   end
@@ -316,8 +344,25 @@ local function persistMember(stage, plan, member)
     local path = ScriptCache.scriptPath(plan.generationKey, member.memberId, entry.id)
     stage:write(path, ScriptCompiler.emit(entry, emitOpts))
     local resource = readbackResource(stage, plan, entry)
-    hashes[#hashes + 1] =
-      { id = entry.id, scriptIndex = entry.scriptIndex, resourceHash = canonicalResourceHash(resource) }
+    local direct = entry.directDependencies
+    if
+      type(direct) ~= "table"
+      or not isSortedUniqueStrings(direct.audioSequences)
+      or not isSortedUniqueStrings(direct.scriptTargets)
+    then
+      local steps = entry.resource.steps
+      if type(steps) ~= "table" then
+        steps = resource.steps
+      end
+      direct = ScriptCompileSession.directDependencies(steps, ScriptSounds.byId, entry.id)
+    end
+    hashes[#hashes + 1] = {
+      id = entry.id,
+      scriptIndex = entry.scriptIndex,
+      resourceHash = canonicalResourceHash(resource),
+      audioSequences = direct.audioSequences,
+      scriptTargets = direct.scriptTargets,
+    }
   end
   table.sort(hashes, function(a, b)
     if a.id ~= b.id then
@@ -464,6 +509,96 @@ local function checkPlan(plan)
   return expectedIndex
 end
 
+-- Join the transitive script-audio closure into the generation index: every
+-- declared cross-script target must resolve to a planned resource, then a
+-- deterministic fixed point unions each resource's direct audio with its
+-- targets' closures (cycles converge because iteration only grows sets over
+-- a sorted resource order), aggregated per member as sorted unique arrays
+-- keyed by decimal member id. Audio-free members carry an explicit empty
+-- array. Reads only the already-required member sidecars; never resource
+-- bodies.
+local function joinMemberAudioSequences(liveFs, plan, expectedIndex)
+  local directAudio, directTargets, memberOf = {}, {}, {}
+  for _, entry in ipairs(plan.resources) do
+    memberOf[entry.id] = entry.member
+  end
+  for _, member in ipairs(orderedMembers(plan)) do
+    local sidecar = assert(liveFs:loadLua(ScriptCache.memberHashesPath(plan.generationKey, member.memberId)))
+    local hashes, hashesErr = checkSidecar(plan, member.memberId, member.marker, sidecar)
+    if hashes == nil then
+      Errors.raise(
+        "SCRIPT_SUMMARY_INCOMPLETE",
+        "script summary refuses invalid published hashes: " .. tostring(hashesErr),
+        {
+          generation = plan.generationKey,
+          missingMemberIds = { member.memberId },
+        }
+      )
+    end
+    for _, record in ipairs(sidecar.resources) do
+      directAudio[record.id] = record.audioSequences
+      directTargets[record.id] = record.scriptTargets
+    end
+  end
+  local resourceIds = {}
+  for _, entry in ipairs(plan.resources) do
+    resourceIds[#resourceIds + 1] = entry.id
+  end
+  table.sort(resourceIds)
+  for _, id in ipairs(resourceIds) do
+    for _, target in ipairs(directTargets[id]) do
+      if memberOf[target] == nil then
+        Errors.raise("SCRIPT_SUMMARY_INCOMPLETE", "script summary refuses an unknown script target: " .. target, {
+          generation = plan.generationKey,
+          id = id,
+        })
+      end
+    end
+  end
+  local closure = {}
+  for _, id in ipairs(resourceIds) do
+    local seen = {}
+    for _, symbol in ipairs(directAudio[id]) do
+      seen[symbol] = true
+    end
+    closure[id] = seen
+  end
+  local changed = true
+  while changed do
+    changed = false
+    for _, id in ipairs(resourceIds) do
+      local seen = closure[id]
+      for _, target in ipairs(directTargets[id]) do
+        for symbol in pairs(closure[target]) do
+          if seen[symbol] == nil then
+            seen[symbol] = true
+            changed = true
+          end
+        end
+      end
+    end
+  end
+  local memberAudioSequences = {}
+  for _, member in ipairs(orderedMembers(plan)) do
+    memberAudioSequences[tostring(member.memberId)] = {}
+  end
+  for _, id in ipairs(resourceIds) do
+    local union = memberAudioSequences[tostring(memberOf[id])]
+    for symbol in pairs(closure[id]) do
+      union[symbol] = true
+    end
+  end
+  for key, union in pairs(memberAudioSequences) do
+    local list = {}
+    for symbol in pairs(union) do
+      list[#list + 1] = symbol
+    end
+    table.sort(list)
+    memberAudioSequences[key] = list
+  end
+  expectedIndex.memberAudioSequences = memberAudioSequences
+end
+
 -- Join every planned resource's published canonical hash into the
 -- generation index: each current member's sidecar must attest exactly its
 -- planned resources, so the published index describes precisely the current
@@ -585,6 +720,7 @@ local function persistSummary(stage, liveFs, plan)
     records[#records + 1] = assert(liveFs:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId)))
   end
   joinResourceHashes(liveFs, plan, expectedIndex)
+  joinMemberAudioSequences(liveFs, plan, expectedIndex)
   local coverage = aggregateCoverage(records, plan)
   local coverageJson = jsonValue(coverage) .. "\n"
   local coverageMd = Coverage.markdown(coverage)

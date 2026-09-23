@@ -10,6 +10,8 @@ local FakeCache = require("tests.support.FakeCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
+local LuaWriter = require("libs.codec.src.LuaWriter")
+local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
 local GENERATION_A = string.rep("a", 40)
@@ -422,6 +424,61 @@ function T.stale_summary_publication_is_rejected()
     jobKey = "script-member:global",
   }))
   Assert.isTrue(ScriptCache.isReady(cache, "marker-a"), "the current summary publication activates")
+end
+
+function T.stale_dependency_metadata_is_rejected()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local currentPlan = plan(GENERATION_A, "marker-a")
+  publishMember(cache, currentPlan, member(0, "stable.script", GENERATION_A), "stale-deps-member-0", "outer-a")
+  publishMember(cache, currentPlan, member(1, "second.script", GENERATION_A), "stale-deps-member-1", "outer-a")
+  -- Rewind the member attestation to the previous schema shape without
+  -- dependency facts: its hashes still match the current bodies, so only
+  -- the missing metadata can refuse it.
+  local published = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 0, "stable.script")))
+  cache:writeLua(ScriptCache.memberHashesPath(GENERATION_A, 0), {
+    schema = "g4-script-resource-hashes-v1",
+    generation = GENERATION_A,
+    memberId = 0,
+    marker = GENERATION_A .. ":member:0",
+    resources = {
+      { id = "stable.script", scriptIndex = 0, resourceHash = Sha256.hex(LuaWriter.encode(published)) },
+    },
+  })
+  local ready, reason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 0)
+  Assert.isFalse(ready, "a sidecar without dependency metadata must not attest its member")
+  Assert.isTrue(type(reason) == "string" and reason ~= "", "the refusal names its cause")
+  local summary = preparation(cache, "global", "stale-deps-summary", "outer-a")
+  local failure = Assert.throws(function()
+    ScriptCacheWriter.stageSummary(summary, currentPlan)
+  end, "a summary over stale dependency metadata must be refused")
+  failure = failure --[[@as { code: string }]]
+  Assert.equal(failure.code, "SCRIPT_SUMMARY_INCOMPLETE")
+  summary:abort()
+end
+
+function T.summary_publishes_explicit_empty_member_audio_closure_deterministically()
+  local first = CacheFs.forVersion("heartgold", FakeCache.new())
+  local second = CacheFs.forVersion("heartgold", FakeCache.new())
+  local firstPlan = plan(GENERATION_A, "marker-a")
+  publishMember(first, firstPlan, member(0, "stable.script", GENERATION_A), "empty-member-0", "outer-a")
+  publishMember(first, firstPlan, member(1, "second.script", GENERATION_A), "empty-member-1", "outer-a")
+  publishSummary(first, firstPlan, "empty-summary", "outer-a")
+  local secondPlan = plan(GENERATION_A, "marker-a")
+  publishMember(second, secondPlan, member(0, "stable.script", GENERATION_A), "empty-member-0", "outer-a")
+  publishMember(second, secondPlan, member(1, "second.script", GENERATION_A), "empty-member-1", "outer-a")
+  publishSummary(second, secondPlan, "empty-summary", "outer-a")
+  local firstIndex = assert(first:loadLua(ScriptCache.generationIndexPath(GENERATION_A)))
+  local secondIndex = assert(second:loadLua(ScriptCache.generationIndexPath(GENERATION_A)))
+  Assert.deepEqual(
+    firstIndex.memberAudioSequences,
+    { ["0"] = {}, ["1"] = {} },
+    "audio-free members carry an explicit empty closure"
+  )
+  Assert.equal(
+    LuaWriter.encode(firstIndex),
+    LuaWriter.encode(secondIndex),
+    "two identical summary publications are byte-equivalent"
+  )
 end
 
 function T.cleanup_propagates_generation_listing_failure()

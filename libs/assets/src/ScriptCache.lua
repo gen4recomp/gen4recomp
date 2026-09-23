@@ -111,7 +111,7 @@ end
 -- Canonical per-resource hashes published alongside one member: the writer
 -- stages this sidecar (validated there) before the member marker lands, so
 -- a member without it is an incompatible older artifact, never a ready one.
-ScriptCache.HASHES_SCHEMA = "g4-script-resource-hashes-v1"
+ScriptCache.HASHES_SCHEMA = "g4-script-resource-hashes-v2"
 
 function ScriptCache.memberHashesPath(generation, memberId)
   assert(isSafeGeneration(generation), "generation key must be lowercase hexadecimal")
@@ -163,11 +163,56 @@ function ScriptCache.loadGenerationIndex(cacheFs, generation)
   return index
 end
 
+local function isSortedUniqueStrings(value)
+  if not Validate.isArray(value) then
+    return false
+  end
+  local previous
+  for _, entry in ipairs(value) do
+    if type(entry) ~= "string" or entry == "" then
+      return false
+    end
+    if previous ~= nil and previous >= entry then
+      return false
+    end
+    previous = entry
+  end
+  return true
+end
+
+-- True when the value is a well-formed per-member audio closure mapping:
+-- decimal member-id keys to sorted unique canonical sequence arrays.
+local function isMemberAudioMapping(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  for key, list in pairs(value) do
+    if type(key) ~= "string" or key == "" or tostring(tonumber(key)) ~= key then
+      return false
+    end
+    local memberId = tonumber(key)
+    if memberId == nil or memberId < 0 or memberId % 1 ~= 0 then
+      return false
+    end
+    if not isSortedUniqueStrings(list) then
+      return false
+    end
+  end
+  return true
+end
+
 local function resourceFilesReady(cacheFs, generation, index)
   if not Validate.isArray(index.resources) then
     return false
   end
+  -- Every planned member carries its transitive audio closure (possibly
+  -- empty) under its decimal id; a mapping without it belongs to an
+  -- incompatible older index, and a malformed list can never attest audio.
+  if not isMemberAudioMapping(index.memberAudioSequences) then
+    return false
+  end
   local seenIds = {}
+  local seenMembers = {}
   for _, entry in ipairs(index.resources) do
     if type(entry) ~= "table" or type(entry.id) ~= "string" or entry.id == "" or type(entry.member) ~= "number" then
       return false
@@ -182,12 +227,42 @@ local function resourceFilesReady(cacheFs, generation, index)
       return false
     end
     seenIds[entry.id] = true
+    seenMembers[entry.member] = true
     local script = cacheFs:loadModule(ScriptCache.scriptPath(generation, entry.member, entry.id))
     if type(script) ~= "table" or script.kind ~= "field_script" or script.id ~= entry.id then
       return false
     end
   end
+  for member in pairs(seenMembers) do
+    local closure = index.memberAudioSequences[tostring(member)]
+    if not isSortedUniqueStrings(closure) then
+      return false
+    end
+  end
   return true
+end
+
+-- The transitive audio closure for one script member: sorted unique
+-- canonical sequence symbols, possibly empty. Returns the list, or nil plus
+-- a cause when the index carries no usable closure for the member. No IO.
+---@param index table<string, unknown>
+---@param memberId integer
+---@return string[]|nil, string|nil
+function ScriptCache.audioSequencesForMember(index, memberId)
+  if type(index) ~= "table" or not isMemberAudioMapping(index.memberAudioSequences) then
+    return nil, "script member audio metadata is malformed"
+  end
+  if type(memberId) ~= "number" or memberId < 0 or memberId % 1 ~= 0 then
+    return nil, "script member identity is invalid: " .. tostring(memberId)
+  end
+  local closure = index.memberAudioSequences[tostring(memberId)]
+  if closure == nil then
+    return nil, "script member " .. tostring(memberId) .. " has no published audio closure"
+  end
+  if not isSortedUniqueStrings(closure) then
+    return nil, "script member " .. tostring(memberId) .. " audio closure is malformed"
+  end
+  return closure
 end
 
 -- True only if the marker is exact, the index loads with the expected schema,

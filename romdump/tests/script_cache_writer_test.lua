@@ -173,6 +173,122 @@ local function publishGeneration(cache, generation, marker, prefix, outerGenerat
   return currentPlan
 end
 
+-- Acceptance fixtures for the script-audio dependency contract: members
+-- built from explicit structured steps so publication must derive the
+-- dependency record from the resource bodies it already holds.
+local function resourceWithSteps(memberId, id, scriptIndex, steps)
+  local entry = memberResource(memberId, id, scriptIndex)
+  entry.resource.steps = steps
+  return entry
+end
+
+local function stagedWithSteps(memberId, id, scriptIndex, steps, generation)
+  local staged = member(memberId, id, scriptIndex, generation)
+  staged.resources = { resourceWithSteps(memberId, id, scriptIndex, steps) }
+  return staged
+end
+
+local function sidecarRecord(cache, generation, memberId, id)
+  local sidecar = assert(cache:loadLua(ScriptCache.memberHashesPath(generation, memberId)))
+  for _, entry in ipairs(sidecar.resources) do
+    if entry.id == id then
+      return entry
+    end
+  end
+  error("sidecar has no record for " .. id, 0)
+end
+
+local function cycleCoverage(memberId, specs)
+  local scripts = {}
+  for _, spec in ipairs(specs) do
+    scripts[#scripts + 1] = {
+      sourceId = string.format("hgss.scr_seq.%04d.%03d", memberId, spec.scriptIndex),
+      publicId = spec.id,
+      status = "complete",
+      unsupported = {},
+    }
+  end
+  return {
+    source = { repository = "portemon", romSha1 = "rom-sha" },
+    totals = {
+      members = 1,
+      scripts = #specs,
+      reachableInstructions = #specs,
+      supportedInstructions = #specs,
+      unsupportedInstructions = 0,
+      malformedInstructions = 0,
+    },
+    opcodes = {},
+    scripts = scripts,
+  }
+end
+
+local function cycleMember(memberId, specs, generation)
+  local staged = {
+    memberId = memberId,
+    marker = generation .. ":member:" .. tostring(memberId),
+    sourceHash = SOURCE_HASH,
+    coverage = cycleCoverage(memberId, specs),
+    resources = {},
+  }
+  for _, spec in ipairs(specs) do
+    staged.resources[#staged.resources + 1] = resourceWithSteps(memberId, spec.id, spec.scriptIndex, spec.steps)
+  end
+  return staged
+end
+
+local function cyclePlan(generation, marker)
+  local resources = {
+    { id = "alpha.first", member = 0, scriptIndex = 0 },
+    { id = "alpha.second", member = 0, scriptIndex = 1 },
+    { id = "beta.third", member = 1, scriptIndex = 0 },
+  }
+  local result = {
+    generationKey = generation,
+    marker = marker,
+    version = "heartgold",
+    sourcePath = "romfs/a/0/1/2",
+    romSha1 = "rom-sha",
+    dependencies = {
+      cacheFormat = ScriptCache.FORMAT,
+      versionRomSha1 = "rom-sha",
+      scrSeqNarc = { path = "a/0/1/2", sha1 = "archive-sha" },
+    },
+    coverageRecord = {
+      source = { repository = "portemon", romSha1 = "rom-sha" },
+      totals = {
+        members = 2,
+        scripts = 3,
+        reachableInstructions = 3,
+        supportedInstructions = 3,
+        unsupportedInstructions = 0,
+        malformedInstructions = 0,
+      },
+      opcodes = {},
+      scripts = {},
+    },
+    memberCount = 2,
+    members = {
+      { memberId = 0, marker = generation .. ":member:0" },
+      { memberId = 1, marker = generation .. ":member:1" },
+    },
+    resources = resources,
+  }
+  result.index = {
+    schema = ScriptCache.INDEX_SCHEMA,
+    version = "heartgold",
+    generation = generation,
+    marker = marker,
+    memberCount = 2,
+    scriptMemberCount = 2,
+    skippedMemberCount = 0,
+    scriptCount = 3,
+    resourceCount = 3,
+    resources = resources,
+  }
+  return result
+end
+
 -- 1. Members stage through preparations and the summary publishes
 -- provenance, index, coverage, and the active selector at once; isReady then
 -- reports the class complete.
@@ -342,7 +458,7 @@ T["a member hash record from another generation is not ready"] = function()
   local marker = "script-cache-v5:rom-sha:dep-sha"
   local currentPlan = publishGeneration(cache, GENERATION_A, marker, "foreign-hash", "outer-a")
   cache:writeLua(ScriptCache.memberDir(GENERATION_A, 3) .. "/resource-hashes.lua", {
-    schema = "g4-script-resource-hashes-v1",
+    schema = ScriptCache.HASHES_SCHEMA,
     generation = GENERATION_B,
     memberId = 3,
     marker = "other-marker",
@@ -406,11 +522,19 @@ T["a member hash record with the wrong marker is not ready"] = function()
   local currentPlan = publishGeneration(cache, GENERATION_A, marker, "wrong-marker", "outer-a")
   local resource = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 3, "common.signpost")))
   cache:writeLua(ScriptCache.memberDir(GENERATION_A, 3) .. "/resource-hashes.lua", {
-    schema = "g4-script-resource-hashes-v1",
+    schema = ScriptCache.HASHES_SCHEMA,
     generation = GENERATION_A,
     memberId = 3,
     marker = "stale-marker",
-    resources = { { id = "common.signpost", scriptIndex = 0, resourceHash = Sha256.hex(LuaWriter.encode(resource)) } },
+    resources = {
+      {
+        id = "common.signpost",
+        scriptIndex = 0,
+        resourceHash = Sha256.hex(LuaWriter.encode(resource)),
+        audioSequences = {},
+        scriptTargets = {},
+      },
+    },
   })
   local ready, reason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 3)
   Assert.isFalse(ready, "a stale marker must not attest this member")
@@ -426,13 +550,333 @@ T["a hand-published hash record attests its member"] = function()
   local currentPlan = publishGeneration(cache, GENERATION_A, marker, "unordered", "outer-a")
   local resource = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 843, "new_bark.lab_sign")))
   cache:writeLua(ScriptCache.memberDir(GENERATION_A, 843) .. "/resource-hashes.lua", {
-    schema = "g4-script-resource-hashes-v1",
+    schema = ScriptCache.HASHES_SCHEMA,
     generation = GENERATION_A,
     memberId = 843,
     marker = GENERATION_A .. ":member:843",
-    resources = { { id = "new_bark.lab_sign", scriptIndex = 9, resourceHash = Sha256.hex(LuaWriter.encode(resource)) } },
+    resources = {
+      {
+        id = "new_bark.lab_sign",
+        scriptIndex = 9,
+        resourceHash = Sha256.hex(LuaWriter.encode(resource)),
+        audioSequences = {},
+        scriptTargets = {},
+      },
+    },
   })
   Assert.isTrue(ScriptCacheWriter.isMemberReady(cache, currentPlan, 843))
+end
+
+-- Direct script-audio dependencies are derived from the final structured
+-- steps at member publication: nested operations across if/switch branches
+-- publish canonical symbols (numeric spellings normalize through the
+-- pinned sound catalog), while local call labels never become
+-- cross-script targets.
+T["member sidecar carries direct script audio and cross-script targets"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = plan(GENERATION_A, marker)
+  local steps = {
+    { op = "play_music", music = "SEQ_GS_NAMINORI" },
+    { op = "play_sound", sound = 1014 },
+    { op = "label", name = "loop" },
+    { op = "call", target = "loop" },
+    { op = "goto", target = "loop" },
+    {
+      op = "if",
+      condition = { condition = "flag", id = 1 },
+      yes = { { op = "play_fanfare", fanfare = "SEQ_ME_HYOUKA1" } },
+      no = { { op = "stop_sound", sound = "SEQ_SE_GS_N_SESERAGI" } },
+    },
+    {
+      op = "switch",
+      value = 1,
+      cases = {
+        [1] = { { op = "wait_sound", sound = "SEQ_SE_GS_N_SESERAGI" } },
+        [2] = { { op = "call_common", target = "common.other" } },
+      },
+      default = { { op = "temporary_music", music = "SEQ_GS_TITLE" } },
+    },
+    { op = "goto_script", script = "common.other" },
+    { op = "call", target = "common.other" },
+    { op = "goto_compared", operator = "eq", script = "common.third" },
+    { op = "call_compared", operator = "eq", script = "common.third" },
+    { op = "stop" },
+  }
+  publishMember(
+    cache,
+    currentPlan,
+    stagedWithSteps(3, "common.signpost", 0, steps, GENERATION_A),
+    "deps-member-3",
+    "outer-a"
+  )
+  local record = sidecarRecord(cache, GENERATION_A, 3, "common.signpost")
+  Assert.deepEqual(
+    record.audioSequences,
+    { "SEQ_GS_NAMINORI", "SEQ_GS_TITLE", "SEQ_ME_HYOUKA1", "SEQ_SE_GS_N_SESERAGI" },
+    "direct audio is the sorted unique canonical symbol set"
+  )
+  Assert.deepEqual(
+    record.scriptTargets,
+    { "common.other", "common.third" },
+    "cross-script targets exclude local labels"
+  )
+end
+
+-- A variable fanfare cannot name its sequence, so publication records the
+-- pinned retail dex-evaluation pair instead of an empty dependency.
+T["variable fanfare publishes the pinned dex-evaluation pair"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = plan(GENERATION_A, marker)
+  local steps = {
+    { op = "play_fanfare", fanfare = { value = "var", id = "x8000" } },
+    { op = "stop" },
+  }
+  publishMember(
+    cache,
+    currentPlan,
+    stagedWithSteps(3, "common.signpost", 0, steps, GENERATION_A),
+    "fanfare-member-3",
+    "outer-a"
+  )
+  local record = sidecarRecord(cache, GENERATION_A, 3, "common.signpost")
+  Assert.deepEqual(
+    record.audioSequences,
+    { "SEQ_ME_HYOUKA1", "SEQ_ME_HYOUKA6" },
+    "variable fanfare expands to exactly the source-grounded pair"
+  )
+  Assert.deepEqual(record.scriptTargets, {}, "fanfare alone reaches no other script")
+end
+
+-- Transitive audio is a fixed point over the member graph: a cycle plus an
+-- outgoing audio-bearing target converges to the complete closure for
+-- every member with sorted unique sequences.
+T["cyclic script graphs converge to the same transitive closure"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = cyclePlan(GENERATION_A, marker)
+  publishMember(
+    cache,
+    currentPlan,
+    cycleMember(0, {
+      {
+        id = "alpha.first",
+        scriptIndex = 0,
+        steps = {
+          { op = "play_music", music = "SEQ_GS_TITLE" },
+          { op = "call", target = "alpha.second" },
+          { op = "stop" },
+        },
+      },
+      {
+        id = "alpha.second",
+        scriptIndex = 1,
+        steps = {
+          { op = "call_common", target = "beta.third" },
+          { op = "stop" },
+        },
+      },
+    }, GENERATION_A),
+    "cycle-member-0",
+    "outer-a"
+  )
+  publishMember(
+    cache,
+    currentPlan,
+    cycleMember(1, {
+      {
+        id = "beta.third",
+        scriptIndex = 0,
+        steps = {
+          { op = "play_music", music = "SEQ_GS_NAMINORI" },
+          { op = "call", target = "alpha.second" },
+          { op = "stop" },
+        },
+      },
+    }, GENERATION_A),
+    "cycle-member-1",
+    "outer-a"
+  )
+  publishSummary(cache, currentPlan, "cycle-summary", "outer-a")
+  local index = assert(cache:loadLua(ScriptCache.generationIndexPath(GENERATION_A)))
+  Assert.deepEqual(
+    index.memberAudioSequences,
+    { ["0"] = { "SEQ_GS_NAMINORI", "SEQ_GS_TITLE" }, ["1"] = { "SEQ_GS_NAMINORI" } },
+    "transitive closure converges through the cycle with sorted unique sequences"
+  )
+end
+
+-- A v2 sidecar with unsorted dependency arrays cannot attest its member:
+-- persistence order is part of the contract, not cosmetic.
+T["a member sidecar with unsorted dependencies is not ready"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = publishGeneration(cache, GENERATION_A, marker, "unsorted", "outer-a")
+  local resource = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 3, "common.signpost")))
+  cache:writeLua(ScriptCache.memberDir(GENERATION_A, 3) .. "/resource-hashes.lua", {
+    schema = ScriptCache.HASHES_SCHEMA,
+    generation = GENERATION_A,
+    memberId = 3,
+    marker = GENERATION_A .. ":member:3",
+    resources = {
+      {
+        id = "common.signpost",
+        scriptIndex = 0,
+        resourceHash = Sha256.hex(LuaWriter.encode(resource)),
+        audioSequences = { "SEQ_GS_TITLE", "SEQ_GS_NAMINORI" },
+        scriptTargets = {},
+      },
+    },
+  })
+  local ready, reason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 3)
+  Assert.isFalse(ready, "an unsorted dependency array must not attest its member")
+  Assert.isTrue(type(reason) == "string" and reason ~= "", "the refusal names its cause")
+end
+
+-- An unknown numeric sequence reference fails staging instead of
+-- serializing a bare number: sequence identity must always be canonical.
+T["an unknown numeric sequence reference fails member staging"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = plan(GENERATION_A, marker)
+  local staged = stagedWithSteps(3, "common.signpost", 0, {
+    { op = "play_sound", sound = 999999 },
+    { op = "stop" },
+  }, GENERATION_A)
+  local artifact = preparation(cache, "3", "unknown-numeric", "outer-a")
+  Assert.throws(function()
+    ScriptCacheWriter.stageMember(artifact, currentPlan, staged)
+  end, "an unknown numeric sequence must fail staging")
+  artifact:abort()
+end
+
+-- A dynamic sound operand has no source-grounded expansion, so staging
+-- fails instead of publishing an empty dependency.
+T["a dynamic sound operand fails member staging"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = plan(GENERATION_A, marker)
+  local staged = stagedWithSteps(3, "common.signpost", 0, {
+    { op = "play_sound", sound = { value = "var", id = "x8000" } },
+    { op = "stop" },
+  }, GENERATION_A)
+  local artifact = preparation(cache, "3", "dynamic-sound", "outer-a")
+  Assert.throws(function()
+    ScriptCacheWriter.stageMember(artifact, currentPlan, staged)
+  end, "a dynamic sound operand must fail staging")
+  artifact:abort()
+end
+
+-- Music operands are constants in the current corpus; a dynamic music
+-- value fails staging rather than weakening the dependency record.
+T["a dynamic music operand fails member staging"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = plan(GENERATION_A, marker)
+  local staged = stagedWithSteps(3, "common.signpost", 0, {
+    { op = "play_music", music = { value = "var", id = "x4000" } },
+    { op = "stop" },
+  }, GENERATION_A)
+  local artifact = preparation(cache, "3", "dynamic-music", "outer-a")
+  Assert.throws(function()
+    ScriptCacheWriter.stageMember(artifact, currentPlan, staged)
+  end, "a dynamic music operand must fail staging")
+  artifact:abort()
+end
+
+-- A resource with no audio operations or cross-script calls publishes
+-- explicit empty dependency arrays, never missing fields.
+T["a silent resource publishes explicit empty dependencies"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = plan(GENERATION_A, marker)
+  publishMember(
+    cache,
+    currentPlan,
+    stagedWithSteps(3, "common.signpost", 0, { { op = "stop" } }, GENERATION_A),
+    "silent-member-3",
+    "outer-a"
+  )
+  local record = sidecarRecord(cache, GENERATION_A, 3, "common.signpost")
+  Assert.deepEqual(record.audioSequences, {}, "silence carries an explicit empty audio set")
+  Assert.deepEqual(record.scriptTargets, {}, "silence reaches no other script")
+end
+
+-- A declared cross-script target that resolves to no planned resource
+-- fails the summary before any selector is replaced.
+T["a summary over an unknown script target is refused"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = plan(GENERATION_A, marker)
+  publishMember(cache, currentPlan, member(3, "common.signpost", 0, GENERATION_A), "known-member-3", "outer-a")
+  publishMember(
+    cache,
+    currentPlan,
+    stagedWithSteps(843, "new_bark.lab_sign", 9, {
+      { op = "call_common", target = "nope.missing" },
+      { op = "stop" },
+    }, GENERATION_A),
+    "dangling-member-843",
+    "outer-a"
+  )
+  local summary = preparation(cache, "global", "dangling-summary", "outer-a")
+  local failure = Assert.throws(function()
+    ScriptCacheWriter.stageSummary(summary, currentPlan)
+  end, "an unknown script target must refuse the summary")
+  failure = failure --[[@as { code: string }]]
+  Assert.equal(failure.code, "SCRIPT_SUMMARY_INCOMPLETE")
+  summary:abort()
+end
+
+-- A resource that targets itself converges: its own audio appears exactly
+-- once in its member closure.
+T["a self-targeting resource converges to its own audio"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = cyclePlan(GENERATION_A, marker)
+  publishMember(
+    cache,
+    currentPlan,
+    cycleMember(0, {
+      {
+        id = "alpha.first",
+        scriptIndex = 0,
+        steps = {
+          { op = "play_music", music = "SEQ_GS_TITLE" },
+          { op = "call", target = "alpha.first" },
+          { op = "stop" },
+        },
+      },
+      {
+        id = "alpha.second",
+        scriptIndex = 1,
+        steps = { { op = "stop" } },
+      },
+    }, GENERATION_A),
+    "self-member-0",
+    "outer-a"
+  )
+  publishMember(
+    cache,
+    currentPlan,
+    cycleMember(1, {
+      {
+        id = "beta.third",
+        scriptIndex = 0,
+        steps = { { op = "stop" } },
+      },
+    }, GENERATION_A),
+    "self-member-1",
+    "outer-a"
+  )
+  publishSummary(cache, currentPlan, "self-summary", "outer-a")
+  local index = assert(cache:loadLua(ScriptCache.generationIndexPath(GENERATION_A)))
+  Assert.deepEqual(
+    index.memberAudioSequences,
+    { ["0"] = { "SEQ_GS_TITLE" }, ["1"] = {} },
+    "a self-cycle converges without duplication"
+  )
 end
 
 return { tests = T }
