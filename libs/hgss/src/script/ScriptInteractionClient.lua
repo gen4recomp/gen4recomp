@@ -79,11 +79,7 @@ function ScriptInteractionClient:isInitLifecycleSettled()
     return true
   end
   local instanceId = assert(self._initLifecycleInstanceId, "active map-init lifecycle instance missing")
-  if self._scheduler.isInitLifecycleSettled ~= nil then
-    return self._scheduler:isInitLifecycleSettled(instanceId)
-  end
-  local instance = self._scheduler:instance(instanceId)
-  if instance == nil or instance.status ~= "completed" then
+  if not self._scheduler:isInitLifecycleSettled(instanceId) then
     return false
   end
   self._initLifecycleActive = false

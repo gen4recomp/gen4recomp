@@ -1061,6 +1061,9 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
         startLifecycle = function()
           return true
         end,
+        isLifecycleSettled = function()
+          return true
+        end,
       },
       menuHost = {
         isModal = function()

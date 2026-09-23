@@ -122,8 +122,7 @@ function MapInitScriptController:isLifecycleSettled()
   if self.activeLifecycle == nil then
     return true
   end
-  local isSettled = self.scriptClient.isInitLifecycleSettled
-  if isSettled == nil or isSettled(self.scriptClient) then
+  if self.scriptClient:isInitLifecycleSettled() then
     self.activeLifecycle = nil
     return true
   end

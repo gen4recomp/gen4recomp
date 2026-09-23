@@ -234,6 +234,53 @@ function T.map_init_lifecycle_waits_for_nonblocking_movement_started_by_root()
   Assert.isTrue(h.client:isInitLifecycleSettled(), "readiness follows the movement commit")
 end
 
+function T.map_init_lifecycle_retains_common_child_movement_owner()
+  local h = harness()
+  h.services.actors:add("elm", { fieldX = 4, fieldZ = 6, facing = "north" })
+  install(
+    h,
+    script("common.map_init_mover", {
+      { op = "signal_caller" },
+      S.applyMovement({
+        actor = "elm",
+        movement = {
+          S.m.delay({ ticks = 3 }),
+          S.m.face({ direction = "east" }),
+        },
+      }),
+      S.setVar({ variable = "VAR_CHILD_MOVEMENT_STARTED", value = 1 }),
+      S.stop(),
+    })
+  )
+  install(
+    h,
+    script("test.map_init_common_child_moves_actor", {
+      S.callCommon({ target = "common.map_init_mover" }),
+      S.setVar({ variable = "VAR_INIT_CHILD_RETURNED", value = 1 }),
+      S.stop(),
+    })
+  )
+
+  Assert.isTrue(h.client:startInitScript("test.map_init_common_child_moves_actor", 400))
+  Assert.equal(h.services.world:getVar("VAR_CHILD_MOVEMENT_STARTED"), 1)
+  Assert.isFalse(h.client:isInitLifecycleSettled(), "movement keeps map entry unready after both scripts return")
+
+  h.scheduler:step(401, nil)
+  Assert.isFalse(h.client:isInitLifecycleSettled(), "a multi-tick movement remains part of the lifecycle")
+  Assert.equal(h.services.actors.actors.elm.facing, "north", "the movement has not committed yet")
+
+  for tick = 402, 410 do
+    h.scheduler:step(tick, nil)
+    if h.services.actors.actors.elm.facing == "east" then
+      break
+    end
+  end
+  Assert.equal(h.services.actors.actors.elm.facing, "east", "the retained task must commit its movement")
+  Assert.isTrue(h.client:isInitLifecycleSettled(), "readiness follows the final movement poll")
+  Assert.isNil(h.scheduler:foregroundEnvironmentId(), "settlement tears down the map-init environment")
+  Assert.equal(#h.scheduler:tasks(), 0, "settlement leaves no movement task behind")
+end
+
 function T.map_init_root_with_explicit_lock_owns_input_only_while_held()
   local h = harness()
   install(

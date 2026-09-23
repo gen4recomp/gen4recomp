@@ -17,7 +17,7 @@
 ---@class FieldMapEntryLifecycle
 ---@field hasLifecycle fun(self: FieldMapEntryLifecycle, lifecycle: string): boolean
 ---@field startLifecycle fun(self: FieldMapEntryLifecycle, lifecycle: string, tick: integer): boolean
----@field isLifecycleSettled fun(self: FieldMapEntryLifecycle): boolean|nil
+---@field isLifecycleSettled fun(self: FieldMapEntryLifecycle): boolean
 
 ---@class FieldMapEntryControllerOptions
 ---@field scriptScheduler table<string, unknown>
@@ -53,15 +53,6 @@ local function foregroundEnvironmentId(scheduler)
     return scheduler:foregroundEnvironmentId()
   end
   return nil
-end
-
----@param controller FieldMapEntryLifecycle
----@return boolean
-local function lifecycleSettled(controller)
-  if controller.isLifecycleSettled then
-    return controller:isLifecycleSettled() == true
-  end
-  return true
 end
 
 ---@param options unknown
@@ -186,13 +177,13 @@ function FieldMapEntryController:advance(tick)
     end
     return true
   elseif stage == "load_running" then
-    if foregroundEnvironmentId(self.scriptScheduler) ~= nil or not lifecycleSettled(self.initController) then
+    if foregroundEnvironmentId(self.scriptScheduler) ~= nil or not self.initController:isLifecycleSettled() then
       return false
     end
     self.stageName = "await_presentation"
     return true
   elseif stage == "load_resume_running" then
-    if foregroundEnvironmentId(self.scriptScheduler) ~= nil or not lifecycleSettled(self.initController) then
+    if foregroundEnvironmentId(self.scriptScheduler) ~= nil or not self.initController:isLifecycleSettled() then
       return false
     end
     self.stageName = "await_presentation"

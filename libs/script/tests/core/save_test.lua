@@ -22,6 +22,8 @@ local WaitTicksTask = require("libs.script.src.tasks.WaitTicksTask")
 ---@cast WaitTicksTask TaskImplementation
 local ChildScriptTask = require("libs.script.src.tasks.ChildScriptTask")
 ---@cast ChildScriptTask TaskImplementation
+local MovementTask = require("libs.hgss.src.script.tasks.MovementTask")
+---@cast MovementTask TaskImplementation
 local FakeServices = require("tests.support.script.FakeServices")
 local Diagnostics = require("libs.script.src.Diagnostics")
 
@@ -73,6 +75,7 @@ local function harness(opts)
   local taskRegistry = TaskRegistry.new()
   taskRegistry:register("wait_ticks", 1, WaitTicksTask)
   taskRegistry:register("child_script", 1, ChildScriptTask)
+  taskRegistry:register("movement", 1, MovementTask)
   local recorder = Diagnostics.newTraceRecorder()
   local scheduler = Scheduler.new({
     semantics = require("libs.hgss.src.script.RuntimeValues"),
@@ -131,6 +134,82 @@ local function saveAndResume(h, tick, scheduler)
   })
   ScriptSave.restore(bucket, resumed, tick, {})
   return resumed, recorder
+end
+
+T["map-init movement readiness resumes from saved scheduler records"] = function()
+  local h = harness()
+  h.services.actors:add("elm", { fieldX = 4, fieldZ = 6, facing = "north" })
+  local resource = script("test.map_init_movement_save", {
+    S.applyMovement({
+      actor = "elm",
+      movement = {
+        S.m.delay({ ticks = 3 }),
+        S.m.face({ direction = "east" }),
+      },
+    }),
+    S.stop(),
+  })
+  h.registry:installBase(resource.id, resource, "generated")
+  local composed = assert(h.composition:effective(resource.id))
+  local rootInstanceId =
+    assert(h.scheduler:startInteraction({ type = "map_init", scriptId = resource.id }, composed, 100, false))
+
+  Assert.isFalse(h.scheduler:isInitLifecycleSettled(rootInstanceId), "active movement keeps map entry unready")
+  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  Assert.equal(bucket.schema, ScriptSave.SCHEMA_NAME)
+  ---@type { instanceId: string, status: string }?
+  local rootRecord = nil
+  for _, record in ipairs(bucket.instances) do
+    if record.instanceId == rootInstanceId then
+      rootRecord = record
+      break
+    end
+  end
+  Assert.notNil(rootRecord, "the completed map-init root must be captured")
+  Assert.equal(assert(rootRecord).status, ScriptInstance.STATUSES.completed)
+  ---@type { rootInstanceId: string, movementTasksByGeneration: table<integer, table<string, boolean>> }?
+  local environmentRecord = nil
+  for _, record in ipairs(bucket.environments) do
+    if record.rootInstanceId == rootInstanceId then
+      environmentRecord = record
+      break
+    end
+  end
+  Assert.notNil(environmentRecord, "the live environment must retain its root relationship")
+  local capturedEnvironment = assert(environmentRecord)
+  ---@type { taskId: string, ownerInstanceId: string }?
+  local movementTask = nil
+  for _, record in ipairs(bucket.tasks) do
+    if record.ownerInstanceId == rootInstanceId then
+      movementTask = record
+      break
+    end
+  end
+  Assert.notNil(movementTask, "the captured movement must retain its poll owner")
+  local capturedMovementTask = assert(movementTask)
+  local generationHasMovement = false
+  for _, taskIds in pairs(capturedEnvironment.movementTasksByGeneration) do
+    generationHasMovement = generationHasMovement or taskIds[capturedMovementTask.taskId] == true
+  end
+  Assert.isTrue(generationHasMovement, "the saved environment must retain movement-generation membership")
+
+  local resumed = saveAndResume(h, 100)
+  Assert.isFalse(
+    resumed:isInitLifecycleSettled(rootInstanceId),
+    "restore must derive the draining lifecycle from the saved scheduler records"
+  )
+  resumed:step(101, nil)
+  Assert.isFalse(resumed:isInitLifecycleSettled(rootInstanceId), "movement remains active after its first poll")
+  for tick = 102, 110 do
+    resumed:step(tick, nil)
+    if resumed:isInitLifecycleSettled(rootInstanceId) then
+      break
+    end
+  end
+  Assert.equal(h.services.actors.actors.elm.facing, "east", "restored movement must commit")
+  Assert.isTrue(resumed:isInitLifecycleSettled(rootInstanceId), "readiness publishes after movement drains")
+  Assert.isNil(resumed:foregroundEnvironmentId(), "settlement tears down the restored foreground environment")
+  Assert.equal(#resumed:tasks(), 0, "settlement leaves no movement task behind")
 end
 
 -- Run a scenario uninterruptedly and compare the resumed trace suffix with

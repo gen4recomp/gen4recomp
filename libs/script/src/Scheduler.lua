@@ -48,7 +48,6 @@ local ScriptTask = require("libs.script.src.ScriptTask")
 ---@field private _nextEnvironmentId integer
 ---@field private _nextInstanceId integer
 ---@field private _nextTaskId integer
----@field private _deferredInitEnvironments table<string, string>
 ---@field private _settledInitLifecycles table<string, boolean>
 local Scheduler = {}
 Scheduler.__index = Scheduler
@@ -81,7 +80,6 @@ function Scheduler.new(opts)
     _nextEnvironmentId = 0,
     _nextInstanceId = 0,
     _nextTaskId = 0,
-    _deferredInitEnvironments = {},
     _settledInitLifecycles = {},
   }, Scheduler)
 end
@@ -423,6 +421,10 @@ function Scheduler:completeMovementTask(taskId, tick)
     environment:unregisterMovementTask(taskId)
   end
   task:complete(tick, nil)
+  local owner = self._instances[task.ownerInstanceId]
+  if owner and owner.status == ScriptInstance.STATUSES.completed then
+    self:_archiveInstance(owner)
+  end
 end
 
 -- --- Tick ---------------------------------------------------------------------
@@ -447,7 +449,7 @@ function Scheduler:step(tick, input)
   self:_promoteResumePending(tick, pendingSnapshot)
   self:_runEnvironments(tick, input)
   self:_resolveInteraction(tick, input)
-  self:_settleDeferredInitEnvironments()
+  self:_settleCompletedInitEnvironments()
 end
 
 function Scheduler:_resumePendingSnapshot()
@@ -535,6 +537,9 @@ function Scheduler:_handlePollResult(task, impl, owner, ctx, result, tick)
       owner.status = ScriptInstance.STATUSES.resume_pending
       owner.readyAtTick = tick + 1
       owner.taskResult = result.result
+    end
+    if owner.status == ScriptInstance.STATUSES.completed then
+      self:_archiveInstance(owner)
     end
     -- A completing child_script task read the child's outcome it needed:
     -- drop the archived record now that its last observer ended.
@@ -876,14 +881,19 @@ function Scheduler:_faultInstance(instance, _, error)
   self:_archiveInstance(instance)
 end
 
--- Move an ended instance out of the live set. An ended root has no task
--- observer and is dropped entirely; an ended child is retained only while
--- the child_script task of its caller still polls its termination state,
--- and pruned once that task ends. Live iteration and save capture see only
--- running state.
+-- Move an ended instance out of the live set unless a live task still needs
+-- it as a callback owner, or it is the completed root of a live map-init
+-- environment. An ended child without owned work is retained only while a
+-- child_script task observes its termination state.
 function Scheduler:_archiveInstance(instance)
-  if self._deferredInitEnvironments[instance.environmentId] == instance.instanceId then
+  local environment = self._environments[instance.environmentId]
+  if environment ~= nil and self:_isCompletedMapInitRoot(environment, instance) then
     return
+  end
+  for _, task in ipairs(self._tasks) do
+    if task.ownerInstanceId == instance.instanceId and task.status == "active" then
+      return
+    end
   end
   self._instances[instance.instanceId] = nil
   if self:_hasObservingTask(instance.instanceId) then
@@ -928,33 +938,33 @@ function Scheduler:_finishInstanceInEnvironment(instance, reason)
   if instance.contextSlot > 0 then
     environment:clearContext(instance.contextSlot)
   else
-    if
-      instance.status == ScriptInstance.STATUSES.completed
-      and instance.trigger ~= nil
-      and instance.trigger.type == "map_init"
-      and environment:hasOutstandingMovement()
-    then
-      self._deferredInitEnvironments[environment.environmentId] = instance.instanceId
+    if self:_isCompletedMapInitRoot(environment, instance) and environment:hasOutstandingMovement() then
       return
     end
-    if instance.trigger ~= nil and instance.trigger.type == "map_init" then
+    if self:_isCompletedMapInitRoot(environment, instance) then
       self._settledInitLifecycles[instance.instanceId] = true
     end
     self:_teardownEnvironment(environment, reason)
   end
 end
 
-function Scheduler:_settleDeferredInitEnvironments()
-  for environmentId, instanceId in pairs(self._deferredInitEnvironments) do
-    local environment = self._environments[environmentId]
-    if environment ~= nil and not environment:hasOutstandingMovement() then
-      self._deferredInitEnvironments[environmentId] = nil
-      self._settledInitLifecycles[instanceId] = true
+---@param environment ScriptEnvironment
+---@param instance ScriptInstance|nil
+---@return boolean
+function Scheduler:_isCompletedMapInitRoot(environment, instance)
+  return instance ~= nil
+    and environment.rootInstanceId == instance.instanceId
+    and instance.status == ScriptInstance.STATUSES.completed
+    and instance.trigger ~= nil
+    and instance.trigger.type == "map_init"
+end
+
+function Scheduler:_settleCompletedInitEnvironments()
+  for _, environment in ipairs(self:_orderedEnvironments()) do
+    local root = self._instances[environment.rootInstanceId]
+    if self:_isCompletedMapInitRoot(environment, root) and not environment:hasOutstandingMovement() then
+      self._settledInitLifecycles[root.instanceId] = true
       self:_teardownEnvironment(environment, "completed")
-      local instance = self._instances[instanceId]
-      if instance ~= nil then
-        self:_archiveInstance(instance)
-      end
     end
   end
 end
@@ -1062,6 +1072,14 @@ function Scheduler:_teardownEnvironment(environment, reason)
       end
     end
   end
+  for instanceId, instance in pairs(self._instances) do
+    if instance.environmentId == environment.environmentId and instance.status == ScriptInstance.STATUSES.completed then
+      self._instances[instanceId] = nil
+      if self:_hasObservingTask(instanceId) then
+        self._endedInstances[instanceId] = instance
+      end
+    end
+  end
   environment.locks = {}
   environment.callerSignals = {}
   self._environments[environment.environmentId] = nil
@@ -1075,6 +1093,7 @@ function Scheduler:_teardownEnvironment(environment, reason)
       end
     end
   end
+  self:_pruneArchivedInstances()
   self:_trace("environment_torn_down", { environmentId = environment.environmentId })
 end
 
@@ -1238,9 +1257,9 @@ end
 
 -- --- Accessors -----------------------------------------------------------------
 
--- Live instances only: the scheduler's own tick work and save capture
--- operate on running state; ended roots are dropped and ended children are
--- archived only while a task observes them.
+-- Instances retained in the live set include completed map-init roots whose
+-- environments are draining and completed owners of active tasks, so save
+-- capture preserves every live callback reference.
 ---@return ScriptInstance[]
 function Scheduler:liveInstances()
   local out = {}
@@ -1253,9 +1272,8 @@ function Scheduler:liveInstances()
   return out
 end
 
--- Live instances plus archived children still observed by a task (the
--- child-task termination checks); a retained ended record is pruned once its
--- observer ends.
+-- Live instances plus archived children still observed by a task; an archived
+-- record is pruned once its observer ends.
 ---@return ScriptInstance[]
 function Scheduler:instances()
   local out = self:liveInstances()
@@ -1304,14 +1322,7 @@ end
 ---@param instanceId string
 ---@return boolean
 function Scheduler:isInitLifecycleSettled(instanceId)
-  if self._settledInitLifecycles[instanceId] then
-    return true
-  end
-  local instance = self:instance(instanceId)
-  if instance ~= nil and self._deferredInitEnvironments[instance.environmentId] == instanceId then
-    return false
-  end
-  return instance ~= nil and instance.status == ScriptInstance.STATUSES.completed
+  return self._settledInitLifecycles[instanceId] == true
 end
 
 ---@param taskId string

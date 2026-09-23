@@ -841,6 +841,9 @@ function T.map_lifecycle_events_are_queued_and_drained_before_frame_checks()
       order[#order + 1] = lifecycle .. ":" .. tick
       return true
     end,
+    isLifecycleSettled = function()
+      return true
+    end,
     evaluateFrame = function(_, tick)
       order[#order + 1] = "frame:" .. tick
       return true
@@ -907,6 +910,9 @@ function T.destination_presentability_is_monotonic_through_map_entry()
       return lifecycle == "on_transition" or lifecycle == "on_load" or lifecycle == "on_resume"
     end,
     startLifecycle = function()
+      return true
+    end,
+    isLifecycleSettled = function()
       return true
     end,
   }
