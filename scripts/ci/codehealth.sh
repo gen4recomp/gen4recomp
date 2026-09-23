@@ -66,12 +66,10 @@ for tool in python3 lizard jscpd graphify; do
   fi
 done
 
-for source_file in site/index.html site/styles.css; do
-  if [ ! -s "$TOOL_ROOT/$source_file" ]; then
-    echo "codehealth: required site source is missing or empty: $TOOL_ROOT/$source_file" >&2
-    exit 1
-  fi
-done
+if [ ! -s "$TOOL_ROOT/site/styles.css" ]; then
+  echo "codehealth: required site source is missing or empty: $TOOL_ROOT/site/styles.css" >&2
+  exit 1
+fi
 
 for tool_file in scripts/ci/codehealth_scope.py scripts/ci/codehealth_history.py scripts/ci/codehealth_report.py scripts/ci/codehealth_graphify.py; do
   if [ ! -s "$TOOL_ROOT/$tool_file" ]; then
@@ -93,7 +91,7 @@ mkdir -p \
   "$REPORT_ROOT/jscpd" \
   "$REPORT_ROOT/graphify"
 
-cp -- "$TOOL_ROOT/site/index.html" "$TOOL_ROOT/site/styles.css" "$SITE_ROOT/"
+cp -- "$TOOL_ROOT/site/styles.css" "$SITE_ROOT/"
 
 python3 "$TOOL_ROOT/scripts/ci/codehealth_scope.py" candidates --repository-root "$TARGET_ROOT" > "$CANDIDATE_MANIFEST"
 
@@ -170,7 +168,6 @@ python3 "$TOOL_ROOT/scripts/ci/codehealth_report.py" \
   "${REPORT_HISTORY_ARGS[@]+"${REPORT_HISTORY_ARGS[@]}"}"
 
 for required_file in \
-  index.html \
   styles.css \
   codehealth/index.html \
   codehealth/quality-report.json \

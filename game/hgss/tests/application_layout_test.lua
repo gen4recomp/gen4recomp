@@ -7,6 +7,7 @@
 -- its hysteresis are one shared contract, not per-application heuristics.
 
 local Assert = require("tests.support.Assert")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = { tests = {} }
@@ -214,12 +215,17 @@ function T.tests.framed_static_box_carries_the_complete_outer_frame()
   local geometry =
     assert(policy.framed(context, { id = "content", width = 256, height = 192 }), "a 720p host frames the content")
   local frame = assert(geometry.frames, "wide carries its frame list")[1]
+  local insets = FieldDialogueTheme.applicationFrameInsets()
   Assert.notNil(frame, "one outer frame decorates the pane")
-  Assert.equal(frame.placement.logicalWidth, 272, "the outer frame adds left and right room")
-  Assert.equal(frame.placement.logicalHeight, 206, "the outer frame adds the 7px top and bottom")
+  Assert.equal(
+    frame.placement.logicalWidth,
+    256 + insets.left + insets.right,
+    "the outer frame adds left and right room"
+  )
+  Assert.equal(frame.placement.logicalHeight, 192 + insets.top + insets.bottom, "the outer frame adds the cap rows")
   Assert.deepEqual(
     frame.contentBox,
-    { x = 8, y = 7, width = 256, height = 192 },
+    { x = insets.left, y = insets.top, width = 256, height = 192 },
     "the body starts inside the exterior insets"
   )
   local untyped = geometry --[[@as table<string, unknown>]]
@@ -232,13 +238,13 @@ function T.tests.framed_static_box_carries_the_complete_outer_frame()
   )
   Assert.near(
     (body.origin.x - frame.placement.origin.x) / frame.placement.scale,
-    8,
+    insets.left,
     1e-9,
     "the body starts inside the left frame edge"
   )
   Assert.near(
     (body.origin.y - frame.placement.origin.y) / frame.placement.scale,
-    7,
+    insets.top,
     1e-9,
     "the body starts below the top frame edge"
   )
@@ -268,8 +274,9 @@ function T.tests.framed_selects_physical_integer_scale_through_the_framebuffer_r
       1e-9,
       "the host scale is the physical scale over the framebuffer ratio"
     )
-    Assert.equal(outer.logicalWidth, 272, "the outer frame keeps its exterior width")
-    Assert.equal(outer.logicalHeight, 206, "the outer frame keeps its exterior height")
+    local insets = FieldDialogueTheme.applicationFrameInsets()
+    Assert.equal(outer.logicalWidth, 256 + insets.left + insets.right, "the outer frame keeps its exterior width")
+    Assert.equal(outer.logicalHeight, 192 + insets.top + insets.bottom, "the outer frame keeps its exterior height")
   end
 end
 
@@ -323,9 +330,9 @@ function T.tests.stacked_returns_nil_when_the_envelope_cannot_fit()
   )
 end
 
--- Static single-pane boxes fit the complete symmetric outer frame
--- (content plus the 8px sides and 5px caps around the body)
--- centered at integer scale with no remembered position
+-- Static single-pane boxes fit the complete outer frame (content plus the
+-- published exterior insets around the body) centered at integer scale
+-- with no remembered position
 function T.tests.framed_single_pane_centers_the_complete_outer_frame()
   local policy = sharedPolicy()
   for _, size in ipairs({ { width = 1280, height = 720 }, { width = 390, height = 844 } }) do
@@ -342,10 +349,11 @@ function T.tests.framed_single_pane_centers_the_complete_outer_frame()
       "the framed body keeps an integer scale at or above 1x"
     )
     local frame = assert(geometry.frames, "framed geometry carries its frame list")[1]
+    local insets = FieldDialogueTheme.applicationFrameInsets()
     Assert.notNil(frame, "one outer frame decorates the pane")
     Assert.deepEqual(
       frame.contentBox,
-      { x = 8, y = 7, width = 256, height = 192 },
+      { x = insets.left, y = insets.top, width = 256, height = 192 },
       "the content box sits inside the exterior insets"
     )
     local bodyPlacement = assert(geometry.placements["content"], "the framed pane places")
@@ -375,8 +383,8 @@ function T.tests.framed_returns_nil_when_no_complete_frame_fits()
   )
 end
 
--- Same-display pairs frame their common envelope once: one 16x10 exterior
--- around the combined envelope, never once per pane.
+-- Same-display pairs frame their common envelope once: one exterior inset
+-- ring around the combined envelope, never once per pane.
 function T.tests.same_display_pair_frames_its_envelope_once()
   local policy = sharedPolicy()
   local wide = layoutContext(measure(singleSurface(1280, 720), 1280, 720), "wide")
@@ -385,12 +393,13 @@ function T.tests.same_display_pair_frames_its_envelope_once()
     "a 720p host pairs two native panes"
   )
   local frame = assert(side.frames, "the pair carries its frame list")[1]
+  local insets = FieldDialogueTheme.applicationFrameInsets()
   Assert.notNil(frame, "one outer frame decorates the pair envelope")
-  Assert.equal(frame.placement.logicalWidth, 528, "the pair frame adds side room once")
-  Assert.equal(frame.placement.logicalHeight, 206, "the pair frame adds caps once")
+  Assert.equal(frame.placement.logicalWidth, 512 + insets.left + insets.right, "the pair frame adds side room once")
+  Assert.equal(frame.placement.logicalHeight, 192 + insets.top + insets.bottom, "the pair frame adds caps once")
   Assert.deepEqual(
     frame.contentBox,
-    { x = 8, y = 7, width = 512, height = 192 },
+    { x = insets.left, y = insets.top, width = 512, height = 192 },
     "the pair envelope starts inside the full exterior frame"
   )
   local tall = layoutContext(measure(singleSurface(390, 844), 390, 844), "tall")
@@ -400,11 +409,15 @@ function T.tests.same_display_pair_frames_its_envelope_once()
   )
   local vertical = assert(stacked.frames, "the stack carries its frame list")[1]
   Assert.notNil(vertical, "one outer frame decorates the stacked envelope")
-  Assert.equal(vertical.placement.logicalWidth, 272, "the stacked frame adds side room once")
-  Assert.equal(vertical.placement.logicalHeight, 398, "the stacked frame adds caps once")
+  Assert.equal(
+    vertical.placement.logicalWidth,
+    256 + insets.left + insets.right,
+    "the stacked frame adds side room once"
+  )
+  Assert.equal(vertical.placement.logicalHeight, 384 + insets.top + insets.bottom, "the stacked frame adds caps once")
   Assert.deepEqual(
     vertical.contentBox,
-    { x = 8, y = 7, width = 256, height = 384 },
+    { x = insets.left, y = insets.top, width = 256, height = 384 },
     "the stacked envelope starts inside the full exterior frame"
   )
 end
@@ -443,12 +456,17 @@ function T.tests.cover_or_frame_prefers_full_coverage_then_decoration()
     "a visible frame never coexists with body crop"
   )
   local frame = assert(decorated.frames, "the refit owns its frame list")[1]
+  local insets = FieldDialogueTheme.applicationFrameInsets()
   Assert.notNil(frame, "one outer frame decorates the refit pane")
-  Assert.equal(frame.placement.logicalWidth, 272, "the refit frame adds side room")
-  Assert.equal(frame.placement.logicalHeight, 206, "the refit frame reserves the top and bottom")
+  Assert.equal(frame.placement.logicalWidth, 256 + insets.left + insets.right, "the refit frame adds side room")
+  Assert.equal(
+    frame.placement.logicalHeight,
+    192 + insets.top + insets.bottom,
+    "the refit frame reserves the top and bottom"
+  )
   Assert.deepEqual(
     frame.contentBox,
-    { x = 8, y = 7, width = 256, height = 192 },
+    { x = insets.left, y = insets.top, width = 256, height = 192 },
     "the refit body starts inside the exterior insets"
   )
   local tiny = layoutContext(measure(singleSurface(200, 150), 200, 150), "nativeLike")
@@ -459,7 +477,7 @@ end
 
 -- Same-display pairs share one integer scale with no synthetic gap: the
 -- lower pane starts exactly where the upper pane ends, and the common
--- envelope is 512x192 horizontal or 256x384 vertical.
+-- envelope spans both panes with no gap.
 function T.tests.paired_panes_are_edge_adjacent_with_a_common_envelope()
   local policy = sharedPolicy()
   local wide = layoutContext(measure(singleSurface(1280, 720), 1280, 720), "wide")
@@ -471,8 +489,12 @@ function T.tests.paired_panes_are_edge_adjacent_with_a_common_envelope()
   local lower = assert(side.placements["lower"], "the lower pane places")
   Assert.near(upper.frame.x + upper.frame.width, lower.frame.x, 1e-6, "horizontal panes touch with no gap")
   local wideEnvelope = assert(side.envelope, "the pair publishes its common envelope")
-  Assert.equal(wideEnvelope.logicalWidth, 512, "the horizontal envelope spans both panes")
-  Assert.equal(wideEnvelope.logicalHeight, 192, "the horizontal envelope keeps pane height")
+  Assert.equal(
+    wideEnvelope.logicalWidth,
+    upper.logicalWidth + lower.logicalWidth,
+    "the horizontal envelope spans both panes"
+  )
+  Assert.equal(wideEnvelope.logicalHeight, upper.logicalHeight, "the horizontal envelope keeps pane height")
   local tall = layoutContext(measure(singleSurface(390, 844), 390, 844), "tall")
   local stacked = assert(
     policy.stacked(tall, { id = "upper", width = 256, height = 192 }, { id = "lower", width = 256, height = 192 }),
@@ -482,8 +504,12 @@ function T.tests.paired_panes_are_edge_adjacent_with_a_common_envelope()
   local bottom = assert(stacked.placements["lower"], "the bottom pane places")
   Assert.near(top.frame.y + top.frame.height, bottom.frame.y, 1e-6, "vertical panes touch with no gap")
   local tallEnvelope = assert(stacked.envelope, "the stack publishes its common envelope")
-  Assert.equal(tallEnvelope.logicalWidth, 256, "the vertical envelope keeps pane width")
-  Assert.equal(tallEnvelope.logicalHeight, 384, "the vertical envelope spans both panes")
+  Assert.equal(tallEnvelope.logicalWidth, top.logicalWidth, "the vertical envelope keeps pane width")
+  Assert.equal(
+    tallEnvelope.logicalHeight,
+    top.logicalHeight + bottom.logicalHeight,
+    "the vertical envelope spans both panes"
+  )
 end
 
 -- Geometry names no transition coverage and never a settled background

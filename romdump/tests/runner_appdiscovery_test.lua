@@ -79,7 +79,7 @@ function T.discover_app_dispatches_to_app_discovery_with_exactly_the_parsed_requ
       runPath = function(request)
         received = request
         return {
-          outputPath = "/tmp/app-evidence-heartgold-arm9-overlay-15.zip",
+          outputPath = "fake-out/app-evidence-heartgold-arm9-overlay-15.zip",
           summary = {
             versionId = "heartgold",
             overlayId = 15,
@@ -96,7 +96,7 @@ function T.discover_app_dispatches_to_app_discovery_with_exactly_the_parsed_requ
     }
     Runner.load({
       command = "discover-app",
-      romPath = "/tmp/hg.nds",
+      romPath = "fake-rom/hg.nds",
       overlayId = 15,
       outputPath = nil,
       resourceDetails = {},
@@ -104,7 +104,7 @@ function T.discover_app_dispatches_to_app_discovery_with_exactly_the_parsed_requ
   end)
 
   Assert.notNil(received, "AppDiscovery.runPath was never called")
-  Assert.equal(received.romPath, "/tmp/hg.nds")
+  Assert.equal(received.romPath, "fake-rom/hg.nds")
   Assert.equal(received.overlayId, 15)
   Assert.isNil(received.outputPath)
   Assert.deepEqual(received.resourceDetails, {})
@@ -118,7 +118,7 @@ function T.discover_app_forwards_sorted_resource_details_without_interpretation(
       runPath = function(request)
         received = request
         return {
-          outputPath = "/tmp/app-evidence.zip",
+          outputPath = "fake-out/app-evidence.zip",
           summary = {
             versionId = "heartgold",
             overlayId = 15,
@@ -135,7 +135,7 @@ function T.discover_app_forwards_sorted_resource_details_without_interpretation(
     }
     Runner.load({
       command = "discover-app",
-      romPath = "/tmp/hg.nds",
+      romPath = "fake-rom/hg.nds",
       overlayId = 15,
       resourceDetails = {
         { fileId = 12, memberId = 3 },
@@ -157,7 +157,7 @@ function T.discover_app_forwards_an_explicit_output_path()
       runPath = function(request)
         received = request
         return {
-          outputPath = "/tmp/bag-evidence.zip",
+          outputPath = "fake-out/bag-evidence.zip",
           summary = {
             versionId = "heartgold",
             overlayId = 15,
@@ -174,13 +174,13 @@ function T.discover_app_forwards_an_explicit_output_path()
     }
     Runner.load({
       command = "discover-app",
-      romPath = "/tmp/hg.nds",
+      romPath = "fake-rom/hg.nds",
       overlayId = 15,
-      outputPath = "/tmp/bag-evidence.zip",
+      outputPath = "fake-out/bag-evidence.zip",
     })
   end)
 
-  Assert.equal(received.outputPath, "/tmp/bag-evidence.zip")
+  Assert.equal(received.outputPath, "fake-out/bag-evidence.zip")
 end
 
 function T.discover_app_prints_the_output_path_on_success()
@@ -189,7 +189,7 @@ function T.discover_app_prints_the_output_path_on_success()
     package.loaded[APP_DISCOVERY_MODULE] = {
       runPath = function()
         return {
-          outputPath = "/tmp/app-evidence-heartgold-arm9-overlay-15.zip",
+          outputPath = "fake-out/app-evidence-heartgold-arm9-overlay-15.zip",
           summary = {
             versionId = "heartgold",
             overlayId = 15,
@@ -204,7 +204,7 @@ function T.discover_app_prints_the_output_path_on_success()
         }
       end,
     }
-    Runner.load({ command = "discover-app", romPath = "/tmp/hg.nds", overlayId = 15 })
+    Runner.load({ command = "discover-app", romPath = "fake-rom/hg.nds", overlayId = 15 })
   end)
   restore()
   if not ok then
@@ -213,7 +213,7 @@ function T.discover_app_prints_the_output_path_on_success()
 
   local joined = table.concat(lines, "\n")
   Assert.isTrue(
-    joined:find("/tmp/app-evidence-heartgold-arm9-overlay-15.zip", 1, true) ~= nil,
+    joined:find("fake-out/app-evidence-heartgold-arm9-overlay-15.zip", 1, true) ~= nil,
     "success output must include the output path"
   )
 end
@@ -226,7 +226,7 @@ function T.discover_app_maps_a_structured_failure_to_exit_one_and_a_locked_messa
         return nil, { code = "APPDISCOVERY_OUTPUT_WRITE_FAILED", message = "disk full", context = {} }
       end,
     }
-    Runner.load({ command = "discover-app", romPath = "/tmp/hg.nds", overlayId = 15 })
+    Runner.load({ command = "discover-app", romPath = "fake-rom/hg.nds", overlayId = 15 })
     Assert.equal(state.exitCode, 1)
   end)
   restore()

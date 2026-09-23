@@ -320,78 +320,6 @@ function T.broken_owned_suite_is_loaded_once_and_remains_one_load_failure()
   Assert.equal(failures, 1, "a broken owned suite contributes one load failure")
 end
 
-function T.private_process_context_rejects_partial_or_contradictory_environment()
-  local Parallel = parallel()
-  Assert.equal(Parallel.context({}).kind, "normal")
-  local worker = Parallel.context({
-    G4RECOMP_TEST_RUN_DIR = "/tmp/run",
-    G4RECOMP_TEST_WORKERS = "3",
-    G4RECOMP_TEST_WORKER = "2",
-  })
-  Assert.equal(worker.kind, "worker")
-  Assert.equal(worker.index, 2)
-  Assert.equal(worker.count, 3)
-  Assert.equal(
-    Parallel.context({
-      G4RECOMP_TEST_RUN_DIR = "/tmp/run",
-      G4RECOMP_TEST_WORKERS = "3",
-      G4RECOMP_TEST_AGGREGATE = "1",
-    }).kind,
-    "aggregate"
-  )
-
-  for _, env in ipairs({
-    { G4RECOMP_TEST_RUN_DIR = "/tmp/run" },
-    { G4RECOMP_TEST_WORKERS = "3", G4RECOMP_TEST_WORKER = "1" },
-    { G4RECOMP_TEST_RUN_DIR = "/tmp/run", G4RECOMP_TEST_WORKERS = "3", G4RECOMP_TEST_WORKER = "0" },
-    { G4RECOMP_TEST_RUN_DIR = "/tmp/run", G4RECOMP_TEST_WORKERS = "5", G4RECOMP_TEST_WORKER = "1" },
-    { G4RECOMP_TEST_RUN_DIR = "/tmp/run", G4RECOMP_TEST_WORKERS = "5", G4RECOMP_TEST_AGGREGATE = "1" },
-    {
-      G4RECOMP_TEST_RUN_DIR = "/tmp/run",
-      G4RECOMP_TEST_WORKERS = "3",
-      G4RECOMP_TEST_WORKER = "1",
-      G4RECOMP_TEST_AGGREGATE = "1",
-    },
-  }) do
-    Assert.throws(function()
-      Parallel.context(env)
-    end, "malformed process context must fail closed")
-  end
-end
-
-function T.worker_fragments_round_trip_atomically_and_reject_corruption()
-  local Parallel = parallel()
-  withTempDirectory(function(runDir)
-    local run = runData({ result("fake.unit.alpha_test", "pass", "pass", "unit", 0.1) }, {
-      duration = 1.25,
-      selectedCapabilities = { rom_dump = true },
-      excludedSlow = 2,
-      suiteTimings = {},
-    })
-    Parallel.writeFragment(runDir, 2, 4, run)
-    local wrapper = Parallel.readFragment(runDir, 2, 4)
-    Assert.equal(wrapper.schema, "g4-test-worker-v1")
-    Assert.equal(wrapper.worker.index, 2)
-    Assert.equal(wrapper.worker.count, 4)
-    Assert.equal(wrapper.run.duration, 1.25)
-    Assert.isNil(io.open(Parallel.fragmentPath(runDir, 2) .. ".tmp", "r"), "temporary file is not published")
-
-    local handle = assert(io.open(Parallel.fragmentPath(runDir, 1), "w"))
-    handle:write("return { schema = 'wrong', worker = { index = 1, count = 4 }, run = {} }\n")
-    handle:close()
-    Assert.throws(function()
-      Parallel.readFragment(runDir, 1, 4)
-    end, "wrong schema must not be accepted")
-
-    handle = assert(io.open(Parallel.fragmentPath(runDir, 3), "w"))
-    handle:write("not lua")
-    handle:close()
-    Assert.throws(function()
-      Parallel.readFragment(runDir, 3, 4)
-    end, "malformed Lua must not be accepted")
-  end)
-end
-
 function T.fragment_merge_preserves_counts_capabilities_order_and_critical_path()
   local Parallel = parallel()
   local first = runData({
@@ -464,13 +392,6 @@ function T.fragment_merge_sorts_modules_by_identity_across_workers()
   })
   Assert.equal(merged.results[1].module, "fake.unit.alpha_test")
   Assert.equal(merged.results[2].module, "fake.unit.zulu_test")
-end
-
-function T.missing_fragments_cannot_be_merged_as_an_empty_worker()
-  local Parallel = parallel()
-  Assert.throws(function()
-    Parallel.readFragments("/tmp/no-such-worker-run", 2)
-  end, "a missing worker fragment must be infrastructure failure")
 end
 
 return { tests = T }

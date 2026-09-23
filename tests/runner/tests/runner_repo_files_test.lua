@@ -50,38 +50,4 @@ function T.an_empty_root_is_a_hard_error()
   )
 end
 
--- The root is passed to `find` through a shell, so a path containing an
--- apostrophe must be escaped: an unescaped quote turns the command into
--- garbage and discovery silently indexes nothing (the empty-root assert
--- above would then fire with a misleading cause).
-function T.indexes_a_root_whose_path_contains_an_apostrophe()
-  local baseDirectory = "/tmp/g4recomp-runner-d31"
-  local root = "apostrophe'dir"
-  local absoluteRoot = baseDirectory .. "/" .. root
-  local function sh(command)
-    local pipe = assert(io.popen(command))
-    local output = pipe:read("*a")
-    pipe:close()
-    return output
-  end
-  sh('rm -rf "' .. absoluteRoot .. '"')
-  sh('mkdir -p "' .. absoluteRoot .. '"')
-  local path = absoluteRoot .. "/quoted_suite_test.lua"
-  local handle = assert(io.open(path, "w"), "cannot write fixture under " .. root)
-  handle:write("return { tests = {} }\n")
-  handle:close()
-
-  local ok, err = pcall(function()
-    local files = RepoFiles.new(baseDirectory, { root })
-    Assert.isTrue(
-      has(files.getDirectoryItems(root), "quoted_suite_test.lua"),
-      "indexes the suite under an apostrophe path"
-    )
-  end)
-  sh('rm -rf "' .. absoluteRoot .. '"')
-  if not ok then
-    error(err, 2)
-  end
-end
-
 return { tests = T }

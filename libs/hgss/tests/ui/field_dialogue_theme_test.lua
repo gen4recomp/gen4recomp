@@ -223,29 +223,36 @@ function T.resolved_substitutions_contribute_replacement_glyph_widths()
   Assert.isTrue(codes[360], "the resolved multibyte glyph rides in the laid-out line")
 end
 
--- Static application boxes decorate content with one exterior 8px side
--- tile and one full side tile overlapping the body so edge motifs are never
--- cut, and 5px caps hugging their edge rows with thicker art overlapping
--- one pixel onto the content (the frame draws after content, so
--- transparent texels reveal it). Only border art is addressed (the
--- tiles' interior fill never paints); the body sits inside the exterior
--- room only on the outer side tiles.
+-- Static application boxes decorate content with one exterior side tile per
+-- side (no side content overlap, so narrow bodies keep their full width)
+-- and single cap rows hugging their edge rows with the cap overlap pixel
+-- onto the content (the frame draws after content, so transparent texels
+-- reveal it). Inset values derive from the tile size and cap overlap, not
+-- from repeated literals.
 function T.application_frame_insets_follow_border_thickness()
+  local tile = FieldDialogueTheme.frameTileSize
+  local overlap = FieldDialogueTheme.applicationFrameCapOverlap
   local insets = FieldDialogueTheme.applicationFrameInsets()
-  Assert.deepEqual(insets, { left = 8, top = 7, right = 8, bottom = 7 }, "inner side tiles overlap the body")
+  Assert.deepEqual(insets, {
+    left = tile,
+    top = tile - overlap,
+    right = tile,
+    bottom = tile - overlap,
+  }, "sides sit fully exterior with caps overlapping one pixel")
   Assert.isTrue(insets ~= FieldDialogueTheme.applicationFrameInsets(), "insets are fresh records")
 end
 
--- Direct edge targets derive from the audited standard tilemap: the
--- side bands reuse the full source side columns (tiles 6 and 7 down
--- the target left, then mirrored on the right) with no cropping, stepping a full tile every 8px so edge
--- motifs render whole; each cap reuses its own source edge row in 8px
--- cells (top: corners 0/5 with span 2 above the body, bottom: corners
--- 12/17 with span 14 below), the 6px art overlapping one pixel onto the
--- content. Corners land exactly under their side bands and cover the
--- span ends. One side tile sits outside the exterior silhouette and the
--- other overlaps the body.
+-- Direct edge targets derive from the published insets: one exterior side
+-- column per side (tile 6 down the target left, mirrored on the right)
+-- with no side content overlap, stepping one tile so edge motifs render
+-- whole; each cap reuses its own source edge row in tile cells (top:
+-- outer corners 0 with span 2 above the body, bottom: outer corners 12
+-- with span 14 below) with only the cap overlap pixel onto the content.
+-- Corners land exactly over their side bands and cover the span ends.
 function T.application_frame_tiles_reuse_standard_edges_directly()
+  local tile = FieldDialogueTheme.frameTileSize
+  local overlap = FieldDialogueTheme.applicationFrameCapOverlap
+  local insets = FieldDialogueTheme.applicationFrameInsets()
   local box = { x = 0, y = 24, width = 256, height = 192 }
   local groups = FieldDialogueTheme.applicationFrameTilePlacements(box)
   Assert.isTrue(
@@ -258,59 +265,57 @@ function T.application_frame_tiles_reuse_standard_edges_directly()
   end
   table.sort(groupKeys)
   Assert.deepEqual(groupKeys, { "bottom", "sides", "top" }, "exactly the caps and the sides")
-  -- The caps extend one tile past the body and the inner side tiles
-  -- overlap it. The right half mirrors the left source, so no side tile is
-  -- cropped.
-  local outerX = box.x - 8
+  -- All rows derive from the published insets: the caps hug the body with
+  -- one overlap pixel while the side bands stay fully exterior.
+  local outerX = box.x - insets.left
   local capY = box.y + box.height
-  local bottomY = capY - 1
+  local bottomY = capY - overlap
   local rightX = box.x + box.width
+  local topY = box.y - insets.top
   local corners = 0
   local middles = 0
   for _, entry in ipairs(groups.bottom) do
     Assert.isTrue(type(entry.x) == "number" and type(entry.y) == "number", "tiles carry target positions")
     Assert.equal(entry.y, bottomY, "every bottom cell shares the cap row")
     Assert.isTrue(entry.x >= outerX and entry.x <= rightX, "cap cells span the side geometry")
-    if entry.tile == 12 or entry.tile == 13 then
+    if entry.tile == 12 then
       corners = corners + 1
     else
       Assert.equal(entry.tile, 14, "cap middles reuse the source bottom span")
       Assert.isTrue(entry.x >= box.x and entry.x < box.x + box.width, "middles run between corners")
-      Assert.equal((entry.x - box.x) % 8, 0, "middles step every 8px")
+      Assert.equal((entry.x - box.x) % tile, 0, "middles step every tile")
       middles = middles + 1
     end
   end
-  Assert.equal(corners, 4, "the bottom cap keeps both source tiles per corner")
-  Assert.equal(middles, box.width / 8, "the span tiles the body width exactly")
-  -- The top cap follows the bottom layout with the source top row: 8px
-  -- corners plus the top span in exact 8px steps directly above the body,
+  Assert.equal(corners, 2, "the bottom cap keeps one outer corner per side")
+  Assert.equal(middles, box.width / tile, "the span tiles the body width exactly")
+  -- The top cap follows the bottom layout with the source top row: outer
+  -- corners plus the top span in exact tile steps directly above the body,
   -- gapless across the same outer width.
-  local topY = box.y - 7
   local topCorners = 0
   local topMiddles = 0
   for _, entry in ipairs(groups.top) do
     Assert.isTrue(type(entry.x) == "number" and type(entry.y) == "number", "top tiles carry target positions")
     Assert.equal(entry.y, topY, "top cells sit on the top row")
     Assert.isTrue(entry.x >= outerX and entry.x <= rightX, "top cells span the side geometry")
-    if entry.tile == 0 or entry.tile == 1 then
+    if entry.tile == 0 then
       topCorners = topCorners + 1
     else
       Assert.equal(entry.tile, 2, "top middles reuse the source top span")
       Assert.isTrue(entry.x >= box.x and entry.x < box.x + box.width, "top middles run between corners")
-      Assert.equal((entry.x - box.x) % 8, 0, "top middles step every 8px")
+      Assert.equal((entry.x - box.x) % tile, 0, "top middles step every tile")
       topMiddles = topMiddles + 1
     end
   end
-  Assert.equal(topCorners, 4, "the top cap keeps both source tiles per corner")
-  Assert.equal(topMiddles, box.width / 8, "the top span tiles the body width exactly")
+  Assert.equal(topCorners, 2, "the top cap keeps one outer corner per side")
+  Assert.equal(topMiddles, box.width / tile, "the top span tiles the body width exactly")
   Assert.equal(#groups.top, #groups.bottom, "the caps carry the same cell count")
-  -- Both cap rows cover the complete body width plus their 8px corner
-  -- cells.
+  -- Both cap rows cover the complete body width plus their corner cells.
   for _, list in ipairs({ groups.bottom, groups.top }) do
-    for x = outerX, rightX + 7 do
+    for x = outerX, rightX + tile - 1 do
       local covered = false
       for _, entry in ipairs(list) do
-        if x >= entry.x and x < entry.x + 8 then
+        if x >= entry.x and x < entry.x + tile then
           covered = true
           break
         end
@@ -318,26 +323,26 @@ function T.application_frame_tiles_reuse_standard_edges_directly()
       Assert.isTrue(covered, "the cap row covers column " .. x)
     end
   end
-  -- Full side tiles step every 8px down the body and end exactly at the
-  -- bottom cap's content boundary.
+  -- Exterior side tiles step every tile down the body and never cover it:
+  -- the body keeps its full width on both sides.
   local leftCount, rightCount = 0, 0
   for _, entry in ipairs(groups.sides) do
-    Assert.isTrue(entry.y >= box.y and entry.y + 8 <= box.y + box.height, "side tiles end at the bottom corners")
+    Assert.isTrue(entry.y >= box.y and entry.y + tile <= box.y + box.height, "side tiles end at the bottom corners")
+    Assert.isTrue(entry.tile == 6, "the side band keeps the outer dialogue column")
+    Assert.equal((entry.y - box.y) % tile, 0, "side tiles step every tile")
     if entry.x < box.x + box.width / 2 then
-      Assert.isTrue(entry.x == box.x - 8 or entry.x == box.x, "left keeps both dialogue columns")
-      Assert.isTrue(entry.tile == 6 or entry.tile == 7, "the left band keeps the dialogue source")
-      Assert.equal((entry.y - box.y) % 8, 0, "left tiles step every 8px")
+      Assert.equal(entry.x, box.x - insets.left, "left stays fully exterior")
+      Assert.isTrue(entry.x + tile <= box.x, "left never covers the body")
       leftCount = leftCount + 1
     else
-      Assert.isTrue(entry.x == box.x + box.width - 8 or entry.x == box.x + box.width, "right mirrors both left columns")
-      Assert.isTrue(entry.tile == 6 or entry.tile == 7, "the right band mirrors the dialogue source")
+      Assert.equal(entry.x, box.x + box.width, "right stays fully exterior")
+      Assert.isTrue(entry.x >= box.x + box.width, "right never covers the body")
       Assert.isTrue(entry.flipX, "the right band flips the source")
-      Assert.equal((entry.y - box.y) % 8, 0, "right tiles step every 8px")
       rightCount = rightCount + 1
     end
   end
-  Assert.equal(leftCount, 2 * box.height / 8, "two dialogue columns tile the left")
-  Assert.equal(rightCount, 2 * box.height / 8, "two mirrored columns tile the right")
+  Assert.equal(leftCount, box.height / tile, "one exterior column tiles the left")
+  Assert.equal(rightCount, box.height / tile, "one mirrored column tiles the right")
 end
 -- The inset frame box only needs 8px-compatible integral content: with no
 -- overlap there is no minimum body size, but ragged content cannot tile.

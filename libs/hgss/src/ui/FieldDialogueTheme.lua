@@ -71,39 +71,53 @@ function FieldDialogueTheme.frameTilePlacements(box)
     type(box) == "table" and box.x and box.y and box.width and box.height,
     "frameTilePlacements requires the content box"
   )
-  local left = box.x - 16
+  local tile = FieldDialogueTheme.frameTileSize
+  local left = box.x - 2 * tile
   local right = box.x + box.width
-  local top = box.y - 8
+  local top = box.y - tile
   local bottom = box.y + box.height
   return {
     { tile = 0, x = left, y = top },
-    { tile = 1, x = left + 8, y = top },
-    { tile = 2, x = box.x, y = top, spanX = box.width / 8 },
+    { tile = 1, x = left + tile, y = top },
+    { tile = 2, x = box.x, y = top, spanX = box.width / tile },
     { tile = 3, x = right, y = top },
-    { tile = 4, x = right + 8, y = top },
-    { tile = 5, x = right + 16, y = top },
-    { tile = 6, x = left, y = box.y, spanY = box.height / 8 },
-    { tile = 7, x = left + 8, y = box.y, spanY = box.height / 8 },
-    { tile = 9, x = right, y = box.y, spanY = box.height / 8 },
-    { tile = 10, x = right + 8, y = box.y, spanY = box.height / 8 },
-    { tile = 11, x = right + 16, y = box.y, spanY = box.height / 8 },
+    { tile = 4, x = right + tile, y = top },
+    { tile = 5, x = right + 2 * tile, y = top },
+    { tile = 6, x = left, y = box.y, spanY = box.height / tile },
+    { tile = 7, x = left + tile, y = box.y, spanY = box.height / tile },
+    { tile = 9, x = right, y = box.y, spanY = box.height / tile },
+    { tile = 10, x = right + tile, y = box.y, spanY = box.height / tile },
+    { tile = 11, x = right + 2 * tile, y = box.y, spanY = box.height / tile },
     { tile = 12, x = left, y = bottom },
-    { tile = 13, x = left + 8, y = bottom },
-    { tile = 14, x = box.x, y = bottom, spanX = box.width / 8 },
+    { tile = 13, x = left + tile, y = bottom },
+    { tile = 14, x = box.x, y = bottom, spanX = box.width / tile },
     { tile = 15, x = right, y = bottom },
-    { tile = 16, x = right + 8, y = bottom },
-    { tile = 17, x = right + 16, y = bottom },
+    { tile = 16, x = right + tile, y = bottom },
+    { tile = 17, x = right + 2 * tile, y = bottom },
   }
 end
 
--- Application frame room is exterior plus one content-overlap pixel on
--- every edge: the retained source pieces hug their content-facing art
--- edge, and the frame draws after content so transparent texels reveal it.
+-- Application frame geometry from one tile constant: sides are a single
+-- exterior 8px column with no content overlap, so narrow bodies gain the
+-- full body width back; caps are one 8px row hugging the body with a
+-- single content-facing overlap pixel (the frame draws after content so
+-- transparent texels reveal it). Insets are the exterior room the layout
+-- fits; the cap overlap is the only content cover the theme allows.
+FieldDialogueTheme.frameTileSize = 8
+FieldDialogueTheme.applicationFrameCapOverlap = 1
+-- The only strip tiles the application frame addresses: outer corners and
+-- spans plus the single exterior side column, mirrored right. Inner
+-- columns and corners stay unaddressed so the body keeps its full width.
+FieldDialogueTheme.applicationFrameTiles =
+  { topOuter = 0, topSpan = 2, sideOuter = 6, bottomOuter = 12, bottomSpan = 14 }
+local TILE_SIZE = FieldDialogueTheme.frameTileSize
+local CAP_OVERLAP = FieldDialogueTheme.applicationFrameCapOverlap
+local FRAME_TILES = FieldDialogueTheme.applicationFrameTiles
 local APPLICATION_FRAME_INSETS = {
-  left = 8,
-  top = 7,
-  right = 8,
-  bottom = 7,
+  left = TILE_SIZE,
+  top = TILE_SIZE - CAP_OVERLAP,
+  right = TILE_SIZE,
+  bottom = TILE_SIZE - CAP_OVERLAP,
 }
 
 -- Exterior room the application frame reserves outside the content box.
@@ -117,18 +131,19 @@ function FieldDialogueTheme.applicationFrameInsets()
   }
 end
 
--- Application frame tile targets: the sides reuse the full source
--- side columns (tiles 6 and 7 down the target left, mirrored on the
--- target right) with no artwork rotation, stepping a full tile every 8px
--- so edge motifs render whole. Each cap reuses its own source edge row
--- in exact 8px steps (top corners 0/1 mirrored to the right with span 2
--- above the body, bottom corners 12/13 mirrored to the right with span
--- 14 below). Whole tiles share the target rows and columns, so every
--- joint lands exactly as the audited dialogue tilemap composes it while
--- the retained art overlaps one pixel onto the content. Corners land
--- exactly under their side bands and cover the span ends. Returns tile
--- identities with target positions; drawing stays with the frame
--- renderer.
+-- Application frame tile targets: one exterior side column per side (tile 6
+-- down the target left, mirrored on the right) with no artwork rotation,
+-- stepping a full tile so edge motifs render whole and the body keeps its
+-- full width. Each cap reuses its own source edge row in exact tile steps
+-- (outer corners 0 mirrored right with span 2 above the body, outer
+-- corners 12 mirrored right with span 14 below). Whole tiles share the
+-- target rows and columns, so every joint lands exactly as the audited
+-- dialogue tilemap composes it while only the cap overlap pixel covers
+-- the content. Corners land exactly over their side bands and cover the
+-- span ends. Tile identities come from applicationFrameTiles; positions
+-- derive from applicationFrameInsets, the tile size, and the cap overlap.
+-- Returns tile identities with target positions; drawing stays with the
+-- frame renderer.
 ---@param box FieldDialogueTheme.Rect the target content box
 ---@return { top: { tile: integer, x: number, y: number, flipX: boolean? }[], sides: { tile: integer, x: number, y: number, flipX: boolean? }[], bottom: { tile: integer, x: number, y: number, flipX: boolean? }[] }
 function FieldDialogueTheme.applicationFrameTilePlacements(box)
@@ -144,42 +159,39 @@ function FieldDialogueTheme.applicationFrameTilePlacements(box)
     box.width > 0 and box.height > 0 and box.width == math.floor(box.width) and box.height == math.floor(box.height),
     "applicationFrameTilePlacements requires positive integral content dimensions"
   )
-  assert(box.width % 8 == 0 and box.height % 8 == 0, "applicationFrameTilePlacements requires 8px-compatible content")
+  assert(
+    box.width % TILE_SIZE == 0 and box.height % TILE_SIZE == 0,
+    "applicationFrameTilePlacements requires 8px-compatible content"
+  )
+  local insets = FieldDialogueTheme.applicationFrameInsets()
   local capY = box.y + box.height
-  local outerX = box.x - APPLICATION_FRAME_INSETS.left
+  local outerX = box.x - insets.left
   local rightX = box.x + box.width
   local top = {}
   local bottom = {}
-  -- Caps tile the body width exactly: 8px corners with the span in 8px
+  -- Caps tile the body width exactly: outer corners with the span in tile
   -- steps between them. The cap rows sit fully outside the body except
-  -- one overlapping pixel, matching the side bands' 8px rhythm.
-  local topY = box.y - 7
-  local bottomY = capY - 1
+  -- the single overlap pixel.
+  local topY = box.y - insets.top
+  local bottomY = capY - CAP_OVERLAP
   local x = box.x
   while x < box.x + box.width do
-    bottom[#bottom + 1] = { tile = 14, x = x, y = bottomY }
-    top[#top + 1] = { tile = 2, x = x, y = topY }
-    x = x + 8
+    bottom[#bottom + 1] = { tile = FRAME_TILES.bottomSpan, x = x, y = bottomY }
+    top[#top + 1] = { tile = FRAME_TILES.topSpan, x = x, y = topY }
+    x = x + TILE_SIZE
   end
-  bottom[#bottom + 1] = { tile = 12, x = outerX, y = bottomY }
-  bottom[#bottom + 1] = { tile = 13, x = box.x, y = bottomY }
-  bottom[#bottom + 1] = { tile = 13, x = box.x + box.width - 8, y = bottomY, flipX = true }
-  bottom[#bottom + 1] = { tile = 12, x = rightX, y = bottomY, flipX = true }
-  top[#top + 1] = { tile = 0, x = outerX, y = topY }
-  top[#top + 1] = { tile = 1, x = box.x, y = topY }
-  top[#top + 1] = { tile = 1, x = box.x + box.width - 8, y = topY, flipX = true }
-  top[#top + 1] = { tile = 0, x = rightX, y = topY, flipX = true }
-  -- The full source side pair stays on the 8px grid. Its inner tile
-  -- overlaps the body; the keyed application copy holds only border art
-  -- there, so transparent texels reveal the content.
+  bottom[#bottom + 1] = { tile = FRAME_TILES.bottomOuter, x = outerX, y = bottomY }
+  bottom[#bottom + 1] = { tile = FRAME_TILES.bottomOuter, x = rightX, y = bottomY, flipX = true }
+  top[#top + 1] = { tile = FRAME_TILES.topOuter, x = outerX, y = topY }
+  top[#top + 1] = { tile = FRAME_TILES.topOuter, x = rightX, y = topY, flipX = true }
+  -- One exterior side column per side on the tile grid. No side tile
+  -- covers the body, so the keyed copy only clears the caps' overlap row.
   local sides = {}
   local y = box.y
   while y < capY do
-    sides[#sides + 1] = { tile = 6, x = box.x - 8, y = y }
-    sides[#sides + 1] = { tile = 7, x = box.x, y = y }
-    sides[#sides + 1] = { tile = 7, x = box.x + box.width - 8, y = y, flipX = true }
-    sides[#sides + 1] = { tile = 6, x = box.x + box.width, y = y, flipX = true }
-    y = y + 8
+    sides[#sides + 1] = { tile = FRAME_TILES.sideOuter, x = box.x - insets.left, y = y }
+    sides[#sides + 1] = { tile = FRAME_TILES.sideOuter, x = box.x + box.width, y = y, flipX = true }
+    y = y + TILE_SIZE
   end
   return { top = top, sides = sides, bottom = bottom }
 end

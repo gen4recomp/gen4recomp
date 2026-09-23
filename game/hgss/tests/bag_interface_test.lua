@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local BagInterface = require("game.hgss.src.field.BagInterface")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
@@ -302,12 +303,13 @@ function T.dual_underfilled_pane_refits_with_complete_chrome_on_its_own_target()
   Assert.equal(#plan.frames, 1, "only the underfilled pane carries a frame")
   local frame = assert(plan.frames, "the dual plan owns its frame list")[1]
   local outer = assert(frame.placement, "the frame carries its outer placement")
-  Assert.equal(outer.logicalWidth, 272, "the dual frame adds outer side room")
-  Assert.equal(outer.logicalHeight, 206, "the dual frame reserves the 7px top and bottom")
+  local insets = FieldDialogueTheme.applicationFrameInsets()
+  Assert.equal(outer.logicalWidth, 256 + insets.left + insets.right, "the dual frame adds outer side room")
+  Assert.equal(outer.logicalHeight, 192 + insets.top + insets.bottom, "the dual frame reserves the cap rows")
   Assert.deepEqual(outer.clipRect, outer.frame, "dual chrome fits its own target unclipped")
   Assert.deepEqual(
     frame.contentBox,
-    { x = 8, y = 7, width = 256, height = 192 },
+    { x = insets.left, y = insets.top, width = 256, height = 192 },
     "the dual body starts inside the exterior insets"
   )
 end

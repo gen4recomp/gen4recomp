@@ -292,10 +292,9 @@ function T.framed_application_caps_sample_their_own_selected_edge(scope)
   end
 end
 
--- The framed body reserves one exterior side tile and 7px caps, while the
--- second side tile overlaps its edge. The outer logical frame is 272x206
--- with the body at (8, 7). The host is
--- sized so the integer-scaled frame leaves a real margin on both axes.
+-- The framed body reserves the published exterior insets with no side
+-- content overlap. The host is sized so the integer-scaled frame leaves a
+-- real margin on both axes.
 function T.framed_application_body_sits_inside_full_exterior_room(scope)
   local lg = love.graphics
   local session = startMenuSession()
@@ -306,19 +305,25 @@ function T.framed_application_body_sits_inside_full_exterior_room(scope)
   local window = scope:own(openFrameAtlas())
   local placement = assert(frame.placement, "the frame carries its host placement")
   local insets = FieldDialogueTheme.applicationFrameInsets()
+  local tile = FieldDialogueTheme.frameTileSize
+  local overlap = FieldDialogueTheme.applicationFrameCapOverlap
   Assert.deepEqual(
     { insets.left, insets.top, insets.right, insets.bottom },
-    { 8, 7, 8, 7 },
+    { tile, tile - overlap, tile, tile - overlap },
     "the frame reserves room for its exterior tiles"
   )
   local box = assert(frame.contentBox, "the frame carries its content box")
-  Assert.deepEqual(
-    { box.x, box.y, box.width, box.height },
-    { 8, 7, 256, 192 },
-    "the content box starts after the exterior side tiles"
+  Assert.deepEqual({ box.x, box.y }, { insets.left, insets.top }, "the content box starts after the exterior insets")
+  Assert.equal(
+    placement.logicalWidth,
+    box.width + insets.left + insets.right,
+    "the outer frame adds left and right room"
   )
-  Assert.equal(placement.logicalWidth, 272, "the outer frame adds left and right room")
-  Assert.equal(placement.logicalHeight, 206, "the outer frame adds top and bottom room")
+  Assert.equal(
+    placement.logicalHeight,
+    box.height + insets.top + insets.bottom,
+    "the outer frame adds top and bottom room"
+  )
   local OUTSIDE = { 1, 0, 1, 1 }
   local CONTENT = { 0, 1, 0, 1 }
   local canvas = scope:own(lg.newCanvas(1600, 900))
@@ -443,6 +448,11 @@ function T.real_frame_keying_removes_fill_but_preserves_patterned_overlay(scope,
   local window = scope:own(FieldWindowRenderer.new({ cacheFs = cache, manifest = manifest }))
   local canvas = scope:own(love.graphics.newCanvas(320, 240))
   local box = { x = 32, y = 24, width = 256, height = 192 }
+  -- Probe the top span's overlap row at mid-body: tile-local x=1 of a span
+  -- tile, a placement the single-column sides never cover. Frame 15 carries
+  -- edge-connected white fill there (keying clears it); frame 16 carries
+  -- patterned overlay at the same texel (keying preserves it).
+  local probeX = box.x + 16 * 8 + 1
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0.1, 0.2, 0.3, 1)
   for _, frameIndex in ipairs({ 15, 16 }) do
@@ -450,14 +460,12 @@ function T.real_frame_keying_removes_fill_but_preserves_patterned_overlay(scope,
     window:drawApplicationFrame(box, frameIndex)
     love.graphics.setCanvas()
     local data = scope:own(canvas:newImageData())
-    local r, g, b, a = data:getPixel(box.x + 1, box.y)
+    local r, g, b, a = data:getPixel(probeX, box.y)
     Assert.near(a, 1, 1e-2, "frame " .. frameIndex .. " keeps its inner edge opaque")
     if frameIndex == 15 then
-      Assert.isTrue(r < 0.95 or g < 0.95 or b < 0.95, "frame 15 removes its edge-connected white fill")
-      Assert.isTrue(
-        math.abs(r - 0.1) + math.abs(g - 0.2) + math.abs(b - 0.3) > 0.1,
-        "frame 15 retains its dark cap art at the overlap"
-      )
+      Assert.near(r, 0.1, 1e-2, "frame 15 clears its edge-connected white fill")
+      Assert.near(g, 0.2, 1e-2, "frame 15 reveals the content beneath the fill")
+      Assert.near(b, 0.3, 1e-2, "frame 15 keeps no fill at the overlap")
     else
       Assert.isTrue(
         math.abs(r - 0.1) + math.abs(g - 0.2) + math.abs(b - 0.3) > 0.1,

@@ -31,15 +31,18 @@ FieldWindowRenderer.__index = FieldWindowRenderer
 -- The symmetric application tile set: the left source columns and edge
 -- rows, mirrored right. Any other strip tile in an application placement
 -- is drift between the theme tilemap and this renderer.
+local TILE_SIZE = FieldDialogueTheme.frameTileSize
+local CAP_OVERLAP = FieldDialogueTheme.applicationFrameCapOverlap
+local FRAME_TILES = FieldDialogueTheme.applicationFrameTiles
+-- The application tile set mirrors the theme's addressed tiles. Any other
+-- strip tile in an application placement is drift between the theme
+-- tilemap and this renderer.
 local APPLICATION_TILES = {
-  [0] = true,
-  [1] = true,
-  [2] = true,
-  [6] = true,
-  [7] = true,
-  [12] = true,
-  [13] = true,
-  [14] = true,
+  [FRAME_TILES.topOuter] = true,
+  [FRAME_TILES.topSpan] = true,
+  [FRAME_TILES.sideOuter] = true,
+  [FRAME_TILES.bottomOuter] = true,
+  [FRAME_TILES.bottomSpan] = true,
 }
 
 -- Near-white texels read as window-interior fill: the generated frame
@@ -58,14 +61,14 @@ local WHITE_THRESHOLD = 250 / 255
 ---@param region { x: integer, y: integer, w: integer, h: integer }? tile-local keying window; the whole tile when omitted
 function FieldWindowRenderer.clearEdgeWhite(imageData, x0, y0, region)
   assert(imageData and imageData.getPixel and imageData.setPixel, "clearEdgeWhite requires ImageData")
-  local window = region or { x = 0, y = 0, w = 8, h = 8 }
+  local window = region or { x = 0, y = 0, w = TILE_SIZE, h = TILE_SIZE }
   assert(
     window.x >= 0
       and window.y >= 0
       and window.w >= 1
       and window.h >= 1
-      and window.x + window.w <= 8
-      and window.y + window.h <= 8,
+      and window.x + window.w <= TILE_SIZE
+      and window.y + window.h <= TILE_SIZE,
     "clearEdgeWhite requires a window inside its tile"
   )
   local function isFill(x, y)
@@ -110,12 +113,14 @@ end
 -- keep every texel, decorative rims included. The windows are
 -- placement-geometry facts: every instance of these tiles shares the
 -- same content overlap whatever the body size.
+-- Menu-overlap windows per application span tile, tile-local: each cap
+-- clears only its content-facing overlap row. Sides sit fully exterior so
+-- they keep every texel. The windows are placement-geometry facts: every
+-- instance of these tiles shares the same content overlap whatever the
+-- body size.
 local MENU_OVERLAP_TILE_WINDOWS = {
-  [7] = { x = 0, y = 0, w = 8, h = 8 },
-  [14] = { x = 0, y = 0, w = 8, h = 1 },
-  [13] = { x = 0, y = 0, w = 8, h = 1 },
-  [2] = { x = 0, y = 7, w = 8, h = 1 },
-  [1] = { x = 0, y = 7, w = 8, h = 1 },
+  [FRAME_TILES.bottomSpan] = { x = 0, y = 0, w = TILE_SIZE, h = CAP_OVERLAP },
+  [FRAME_TILES.topSpan] = { x = 0, y = TILE_SIZE - CAP_OVERLAP, w = TILE_SIZE, h = CAP_OVERLAP },
 }
 
 -- Keys one strip copy for application frames: edge-connected white
@@ -208,7 +213,7 @@ local function ensureKeyed(self)
 end
 
 -- The keyed whole-tile quad for one application band tile: every piece
--- samples its complete 8x8 source tile, so ornaments stay whole and each
+-- samples its complete source tile, so ornaments stay whole and each
 -- band paints its own art exactly once. Whole tiles on the shared target
 -- grid keep every joint aligned by construction. Unknown frame indexes
 -- and off-tilemap tiles fail loudly so theme/renderer contract drift
@@ -234,7 +239,7 @@ function FieldWindowRenderer:clipQuad(frameIndex, tile)
   end
   local quad = quads[tile]
   if quad == nil then
-    quad = lg.newQuad(rect.x + tile * 8, rect.y, 8, 8, atlasWidth, atlasHeight)
+    quad = lg.newQuad(rect.x + tile * TILE_SIZE, rect.y, TILE_SIZE, TILE_SIZE, atlasWidth, atlasHeight)
     quads[tile] = quad
   end
   return quad
@@ -256,8 +261,8 @@ function FieldWindowRenderer:frameQuads(frameIndex)
   local quads = cache[frameIndex]
   if quads == nil then
     quads = {}
-    for tile = 0, rect.width / 8 - 1 do
-      quads[tile] = lg.newQuad(rect.x + tile * 8, rect.y, 8, 8, atlasWidth, atlasHeight)
+    for tile = 0, rect.width / TILE_SIZE - 1 do
+      quads[tile] = lg.newQuad(rect.x + tile * TILE_SIZE, rect.y, TILE_SIZE, TILE_SIZE, atlasWidth, atlasHeight)
     end
     cache[frameIndex] = quads
   end
@@ -266,13 +271,13 @@ function FieldWindowRenderer:frameQuads(frameIndex)
 end
 
 -- Draws the application border around the content box from the selected
--- frame row: the side bands plus the bottom and top caps, sampling whole
--- keyed source tiles with no artwork rotation. The sides reuse the
--- source side columns and each cap its own source edge row; whole tiles
--- on the shared target grid keep every joint aligned while ornaments
--- stay complete and each band paints once. The frame draws after
--- content, so transparent texels reveal it. Never fills the content
--- box or the surrounding host area; callers own the LogicalSurface
+-- frame row: one exterior side column per side plus the bottom and top
+-- caps, sampling whole keyed source tiles with no artwork rotation. The
+-- sides reuse the outer source column and each cap its own source edge
+-- row; whole tiles on the shared target grid keep every joint aligned
+-- while ornaments stay complete and each band paints once. The frame
+-- draws after content, so transparent texels reveal it. Never fills the
+-- content box or the surrounding host area; callers own the LogicalSurface
 -- placement. No graphics transform is borrowed.
 ---@param box { x: number, y: number, width: number, height: number } content box in the caller's reference space
 ---@param frameIndex integer generated frame index
@@ -295,7 +300,7 @@ function FieldWindowRenderer:drawApplicationFrame(box, frameIndex)
   for _, placement in ipairs(groups.sides) do
     local quad = self:clipQuad(frameIndex, placement.tile)
     if placement.flipX then
-      lg.draw(keyedImage, quad, placement.x + 8, placement.y, 0, -1, 1)
+      lg.draw(keyedImage, quad, placement.x + TILE_SIZE, placement.y, 0, -1, 1)
     else
       lg.draw(keyedImage, quad, placement.x, placement.y)
     end
@@ -303,7 +308,7 @@ function FieldWindowRenderer:drawApplicationFrame(box, frameIndex)
   for _, placement in ipairs(groups.bottom) do
     local quad = self:clipQuad(frameIndex, placement.tile)
     if placement.flipX then
-      lg.draw(keyedImage, quad, placement.x + 8, placement.y, 0, -1, 1)
+      lg.draw(keyedImage, quad, placement.x + TILE_SIZE, placement.y, 0, -1, 1)
     else
       lg.draw(keyedImage, quad, placement.x, placement.y)
     end
@@ -311,7 +316,7 @@ function FieldWindowRenderer:drawApplicationFrame(box, frameIndex)
   for _, placement in ipairs(groups.top) do
     local quad = self:clipQuad(frameIndex, placement.tile)
     if placement.flipX then
-      lg.draw(keyedImage, quad, placement.x + 8, placement.y, 0, -1, 1)
+      lg.draw(keyedImage, quad, placement.x + TILE_SIZE, placement.y, 0, -1, 1)
     else
       lg.draw(keyedImage, quad, placement.x, placement.y)
     end
@@ -344,7 +349,7 @@ function FieldWindowRenderer:drawWindow(box, frameIndex, backgroundColor)
     local tile = assert(quads[placement.tile])
     for row = 0, (placement.spanY or 1) - 1 do
       for col = 0, (placement.spanX or 1) - 1 do
-        lg.draw(image, tile, placement.x + col * 8, placement.y + row * 8)
+        lg.draw(image, tile, placement.x + col * TILE_SIZE, placement.y + row * TILE_SIZE)
       end
     end
   end

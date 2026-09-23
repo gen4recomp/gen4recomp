@@ -70,15 +70,17 @@ end
 
 function T.keyed_copy_clears_only_menu_overlap_white()
   local FieldWindowRenderer = windowRenderer()
-  local data = syntheticImageData(144, 8)
-  local frames = { count = 1, frameTiles = { [0] = { x = 0, y = 0, width = 144, height = 8 } } }
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local tile = FieldDialogueTheme.frameTileSize
+  local data = syntheticImageData(18 * tile, tile)
+  local frames = { count = 1, frameTiles = { [0] = { x = 0, y = 0, width = 18 * tile, height = tile } } }
   local white = { 1, 1, 1, 1 }
   local art = { 0.2, 0.4, 0.2, 1 }
   local border = { 0.1, 0.1, 0.1, 1 }
   -- Bottom span: fill rows over a border; only the menu-facing row clears.
-  paintRow(data, 112, 119, 0, white)
-  paintRow(data, 112, 119, 1, white)
-  paintRow(data, 112, 119, 2, border)
+  paintRow(data, 14 * tile, 14 * tile + 7, 0, white)
+  paintRow(data, 14 * tile, 14 * tile + 7, 1, white)
+  paintRow(data, 14 * tile, 14 * tile + 7, 2, border)
   -- Side stripe with a white rim through all rows: fully exterior.
   paintColumn(data, 48, 0, 7, art)
   paintColumn(data, 49, 0, 7, art)
@@ -95,7 +97,7 @@ function T.keyed_copy_clears_only_menu_overlap_white()
   paintRow(data, 100, 103, 2, white)
   paintRow(data, 96, 99, 3, art)
   paintRow(data, 100, 103, 3, white)
-  -- Inner side column: fully over content, fill clears throughout.
+  -- Former inner side column: fully exterior now, fill stays opaque.
   paintColumn(data, 56, 0, 7, art)
   paintColumn(data, 57, 0, 7, art)
   paintColumn(data, 58, 0, 7, white)
@@ -105,16 +107,16 @@ function T.keyed_copy_clears_only_menu_overlap_white()
   paintColumn(data, 62, 0, 7, white)
   paintColumn(data, 63, 0, 7, white)
   -- Top span: menu-facing row clears, exterior band stays.
-  paintRow(data, 16, 23, 3, white)
-  paintRow(data, 16, 23, 6, white)
-  paintRow(data, 16, 23, 7, white)
-  paintRow(data, 16, 23, 4, border)
+  paintRow(data, 2 * tile, 2 * tile + 7, 3, white)
+  paintRow(data, 2 * tile, 2 * tile + 7, 6, white)
+  paintRow(data, 2 * tile, 2 * tile + 7, 7, white)
+  paintRow(data, 2 * tile, 2 * tile + 7, 4, border)
   FieldWindowRenderer.keyApplicationCopy(data, frames)
   Assert.equal(select(4, data:getPixel(114, 0)), 0, "menu-facing span fill clears")
   Assert.equal(select(4, data:getPixel(114, 1)), 1, "exterior span fill stays opaque")
   Assert.equal(select(4, data:getPixel(52, 4)), 1, "exterior side rims stay opaque")
   Assert.equal(select(4, data:getPixel(101, 2)), 1, "exterior corner decoration stays opaque")
-  Assert.equal(select(4, data:getPixel(60, 4)), 0, "inner side fill clears over content")
+  Assert.equal(select(4, data:getPixel(60, 4)), 1, "the retired inner column stays exterior")
   Assert.equal(select(4, data:getPixel(18, 7)), 0, "menu-facing cap row clears")
   Assert.equal(select(4, data:getPixel(18, 3)), 1, "exterior cap bands stay opaque")
 end
@@ -218,9 +220,11 @@ function T.application_border_samples_whole_keyed_tiles()
     ---@cast quad { x: number, y: number, w: number, h: number }
     return { quad.x, quad.y, quad.w, quad.h }
   end
-  Assert.deepEqual(quadRect(6), { 48, 0, 8, 8 }, "the outer column keeps its tile: one band")
-  Assert.deepEqual(quadRect(12), { 96, 0, 8, 8 }, "the outer corner keeps its full ornament")
-  Assert.deepEqual(quadRect(14), { 112, 0, 8, 8 }, "the span keeps its full tile")
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local tile = FieldDialogueTheme.frameTileSize
+  Assert.deepEqual(quadRect(6), { 6 * tile, 0, tile, tile }, "the outer column keeps its tile: one band")
+  Assert.deepEqual(quadRect(12), { 12 * tile, 0, tile, tile }, "the outer corner keeps its full ornament")
+  Assert.deepEqual(quadRect(14), { 14 * tile, 0, tile, tile }, "the span keeps its full tile")
   local err = Assert.throws(function()
     window:clipQuad(0, 5)
   end)
@@ -325,17 +329,19 @@ function T.application_frame_draws_only_the_direct_selected_border()
   -- The fixture's solid tile colors provide no edge boundary, so the
   -- structural profile retains each full source tile. Real patterned rows
   -- exercise the measured offsets in the graphics smoke tests.
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local tileSize = FieldDialogueTheme.frameTileSize
   local function expectQuad(tile, kind)
     if kind == "side" then
-      return { x = tile * 8, y = 0, w = 8, h = 8 }
+      return { x = tile * tileSize, y = 0, w = tileSize, h = tileSize }
     end
     if kind == "top" then
-      return { x = tile * 8, y = 0, w = 8, h = 8 }
+      return { x = tile * tileSize, y = 0, w = tileSize, h = tileSize }
     end
     if tile == 14 then
-      return { x = tile * 8, y = 0, w = 8, h = 8 }
+      return { x = tile * tileSize, y = 0, w = tileSize, h = tileSize }
     end
-    return { x = tile * 8, y = 0, w = 8, h = 8 }
+    return { x = tile * tileSize, y = 0, w = tileSize, h = tileSize }
   end
   local function assertDraws(list, kind, label)
     for _, want in ipairs(list) do

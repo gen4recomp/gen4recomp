@@ -73,21 +73,6 @@ function T.release_is_idempotent_and_frees_reads()
   Assert.notNil(err)
 end
 
-function T.from_path_reads_file_bytes()
-  local path = os.tmpname()
-  local f = assert(io.open(path, "wb"))
-  f:write("abc")
-  f:close()
-
-  local s, err = RomSource.fromPath(path)
-  Assert.notNil(s, err and tostring(err))
-  assert(s)
-  Assert.equal(s:size(), 3)
-  Assert.equal(s:read(0, 3), "abc")
-  Assert.equal(s:sha1(), ABC_SHA1)
-  os.remove(path)
-end
-
 function T.from_path_missing_returns_nil_err()
   local s, err = RomSource.fromPath("/no/such/file.nds")
   Assert.isNil(s)

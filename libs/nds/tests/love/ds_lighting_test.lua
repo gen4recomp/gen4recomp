@@ -5,8 +5,7 @@
 -- GPU3D::CalculateLighting (plus the 0x21 NORMAL and 0x32 LIGHT_VECTOR
 -- command handlers that feed it). Every expected number below is computed by
 -- hand from that literal integer algorithm -- never by calling DsLighting or
--- any other gen4recomp production code -- following melonDS's own sequencing
--- exactly:
+-- any other production code -- following melonDS's own sequencing exactly:
 --
 --   vtxbuff[c] = MatEmission[c] << 14                          -- start
 --   per enabled light i (CurPolygonAttr bit i, the polygon light mask):

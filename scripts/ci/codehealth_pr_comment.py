@@ -18,7 +18,7 @@ _SCHEMA_VERSION = 1
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _UNSAFE_PATH_CHARS = ("\n", "\r", "`", "|", "<", ">", "&")
 
-_MARKER = "<!-- gen4recomp-codehealth-hotspot-advisory -->"
+_MARKER = "<!-- codehealth-hotspot-advisory -->"
 _HEADER = "### Structural hotspot advisory"
 _INTRO = (
     "Advisory only, not a merge requirement. "

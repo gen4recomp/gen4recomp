@@ -9,6 +9,7 @@
 
 local Assert = require("tests.support.Assert")
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local TrainerCardInterface = require("game.hgss.src.field.TrainerCardInterface")
 
@@ -255,12 +256,13 @@ function T.underfilled_native_like_refits_an_uncropped_decorated_box()
   local frame = assert(plan.frames, "the underfilled card owns its frame list")[1]
   Assert.notNil(frame, "one outer frame decorates the refit pane")
   local outer = assert(frame.placement, "the frame carries its outer placement")
-  Assert.equal(outer.logicalWidth, 272, "the refit frame adds outer side room")
-  Assert.equal(outer.logicalHeight, 206, "the refit frame reserves the 7px top and bottom")
+  local insets = FieldDialogueTheme.applicationFrameInsets()
+  Assert.equal(outer.logicalWidth, 256 + insets.left + insets.right, "the refit frame adds outer side room")
+  Assert.equal(outer.logicalHeight, 192 + insets.top + insets.bottom, "the refit frame reserves the cap rows")
   Assert.deepEqual(outer.clipRect, outer.frame, "the refit frame is never clipped to fit")
   Assert.deepEqual(
     frame.contentBox,
-    { x = 8, y = 7, width = 256, height = 192 },
+    { x = insets.left, y = insets.top, width = 256, height = 192 },
     "the refit body starts inside the exterior insets"
   )
 end

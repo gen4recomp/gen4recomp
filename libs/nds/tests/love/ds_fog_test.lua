@@ -6,7 +6,7 @@
 -- SoftRenderer3D::CalculateFogDensity and the post-density RGB/alpha blend in
 -- SoftRenderer3D::RenderPixel. Every expected number below is computed by
 -- hand from that literal integer algorithm -- never by calling DsFog or any
--- other gen4recomp code -- per this project's anti-tautology test rule.
+-- other code.
 --
 -- The algorithm (see DsFog.lua's header for the full derivation):
 --

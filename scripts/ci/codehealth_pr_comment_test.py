@@ -17,7 +17,7 @@ HEAD_A = "a" * 40
 HEAD_B = "b" * 40
 BASE_C = "c" * 40
 
-MARKER = "<!-- gen4recomp-codehealth-hotspot-advisory -->"
+MARKER = "<!-- codehealth-hotspot-advisory -->"
 
 
 def _regression(path="game/hot.lua", metric="maxCcn", threshold=25, base=20, head=30, kind="worsened"):
