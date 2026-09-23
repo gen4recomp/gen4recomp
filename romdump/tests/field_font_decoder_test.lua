@@ -92,6 +92,33 @@ local function buildPalette(colors, opts)
   return header .. ttlp .. table.concat(body)
 end
 
+local function le32(n)
+  return string.char(n % 256, math.floor(n / 256) % 256, math.floor(n / 65536) % 256, math.floor(n / 16777216) % 256)
+end
+
+-- Two-chunk RLCN (TTLP followed by PMCP) exercising the complement-size
+-- branch: TTLP physically carries only the stored color bytes while its
+-- palette-byte field holds the complement form (full logical bytes minus
+-- stored bytes), so the literal reading cannot fit inside the TTLP chunk.
+-- The PMCP chunk is the minimum accepted size; its payload carries no
+-- interpreted semantics here. opts.secondMagic / opts.pmcpSize build the
+-- malformed second-chunk variants (physical layout stays unchanged).
+local function buildPmcpPalette(colors, opts)
+  opts = opts or {}
+  local storedBytes = #colors * 2
+  local chunkSize = 0x18 + storedBytes
+  local ttlp = "TTLP" .. le32(chunkSize) .. le32(3) .. le32(0) .. le32(0x200 - storedBytes) .. le32(0x10)
+  local body = {}
+  for _, c in ipairs(colors) do
+    body[#body + 1] = string.char(c % 256, math.floor(c / 256))
+  end
+  local pmcpSize = opts.pmcpSize or 0x10
+  local pmcp = (opts.secondMagic or "PMCP") .. le32(pmcpSize) .. string.rep("\0", 0x10 - 8)
+  local total = 0x10 + #ttlp + #table.concat(body) + #pmcp
+  local header = "RLCN" .. string.char(0xFF, 0xFE, 0x00, 0x01) .. le32(total) .. string.char(0x10, 0, 2, 0)
+  return header .. ttlp .. table.concat(body) .. pmcp
+end
+
 function T.decodes_font_member_header_and_widths()
   local member = buildFontMember(
     8,
@@ -203,6 +230,51 @@ function T.palette_validation_is_typed()
     -- TTLP chunk size shorter than the palette data it declares.
     local member = buildPalette({ 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 })
     return FieldFontDecoder.decodePalette(member:sub(1, #member - 2), {})
+  end)
+end
+
+-- Shared PMCP color body: both the positive and the malformed tests build
+-- on the identical physical layout, so they share one stored-color vector.
+local PMCP_COLORS = {
+  0x001F,
+  0x0000,
+  0x03E0,
+  0x7FFF,
+  0x29AB,
+  0x0010,
+  0x0200,
+  0x4000,
+  0x1234,
+  0x5678,
+  0x0F0F,
+  0x3333,
+  0x5555,
+  0x6B5A,
+  0x7C1F,
+  0x7C00,
+}
+
+-- Complement-size PMCP palette: TTLP physically stores 16 colors (0x20
+-- bytes) while its palette-byte field holds the complement form 0x1E0, so
+-- the literal reading (chunk-relative end 0x1F8) cannot fit inside the
+-- 0x38-byte TTLP chunk and only the complement branch can succeed.
+function T.decodes_complement_size_pmcp_palette()
+  local member = buildPmcpPalette(PMCP_COLORS)
+  local palette = assert(FieldFontDecoder.decodePalette(member, {}))
+  Assert.equal(palette.colorCount, 16)
+  Assert.deepEqual(palette.colors[1], { r = 255, g = 0, b = 0 })
+  Assert.deepEqual(palette.colors[5], { r = 90, g = 107, b = 82 })
+  Assert.deepEqual(palette.colors[16], { r = 0, g = 0, b = 255 })
+end
+
+function T.pmcp_palette_with_bad_second_chunk_is_typed()
+  returnsCode("FONT_FORMAT_INVALID", function()
+    -- Second chunk is not the PMCP marker.
+    return FieldFontDecoder.decodePalette(buildPmcpPalette(PMCP_COLORS, { secondMagic = "XXXX" }), {})
+  end)
+  returnsCode("FONT_FORMAT_INVALID", function()
+    -- PMCP declares a size extending past the member end.
+    return FieldFontDecoder.decodePalette(buildPmcpPalette(PMCP_COLORS, { pmcpSize = 0x40 }), {})
   end)
 end
 
