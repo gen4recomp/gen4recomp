@@ -54,7 +54,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v9", versionId .. " renders the v9 bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v10", versionId .. " renders the current bag manifest")
   return cacheFs, manifest
 end
 
@@ -1225,7 +1225,7 @@ function T.action_focus_follows_the_selected_action(scope, context)
       presentation(firstIcon, secondIcon, heroStatus, {
         state = "action_menu",
         actions = { { id = "toss", slot = 1 }, { id = "move", slot = 3 } },
-        actionNode = 1,
+        actionNode = 0,
       }),
       layout
     )
@@ -1235,7 +1235,7 @@ function T.action_focus_follows_the_selected_action(scope, context)
       presentation(firstIcon, secondIcon, heroStatus, {
         state = "action_menu",
         actions = { { id = "toss", slot = 1 }, { id = "move", slot = 3 } },
-        actionNode = 3,
+        actionNode = 2,
       }),
       layout
     )

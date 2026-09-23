@@ -615,7 +615,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v9", "the rebuilt bag cache must publish the control contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v10", "the rebuilt bag cache must publish the current contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}

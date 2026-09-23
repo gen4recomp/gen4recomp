@@ -94,6 +94,21 @@ local function service()
   return HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
 end
 
+local function monCatalog()
+  return {
+    moveByNativeId = function(_, nativeId)
+      assert(nativeId == 264 or nativeId == 15, "the fixture uses a catalogued machine move")
+      return {
+        moveType = "normal",
+        category = "physical",
+        basePp = 35,
+        power = 40,
+        accuracy = 100,
+      }
+    end,
+  }
+end
+
 -- The injected command boundary binds straight through to the live service:
 -- the controller owns state transitions while the service stays the one
 -- mutation authority.
@@ -126,7 +141,7 @@ local function controller(bag, cursor, layoutManifest)
   return BagController.new({
     model = {
       refresh = function()
-        return BagModel.build(bag, cursor)
+        return BagModel.build(bag, cursor, monCatalog())
       end,
     },
     cursor = cursor,

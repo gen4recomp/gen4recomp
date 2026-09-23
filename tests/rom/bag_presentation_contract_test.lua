@@ -10,6 +10,7 @@ local Assert = require("tests.support.Assert")
 local BagAssetCompiler = require("romdump.src.digest.ui.BagAssetCompiler")
 local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
 local BagCache = require("libs.assets.src.BagCache")
+local CacheFs = require("libs.storage.src.CacheFs")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -77,8 +78,8 @@ function T.rebuilt_bundle_publishes_the_semantic_focus_contract(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
 
-  Assert.equal(manifest.schema, "g4-bag-assets-v9", "the rebuilt Bag cache must publish the control contract")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v9", "the loader must require the control contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v10", "the rebuilt Bag cache must publish the current contract")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v10", "the loader must require the current contract")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing must not change with the semantic migration")
   for _, stale in ipairs({
     "g4-bag-assets-v2",
@@ -301,7 +302,7 @@ function T.published_focus_visuals_carry_no_timeline_or_source_identities(romFs)
   end
 end
 
-function T.machine_summary_publishes_the_complete_semantic_contract(romFs)
+function T.machine_summary_publishes_the_complete_semantic_contract(romFs, versionId)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
   Assert.equal(manifest.schema, "g4-bag-assets-v10", "the rebuilt Bag cache must publish the move-summary contract")
@@ -361,8 +362,11 @@ function T.machine_summary_publishes_the_complete_semantic_contract(romFs)
     "water",
   })
   Assert.deepEqual(categoryKeys, { "physical", "special", "status" })
+  local cacheFs = CacheFs.forVersion(versionId)
   for _, path in ipairs(BagCache.referencedPaths(manifest)) do
-    Assert.isTrue(type(bundle.assets[path]) == "string", path .. " is ready for runtime acquisition")
+    local directBagAsset = type(bundle.assets[path]) == "string"
+    local sharedMapAsset = path:match("^assets/generated/maps/textures/") ~= nil and cacheFs:exists(path, "file")
+    Assert.isTrue(directBagAsset or sharedMapAsset, path .. " is ready for runtime acquisition")
   end
 end
 

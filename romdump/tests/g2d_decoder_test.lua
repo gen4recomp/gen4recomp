@@ -23,6 +23,19 @@ local function swap4(s)
   return s:reverse()
 end
 
+local function literalLz10(payload)
+  local output = {
+    string.char(0x10, #payload % 256, math.floor(#payload / 256) % 256, math.floor(#payload / 65536) % 256),
+  }
+  local index = 1
+  while index <= #payload do
+    output[#output + 1] = "\0"
+    output[#output + 1] = payload:sub(index, index + 7)
+    index = index + 8
+  end
+  return table.concat(output)
+end
+
 local function container(magic, blocks)
   local body = {}
   local size = 0x10
@@ -115,6 +128,14 @@ local function cellBlock(objs)
     "CEBK",
     u16(1) .. u16(0) .. u32(0x18) .. u32(0) .. string.rep("\0", 12) .. metatile .. table.concat(attr)
   )
+end
+
+function T.accepts_lz10_wrapped_nitro_container()
+  local data = literalLz10(container("RECN", {
+    cellBlock({ { x = 0, y = 0, tile = 0, pal = 0 } }),
+  }))
+  local cell = assert(G2dDecoder.decodeCell(data))
+  Assert.equal(#cell.cells, 1)
 end
 
 function T.cell_chunk_reports_objs_per_cell()
