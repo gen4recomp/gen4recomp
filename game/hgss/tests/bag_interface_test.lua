@@ -302,12 +302,12 @@ function T.dual_underfilled_pane_refits_with_complete_chrome_on_its_own_target()
   Assert.equal(#plan.frames, 1, "only the underfilled pane carries a frame")
   local frame = assert(plan.frames, "the dual plan owns its frame list")[1]
   local outer = assert(frame.placement, "the frame carries its outer placement")
-  Assert.equal(outer.logicalWidth, 256, "the dual frame adds no side room")
-  Assert.equal(outer.logicalHeight, 216, "the dual frame reserves the 16px top and 8px bottom")
+  Assert.equal(outer.logicalWidth, 272, "the dual frame adds outer side room")
+  Assert.equal(outer.logicalHeight, 206, "the dual frame reserves the 7px top and bottom")
   Assert.deepEqual(outer.clipRect, outer.frame, "dual chrome fits its own target unclipped")
   Assert.deepEqual(
     frame.contentBox,
-    { x = 0, y = 16, width = 256, height = 192 },
+    { x = 8, y = 7, width = 256, height = 192 },
     "the dual body starts inside the exterior insets"
   )
 end

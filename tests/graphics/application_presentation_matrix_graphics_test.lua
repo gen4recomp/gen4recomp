@@ -712,262 +712,247 @@ function T.plan_draw_restores_state_for_every_case(scope)
   end
 end
 
--- Masked application chrome overlaps body pixels without a halo: opaque
--- border tiles cover edge body pixels, cleared border tiles reveal the
--- body underneath, and pixels outside the outer placement keep the host
--- sentinel. The cleared tile stands in for a style whose inner ring is
--- padding-connected; the opaque tiles prove decoration is preserved.
-function T.masked_chrome_overlaps_the_body_without_a_halo(scope)
-  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-  local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
-  local dialogueRow = FieldUiFixture.framePixels(0)
-  -- The strip atlas is a row-major 144-wide image, so the texel at the
-  -- center of tile `tile`'s 8x8 cell lives at (tile * 8 + 4, 4): the same
-  -- image-space addressing the frame-strip quads use.
-  local function tileColor(tile)
-    local base = (4 * 144 + tile * 8 + 4) * 4
-    return {
-      string.byte(dialogueRow, base + 1) / 255,
-      string.byte(dialogueRow, base + 2) / 255,
-      string.byte(dialogueRow, base + 3) / 255,
-      1,
-    }
-  end
-  local bodyTint = { 1, 0, 1, 1 }
-  for _, density in ipairs({ 1, 2 }) do
-    local tag = density .. "x"
-    local box = { x = 16, y = 32, width = 64, height = 64 }
-    local canvasWidth, canvasHeight = 96 * density, 136 * density
-    local window = scope:own(FieldWindowRenderer.new({
-      cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
-      manifest = FieldUiFixture.manifest(),
-    }))
-    local canvas = renderToCanvas(scope, canvasWidth, canvasHeight, function()
-      local lg = love.graphics
-      lg.push("all")
-      lg.scale(density, density)
-      lg.setColor(bodyTint[1], bodyTint[2], bodyTint[3], bodyTint[4])
-      lg.rectangle("fill", box.x, box.y, box.width, box.height)
-      window:drawApplicationFrame(box, 0)
-      lg.pop()
-    end)
-    local data = scope:own(canvas:newImageData())
-    local function sample(lx, ly)
-      return data:getPixel(lx * density, ly * density)
-    end
-    local function assertBodyPixel(lx, ly, label)
-      local r, g, b, a = sample(lx, ly)
-      Assert.near(r, 1, 1e-2, tag .. " " .. label .. " red")
-      Assert.near(g, 0, 1e-2, tag .. " " .. label .. " green")
-      Assert.near(b, 1, 1e-2, tag .. " " .. label .. " blue")
-      Assert.near(a, 1, 1e-2, tag .. " " .. label .. " alpha")
-    end
-    local function assertTilePixel(lx, ly, tile, label)
-      local want = tileColor(tile)
-      local r, g, b, a = sample(lx, ly)
-      Assert.near(r, want[1], 1e-2, tag .. " " .. label .. " red")
-      Assert.near(g, want[2], 1e-2, tag .. " " .. label .. " green")
-      Assert.near(b, want[3], 1e-2, tag .. " " .. label .. " blue")
-      Assert.near(a, want[4], 1e-2, tag .. " " .. label .. " alpha")
-    end
-    local overlaps, reveals = 0, 0
-    for _, placement in ipairs(FieldDialogueTheme.applicationFrameTilePlacements(box)) do
-      local cx, cy = placement.x + 4, placement.y + 4
-      if cx >= box.x and cx < box.x + box.width and cy >= box.y and cy < box.y + box.height then
-        if FieldUiFixture.APPLICATION_TRANSPARENT_TILES[placement.tile] then
-          assertBodyPixel(cx, cy, "cleared tile " .. placement.tile .. " reveals the body")
-          reveals = reveals + 1
-        else
-          assertTilePixel(cx, cy, placement.tile, "tile " .. placement.tile .. " covers the body edge")
-          overlaps = overlaps + 1
-        end
+-- The rectangular body never bleeds through exterior side transparency:
+-- side-band pixels where the selected frame is transparent reveal the
+-- already-rendered field, never body ink, while the body stays fully
+-- painted from its own origin. Probe columns derive from the published
+-- exterior insets, so they track the side bands whatever room the
+-- geometry reserves. The test-local strip clears the sampled left-band
+-- window (tile 6 cols 2-7 plus tile 7 cols 0-1) in both rows; the shared
+-- solid-tile fixture stays untouched so dialogue goldens keep their
+-- opaque side columns.
+local function stripWithTransparentSideTile()
+  local rows = {}
+  for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
+    local bytes = { FieldUiFixture.framePixels(frame):byte(1, -1) }
+    for ty = 0, 7 do
+      for tx = 2, 9 do
+        local offset = (ty * 144 + 6 * 8 + tx) * 4
+        bytes[offset + 1], bytes[offset + 2], bytes[offset + 3], bytes[offset + 4] = 0, 0, 0, 0
       end
     end
-    Assert.isTrue(overlaps > 0, tag .. " decoration overlaps body pixels")
-    Assert.isTrue(reveals > 0, tag .. " cleared padding reveals the body")
-    assertBodyPixel(box.x + 32, box.y + 32, "the body center stays uncovered")
-    assertPixelNear(data, 0, 0, 0, 0, 0, 0, tag .. " outside the frame stays sentinel")
-    assertPixelNear(data, canvasWidth - 1, canvasHeight - 1, 0, 0, 0, 0, tag .. " past the frame edge stays sentinel")
+    local cells = {}
+    for index = 1, #bytes do
+      cells[index] = string.char(bytes[index])
+    end
+    rows[#rows + 1] = table.concat(cells)
   end
+  return PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, table.concat(rows))
 end
 
--- Framed windows carry readable title chrome: every framed application
--- draws its fixed title inside the shared title region and every
--- closable one centers a dash mark in the shared dismiss control, at
--- wide/tall hosts and at more than one integer scale. The starter choice
--- draws its title with no dismiss mark. Pixel deltas against the
--- border-only render separate title/dash ink from frame artwork.
-local function chromeGeometry(box)
-  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-  local locate = FieldDialogueTheme.applicationChromeGeometry
-  if type(locate) ~= "function" then
-    error("the shared theme must locate window chrome geometry for drawing", 0)
-  end
-  return locate(box)
-end
-
-local function chromeBagInterface()
-  local tabs = {}
-  for index = 0, 7 do
-    tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
-  end
-  local slots = {}
-  for index = 1, 6 do
-    slots[index] = { rect = { x = 0, y = 32 + (index - 1) * 24, width = 128, height = 22 } }
-  end
-  return BagInterface.withOverrides(nil, {
-    interactive = {
-      pocketTabs = { rects = tabs },
-      itemSlots = { slots = slots },
-      cancel = { rect = { x = 192, y = 168, width = 64, height = 24 } },
-      overlays = {
-        descriptionFallback = {
-          frame = { x = 0, y = 144, width = 256, height = 48 },
-          textRect = { x = 20, y = 144, width = 236, height = 48 },
-        },
-        actionMenu = {
-          buttons = {
-            { x = 8, y = 136, width = 80, height = 16 },
-            { x = 104, y = 136, width = 80, height = 16 },
-            { x = 8, y = 168, width = 80, height = 16 },
-            { x = 104, y = 168, width = 80, height = 16 },
-          },
-        },
-      },
-    },
-  })
-end
-
-function T.framed_windows_carry_title_and_dismiss_chrome(scope)
-  local lg = love.graphics
+function T.application_body_never_bleeds_through_exterior_transparency(scope)
   local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
   local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
-  local startMenu = StartMenuInterface.withOverrides(nil)
-  local party = PartyScreenInterface.withOverrides(nil)
-  local card = TrainerCardInterface.withOverrides(nil)
-  local starter = StarterChoiceInterface.withOverrides(nil)
-  local bag = chromeBagInterface()
-  local partyView = { cancellable = true, cursorNode = 0 }
-  local starterView = { selection = 0, selectionState = "null", transition = "idle", done = false }
-  local wideMeasured = singleDisplay(1280, 720)
-  local apps = {
-    {
-      name = "start menu",
-      plan = startMenu.wide(contextFor(wideMeasured, "wide", startMenu), {}),
-      chrome = { title = "MENU", dismissible = true },
-    },
-    {
-      name = "party",
-      plan = party.wide(contextFor(wideMeasured, "wide", party), partyView),
-      chrome = { title = "POKéMON", dismissible = true },
-    },
-    {
-      name = "bag",
-      plan = bag.wide(contextFor(wideMeasured, "wide", bag), {}),
-      chrome = { title = "BAG", dismissible = true },
-    },
-    {
-      name = "trainer card",
-      plan = card.wide(contextFor(wideMeasured, "wide", card), {}),
-      chrome = { title = "TRAINER CARD", dismissible = true },
-    },
-    {
-      name = "starter choice",
-      plan = starter.wide(contextFor(wideMeasured, "wide", starter), starterView),
-      chrome = { title = "STARTER CHOICE", dismissible = false },
-    },
-  }
-  for _, app in ipairs(apps) do
-    Assert.isTrue(#app.plan.frames >= 1, "the wide " .. app.name .. " must publish its outer frame")
-    local contentBox = assert(app.plan.frames[1].contentBox, "the " .. app.name .. " frame carries its body")
-    -- Real body dimensions anchor the chrome box; the origin stays
-    -- canvas-local so border/title/control pixels stay fully on-canvas.
-    local box = { x = 24, y = 48, width = contentBox.width, height = contentBox.height }
-    local geometry = chromeGeometry(box)
-    local placements = FieldDialogueTheme.applicationFrameTilePlacements(box)
-    local outerMinX, outerMinY, outerMaxX, outerMaxY = math.huge, math.huge, -math.huge, -math.huge
-    for _, placement in ipairs(placements) do
-      outerMinX = math.min(outerMinX, placement.x)
-      outerMinY = math.min(outerMinY, placement.y)
-      outerMaxX = math.max(outerMaxX, placement.x + 8)
-      outerMaxY = math.max(outerMaxY, placement.y + 8)
-    end
-    Assert.isTrue(
-      geometry.title.x - outerMinX >= 32,
-      app.name .. ": the title keeps the generous left margin from the outer edge"
-    )
-    Assert.isTrue(
-      geometry.title.x + geometry.title.width <= geometry.dismiss.x,
-      app.name .. ": the title ends before the dismiss control space"
-    )
-    Assert.isTrue(
-      geometry.dismiss.width >= 16 and geometry.dismiss.width <= 32,
-      app.name .. ": the dismiss control stays near the roughly 24px target"
-    )
-    Assert.isTrue(
-      outerMaxX - (geometry.dismiss.x + geometry.dismiss.width) >= 8,
-      app.name .. ": the dismiss control keeps corner margin from the outer edge"
-    )
-    for _, density in ipairs({ 1, 2 }) do
-      local tag = app.name .. " " .. density .. "x"
-      local shiftX, shiftY = 8 - outerMinX, 8 - outerMinY
-      local canvasWidth = math.ceil(outerMaxX - outerMinX + 16) * density
-      local canvasHeight = math.ceil(outerMaxY - outerMinY + 16) * density
+  local insets = FieldDialogueTheme.applicationFrameInsets()
+  local FIELD = { 0.2, 0.5, 0.9, 1 }
+  local BODY = { 0.9, 0.7, 0.1, 1 }
+  for _, density in ipairs({ 1, 2 }) do
+    for _, frameIndex in ipairs({ 0, 1 }) do
+      local tag = density .. "x style " .. frameIndex
+      local box = { x = 16, y = 32, width = 64, height = 64 }
+      local cache = FieldUiFixture.cacheWithFontAndFrames()
+      cache:write(FieldUiFixture.STRIP_PATH, stripWithTransparentSideTile())
       local window = scope:own(FieldWindowRenderer.new({
-        cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
+        cacheFs = cache,
         manifest = FieldUiFixture.manifest(),
       }))
-      local text = FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() })
-      local drawChrome = window.drawApplicationChrome
-      if type(drawChrome) ~= "function" then
-        error(app.name .. ": the window renderer must draw titled dismissible chrome", 0)
-      end
-      local function render(withChrome)
+      local canvasWidth, canvasHeight = 128 * density, 160 * density
+      local function render(fieldFill, bodyFill)
         return renderToCanvas(scope, canvasWidth, canvasHeight, function()
+          local lg = love.graphics
           lg.push("all")
           lg.scale(density, density)
-          lg.translate(shiftX, shiftY)
-          lg.setColor(1, 0, 1, 1)
-          lg.rectangle("fill", box.x, box.y, box.width, box.height)
-          if withChrome then
-            drawChrome(window, box, 0, app.chrome, text)
-          else
-            window:drawApplicationFrame(box, 0)
+          if fieldFill then
+            lg.setColor(FIELD[1], FIELD[2], FIELD[3], FIELD[4])
+            lg.rectangle("fill", 0, 0, 128, 160)
           end
+          if bodyFill then
+            lg.setColor(BODY[1], BODY[2], BODY[3], BODY[4])
+            lg.rectangle("fill", box.x, box.y, box.width, box.height)
+          end
+          window:drawApplicationFrame(box, frameIndex)
           lg.pop()
         end)
       end
-      local borderData = scope:own(render(false):newImageData())
-      local chromeData = scope:own(render(true):newImageData())
-      local function changedInk(rect)
-        local count = 0
-        for ly = math.floor(rect.y), math.ceil(rect.y + rect.height) - 1 do
-          for lx = math.floor(rect.x), math.ceil(rect.x + rect.width) - 1 do
-            local hx, hy = math.floor((lx + shiftX) * density), math.floor((ly + shiftY) * density)
-            local r0, g0, b0, a0 = borderData:getPixel(hx, hy)
-            local r1, g1, b1, a1 = chromeData:getPixel(hx, hy)
-            if math.abs(r1 - r0) + math.abs(g1 - g0) + math.abs(b1 - b0) + math.abs(a1 - a0) > 0.05 then
-              count = count + 1
-            end
+      -- Transparent side-band cells, located by scanning the frame-alone
+      -- render across both side bands derived from the published insets.
+      local bare = scope:own(render(false, false):newImageData())
+      local probes = {}
+      local bandX = {}
+      for i = 0, insets.left - 1 do
+        bandX[#bandX + 1] = box.x - insets.left + i
+      end
+      for i = 0, insets.right - 1 do
+        bandX[#bandX + 1] = box.x + box.width + i
+      end
+      for _, lx in ipairs(bandX) do
+        for ly = box.y, box.y + box.height - 1 do
+          local _, _, _, a = bare:getPixel(lx * density, ly * density)
+          if a < 0.5 then
+            probes[#probes + 1] = { x = lx, y = ly }
           end
         end
-        return count
       end
-      Assert.isTrue(changedInk(geometry.title) > 10, tag .. ": the title paints readable ink inside its region")
-      local dashInk = changedInk(geometry.dismiss)
-      if app.chrome.dismissible then
-        Assert.isTrue(dashInk > 5, tag .. ": the dismiss control paints its mark")
-      else
-        Assert.equal(dashInk, 0, tag .. ": the non-dismissible window paints no control mark")
+      Assert.isTrue(#probes > 0, tag .. ": the side bands carry transparent frame cells")
+      local data = scope:own(render(true, true):newImageData())
+      for _, probe in ipairs(probes) do
+        local r, g, b, a = data:getPixel(probe.x * density, probe.y * density)
+        Assert.near(r, FIELD[1], 1e-2, tag .. " exterior red at " .. probe.x .. "," .. probe.y)
+        Assert.near(g, FIELD[2], 1e-2, tag .. " exterior green at " .. probe.x .. "," .. probe.y)
+        Assert.near(b, FIELD[3], 1e-2, tag .. " exterior blue at " .. probe.x .. "," .. probe.y)
+        Assert.near(a, FIELD[4], 1e-2, tag .. " exterior alpha at " .. probe.x .. "," .. probe.y)
       end
+      local function assertBody(lx, ly, label)
+        local r, g, b, a = data:getPixel(lx * density, ly * density)
+        Assert.near(r, BODY[1], 1e-2, tag .. " " .. label .. " red")
+        Assert.near(g, BODY[2], 1e-2, tag .. " " .. label .. " green")
+        Assert.near(b, BODY[3], 1e-2, tag .. " " .. label .. " blue")
+        Assert.near(a, BODY[4], 1e-2, tag .. " " .. label .. " alpha")
+      end
+      assertBody(box.x + 32, box.y + 32, "the body center stays fully painted")
+      assertBody(box.x + 1, box.y + 1, "body ink starts at the body origin")
     end
   end
 end
 
--- Undecorated surfaces publish no window identity: Oak naming and the
--- startup main menu resolve frame-free plans with no title metadata at
--- any density.
-function T.undecorated_surfaces_publish_no_window_identity(scope)
+-- Framed applications render only their selected borders: production
+-- frame composition for one closable field application and for the
+-- blocking starter choice matches a direct selected-border draw for the
+-- same frame body and index, with no extra title or control ink, at a
+-- wide host and at more than one integer scale.
+function T.framed_applications_render_only_their_selected_borders(scope)
+  local lg = love.graphics
+  local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
+  local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+  local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoicePresentation")
+  local startMenu = StartMenuInterface.withOverrides(nil)
+  local starter = StarterChoiceInterface.withOverrides(nil)
+  local starterView = { selection = 0, selectionState = "null", transition = "idle", done = false }
+  local wideMeasured = singleDisplay(1280, 720)
+  local menuPlan = startMenu.wide(contextFor(wideMeasured, "wide", startMenu), {})
+  local starterPlan = starter.wide(contextFor(wideMeasured, "wide", starter), starterView)
+  Assert.isTrue(#menuPlan.frames >= 1, "the wide menu must publish its outer frame")
+  Assert.isTrue(#starterPlan.frames >= 1, "the wide starter choice must publish its outer frame")
+  menuPlan.render = function()
+    lg.setColor(1, 0, 1, 1)
+    lg.rectangle("fill", 0, 0, wideMeasured.width, wideMeasured.height)
+  end
+  local cacheFs = FieldUiFixture.cacheWithFontAndFrames()
+  local window = scope:own(FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = FieldUiFixture.manifest() }))
+  local text = FieldTextRenderer.new({ cacheFs = cacheFs })
+  local resources = setmetatable({
+    windowRenderer = window,
+    textRenderer = text,
+    applicationFrameIndex = 0,
+    startMenuRenderer = {},
+  }, FieldPresentationResources)
+  local starterPresentation = setmetatable({ _frameIndex = 0 }, StarterChoicePresentation)
+
+  local function frameBounds(frames)
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    for _, frame in ipairs(frames) do
+      local outer = assert(frame.placement, "the frame carries its placement").frame
+      minX = math.min(minX, outer.x)
+      minY = math.min(minY, outer.y)
+      maxX = math.max(maxX, outer.x + outer.width)
+      maxY = math.max(maxY, outer.y + outer.height)
+    end
+    local x0 = math.max(0, math.floor(minX) - 2)
+    local y0 = math.max(0, math.floor(minY) - 2)
+    -- Even host origins keep every sampled canvas pixel integral at 1x/2x.
+    return {
+      x0 = x0 - (x0 % 2),
+      y0 = y0 - (y0 % 2),
+      x1 = math.min(wideMeasured.width, math.ceil(maxX) + 2),
+      y1 = math.min(wideMeasured.height, math.ceil(maxY) + 2),
+    }
+  end
+
+  local function pixelDiffers(data, hx, hy, backdrop)
+    local r, g, b, a = data:getPixel(hx, hy)
+    return math.abs(r - backdrop[1]) + math.abs(g - backdrop[2]) + math.abs(b - backdrop[3]) + math.abs(a - backdrop[4])
+      > 0.05
+  end
+
+  local function compareRenders(directData, productionData, bounds, density, backdrop)
+    local changed, ink = 0, 0
+    local y = bounds.y0
+    while y < bounds.y1 do
+      local x = bounds.x0
+      while x < bounds.x1 do
+        local hx, hy = math.floor(x * density), math.floor(y * density)
+        local r0, g0, b0, a0 = directData:getPixel(hx, hy)
+        local r1, g1, b1, a1 = productionData:getPixel(hx, hy)
+        if math.abs(r1 - r0) + math.abs(g1 - g0) + math.abs(b1 - b0) + math.abs(a1 - a0) > 0.05 then
+          changed = changed + 1
+        end
+        if pixelDiffers(productionData, hx, hy, backdrop) then
+          ink = ink + 1
+        end
+        x = x + 2
+      end
+      y = y + 2
+    end
+    return changed, ink
+  end
+
+  local menuBounds = frameBounds(menuPlan.frames)
+  local starterBounds = frameBounds(starterPlan.frames)
+  for _, density in ipairs({ 1, 2 }) do
+    local tag = density .. "x"
+    local canvasWidth, canvasHeight = wideMeasured.width * density, wideMeasured.height * density
+    local productionField = renderToCanvas(scope, canvasWidth, canvasHeight, function()
+      lg.push("all")
+      lg.scale(density, density)
+      resources:drawStartMenu({ presentation = menuPlan }, lg)
+      lg.pop()
+    end)
+    local directField = renderToCanvas(scope, canvasWidth, canvasHeight, function()
+      lg.push("all")
+      lg.scale(density, density)
+      ApplicationPresentation.draw(lg, {}, {}, menuPlan)
+      for _, frame in ipairs(menuPlan.frames) do
+        LogicalSurface.draw(lg, frame.placement, function()
+          window:drawApplicationFrame(frame.contentBox, 0)
+        end)
+      end
+      lg.pop()
+    end)
+    local productionStarter = renderToCanvas(scope, canvasWidth, canvasHeight, function()
+      lg.push("all")
+      lg.scale(density, density)
+      starterPresentation:_drawOuterFrames(lg, starterPlan, window)
+      lg.pop()
+    end)
+    local directStarter = renderToCanvas(scope, canvasWidth, canvasHeight, function()
+      lg.push("all")
+      lg.scale(density, density)
+      for _, frame in ipairs(starterPlan.frames) do
+        LogicalSurface.draw(lg, frame.placement, function()
+          window:drawApplicationFrame(frame.contentBox, 0)
+        end)
+      end
+      lg.pop()
+    end)
+    local productionFieldData = scope:own(productionField:newImageData())
+    local directFieldData = scope:own(directField:newImageData())
+    local productionStarterData = scope:own(productionStarter:newImageData())
+    local directStarterData = scope:own(directStarter:newImageData())
+    local fieldChanged, fieldInk =
+      compareRenders(directFieldData, productionFieldData, menuBounds, density, { 1, 0, 1, 1 })
+    Assert.isTrue(fieldInk > 50, tag .. ": production menu framing draws border ink over the fill")
+    Assert.equal(fieldChanged, 0, tag .. ": production menu framing adds no title or control ink")
+    local starterChanged, starterInk =
+      compareRenders(directStarterData, productionStarterData, starterBounds, density, { 0, 0, 0, 0 })
+    Assert.isTrue(starterInk > 50, tag .. ": production starter framing draws border ink")
+    Assert.equal(starterChanged, 0, tag .. ": production starter framing adds no title ink")
+  end
+end
+
+-- Undecorated surfaces publish no outer frame: Oak naming and the
+-- startup main menu resolve frame-free plans at any density.
+function T.undecorated_surfaces_publish_no_outer_frame(scope)
   local _ = scope
   local naming = NamingInterface.withOverrides(nil)
   local menu = MainMenuInterface.withOverrides(nil)
@@ -980,13 +965,10 @@ function T.undecorated_surfaces_publish_no_window_identity(scope)
     local label = host.width .. "x" .. host.height
     local namingPlan = naming.nativeLike(contextFor(host, "nativeLike", naming), {})
     Assert.deepEqual(namingPlan.frames, {}, label .. ": naming publishes no outer frame")
-    Assert.isNil(namingPlan.chrome, label .. ": naming publishes no window identity")
     local wideNaming = naming.wide(contextFor(host, "wide", naming), {})
     Assert.deepEqual(wideNaming.frames, {}, label .. ": wide naming publishes no outer frame")
-    Assert.isNil(wideNaming.chrome, label .. ": wide naming publishes no window identity")
     local menuPlan = menu.nativeLike(contextFor(host, "nativeLike", menu), menuView)
     Assert.deepEqual(menuPlan.frames, {}, label .. ": the startup menu publishes no outer frame")
-    Assert.isNil(menuPlan.chrome, label .. ": the startup menu publishes no window identity")
   end
 end
 

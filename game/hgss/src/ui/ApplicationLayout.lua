@@ -316,11 +316,10 @@ local function fitsInteger(placement)
   return placement.pixelScale ~= nil and placement.pixelScale >= 1
 end
 
--- Static framed box inside the primary drawable: the complete rotated outer
--- frame (content plus the 0/16/0/8 exterior around the overlapped body)
+-- Static framed box inside the primary drawable: the complete symmetric
+-- outer frame (content plus the 6px border exterior around the body)
 -- fits with zero crop at the largest allowed physical integer scale,
--- centered. The body derives from the outer frame at the rotated content
--- origin. Returns nil when no complete 1x frame fits and the leaf must
+-- centered. The body derives from the outer frame at the content origin. Returns nil when no complete 1x frame fits and the leaf must
 -- fall back to its effective nativeLike case.
 ---@param context ApplicationLayout.Context
 ---@param native ApplicationLayout.Native

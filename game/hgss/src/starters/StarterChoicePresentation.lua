@@ -1591,16 +1591,13 @@ end
 
 -- Draws every published outer application frame through the already-owned
 -- window primitive with the player-owned frame choice, after content.
--- The masked inner band overlaps body pixels, so chrome paints over the
--- panes it decorates. A titled plan draws its window identity through the
--- borrowed field text provider; a plan without window identity keeps the
--- border-only draw. Unframed plans draw nothing extra and never touch
--- the primitive.
+-- The body sits fully inside the exterior frame room, so the border
+-- never hides body pixels. Every published frame keeps the border-only
+-- draw. Unframed plans draw nothing extra and never touch the primitive.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param plan ApplicationPlan the resolved plan
 ---@param windowRenderer table<string, unknown>? field-borrowed window primitive; required when the plan carries frames
----@param text table<string, unknown>? borrowed field text provider for titled plans
-function StarterChoicePresentation:_drawOuterFrames(graphics, plan, windowRenderer, text)
+function StarterChoicePresentation:_drawOuterFrames(graphics, plan, windowRenderer)
   local frames = assert(plan and plan.frames, "starter outer-frame drawing requires the resolved plan frames")
   if #frames == 0 then
     return
@@ -1609,21 +1606,10 @@ function StarterChoicePresentation:_drawOuterFrames(graphics, plan, windowRender
     windowRenderer ~= nil and type(windowRenderer.drawApplicationFrame) == "function",
     "starter outer-frame drawing borrows the field window renderer"
   )
-  local chrome = plan.chrome
-  if chrome ~= nil then
-    assert(
-      windowRenderer.drawApplicationChrome ~= nil and text ~= nil and type(text.drawText) == "function",
-      "starter outer-frame drawing borrows the field text provider for window identity"
-    )
-  end
   for _, frame in ipairs(frames) do
     LogicalSurface.draw(graphics, assert(frame.placement, "the starter outer frame carries its placement"), function()
       local contentBox = assert(frame.contentBox, "the starter outer frame carries its content box")
-      if chrome ~= nil then
-        windowRenderer:drawApplicationChrome(contentBox, self._frameIndex, chrome, text)
-      else
-        windowRenderer:drawApplicationFrame(contentBox, self._frameIndex)
-      end
+      windowRenderer:drawApplicationFrame(contentBox, self._frameIndex)
     end)
   end
 end
@@ -1694,7 +1680,7 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   LogicalSurface.draw(graphics, machinePlacement, function()
     self:_drawFade(self._machineFade / timing.machineFadeTicks)
   end)
-  self:_drawOuterFrames(graphics, plan, windowRenderer, text)
+  self:_drawOuterFrames(graphics, plan, windowRenderer)
   graphics.setColor(1, 1, 1, 1)
 end
 
@@ -1803,7 +1789,7 @@ function StarterChoicePresentation:drawCompact(snapshot, view, text, plan, windo
     self:_drawCompactAction(COMPACT_BACK, "BACK", text, backEnabled, windowRenderer)
     self:_drawFade(machineAlpha)
   end)
-  self:_drawOuterFrames(graphics, plan, windowRenderer, text)
+  self:_drawOuterFrames(graphics, plan, windowRenderer)
   graphics.setColor(1, 1, 1, 1)
 end
 

@@ -583,7 +583,7 @@ function T.framed_plans_draw_application_content_before_selected_borders()
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
       Assert.equal(#sink, 2, "the content and the border each draw once")
-      Assert.equal(sink[1][1], "content", "application content paints before its chrome")
+      Assert.equal(sink[1][1], "content", "application content paints before its frame")
       Assert.equal(sink[2][1], "frame", "the outer border draws after application content")
       Assert.deepEqual(sink[2][2], contentBox, "the border wraps the published content box")
       Assert.equal(sink[2][3], 0, "the border uses the selected player frame index")

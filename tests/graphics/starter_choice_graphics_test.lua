@@ -112,17 +112,17 @@ local function openWindowBorrower(cacheFs, versionId)
 end
 
 -- The default measured facts for the migrated native scene tests: one
--- 520x216 display resolving the native wide pair at 1x with its complete
+-- 536x240 display resolving the native wide pair at 1x with its complete
 -- fitted frame, so drawn frames fill the capture canvas exactly. Built
 -- inline (rather than through the graphicsBox helper below) so the
 -- declaration precedes its callers.
 local function nativeWideBox()
   return {
-    width = 520,
-    height = 216,
+    width = 536,
+    height = 240,
     topology = ScreenTopology.oneDisplay({
       id = "main",
-      rect = { x = 0, y = 0, width = 520, height = 216 },
+      rect = { x = 0, y = 0, width = 536, height = 240 },
       role = "world",
       touch = false,
     }),
@@ -249,8 +249,8 @@ local function drawFrame(scope, host, window, width, height)
     textWidth = function()
       return 0
     end,
-    -- Window-chrome drawing centers titles on the generated font base
-    -- height, so the stub carries the production metric value.
+    -- Starter content keeps its text provider shaped like production; the
+    -- stub carries the generated font base height alongside its metrics.
     fontDef = { maxLetterHeight = 16 },
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }
@@ -315,8 +315,8 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
 
     local backend = prepareHost(host, cacheFs)
     local window = openWindowBorrower(cacheFs, versionId)
-    local initial = drawFrame(scope, host, window, 520, 216)
-    Assert.isTrue(brightPixels(initial, 520, 216) > 20, versionId .. " initial chooser state leaves visible pixels")
+    local initial = drawFrame(scope, host, window, 536, 240)
+    Assert.isTrue(brightPixels(initial, 536, 240) > 20, versionId .. " initial chooser state leaves visible pixels")
 
     local seen = {}
     for y = 0, REFERENCE_HEIGHT - 1, 8 do
@@ -337,9 +337,9 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
 
     host:move("right")
     host:update()
-    local rotating = drawFrame(scope, host, window, 520, 216)
+    local rotating = drawFrame(scope, host, window, 536, 240)
     Assert.isTrue(
-      frameDistance(initial, rotating, 520, 216) > 10,
+      frameDistance(initial, rotating, 536, 240) > 10,
       versionId .. " rotation realizes an intermediate scene"
     )
     Assert.isTrue(
@@ -348,7 +348,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
       end, 1024),
       versionId .. " rotation reaches its semantic boundary"
     )
-    local rotated = drawFrame(scope, host, window, 520, 216)
+    local rotated = drawFrame(scope, host, window, 536, 240)
     Assert.isNil(host:confirm(), versionId .. " first activation enters inspection")
     Assert.equal(snapshotOf(host, versionId).selectionState, "inspect", versionId .. " enters inspection state")
     Assert.isNil(host:confirm(), versionId .. " second activation starts the confirmation view")
@@ -359,9 +359,9 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
       versionId .. " confirmation view reaches its semantic boundary"
     )
     Assert.isFalse(host:status().done, versionId .. " confirmation view does not complete early")
-    local zoomed = drawFrame(scope, host, window, 520, 216)
+    local zoomed = drawFrame(scope, host, window, 536, 240)
     Assert.isTrue(
-      frameDistance(rotated, zoomed, 520, 216) > 10,
+      frameDistance(rotated, zoomed, 536, 240) > 10,
       versionId .. " confirmation view changes the realized scene"
     )
     host:dispose()
@@ -405,13 +405,13 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
     Assert.equal(status.cursor, 1, versionId .. " the middle candidate remains selected")
     local backend = prepareHost(host, cacheFs)
     local window = openWindowBorrower(cacheFs, versionId)
-    local middleFrame = drawFrame(scope, host, window, 520, 216)
-    Assert.isTrue(brightPixels(middleFrame, 520, 216) > 0, versionId .. " portrait is visible")
+    local middleFrame = drawFrame(scope, host, window, 536, 240)
+    Assert.isTrue(brightPixels(middleFrame, 536, 240) > 0, versionId .. " portrait is visible")
 
     host:focus(0)
-    local neighboringFrame = drawFrame(scope, host, window, 520, 216)
+    local neighboringFrame = drawFrame(scope, host, window, 536, 240)
     Assert.isTrue(
-      frameDistance(middleFrame, neighboringFrame, 520, 216) > 10,
+      frameDistance(middleFrame, neighboringFrame, 536, 240) > 10,
       versionId .. " inspected portraits follow their generated candidates"
     )
     host:dispose()

@@ -96,90 +96,41 @@ function FieldDialogueTheme.frameTilePlacements(box)
   }
 end
 
--- Application chrome overlaps the innermost 8px frame band onto the content
--- on every edge instead of reserving the whole nominal frame outside it:
--- nominal 8/24/8/16 minus the overlap leaves 0/16/0/8 exterior room.
-local APPLICATION_FRAME_OVERLAP = 8
-local NOMINAL_FRAME = { left = 8, top = 24, right = 8, bottom = 16 }
+-- Application frame room is exterior plus one content-overlap pixel on
+-- every edge: the retained source pieces hug their content-facing art
+-- edge, and the frame draws after content so transparent texels reveal it.
+local APPLICATION_FRAME_INSETS = {
+  left = 8,
+  top = 7,
+  right = 8,
+  bottom = 7,
+}
 
--- Exterior room the application frame reserves outside the content box:
--- the whole inner 8px band overlaps body pixels, so only the remaining
--- 0 left, 16 top, 0 right, 8 bottom stay outside the application.
+-- Exterior room the application frame reserves outside the content box.
 ---@return { left: integer, top: integer, right: integer, bottom: integer }
 function FieldDialogueTheme.applicationFrameInsets()
   return {
-    left = NOMINAL_FRAME.left - APPLICATION_FRAME_OVERLAP,
-    top = NOMINAL_FRAME.top - APPLICATION_FRAME_OVERLAP,
-    right = NOMINAL_FRAME.right - APPLICATION_FRAME_OVERLAP,
-    bottom = NOMINAL_FRAME.bottom - APPLICATION_FRAME_OVERLAP,
+    left = APPLICATION_FRAME_INSETS.left,
+    top = APPLICATION_FRAME_INSETS.top,
+    right = APPLICATION_FRAME_INSETS.right,
+    bottom = APPLICATION_FRAME_INSETS.bottom,
   }
 end
 
--- Window chrome geometry shared by chrome drawing and dismiss-control hit
--- testing: the title region and the dismiss control in the caller's
--- frame-local reference space (the same space as the content box). Both
--- live in the exterior top bar above the content box, so titles and
--- controls never move content or affect scale. The title keeps a generous
--- 32px left margin from the outer edge; the dismiss control is a roughly
--- 24px hit target with at least 8px corner margin on the right.
-local CHROME_TITLE_LEFT_MARGIN = 32
-local CHROME_DISMISS_WIDTH = 24
-local CHROME_CORNER_MARGIN = 8
-
----@class FieldDialogueTheme.ChromeGeometry
----@field title FieldDialogueTheme.Rect
----@field dismiss FieldDialogueTheme.Rect
-
+-- Application frame tile targets: the sides reuse the full source
+-- side columns (tiles 6 and 7 down the target left, mirrored on the
+-- target right) with no artwork rotation, stepping a full tile every 8px
+-- so edge motifs render whole. Each cap reuses its own source edge row
+-- in exact 8px steps (top corners 0/1 mirrored to the right with span 2
+-- above the body, bottom corners 12/13 mirrored to the right with span
+-- 14 below). Whole tiles share the target rows and columns, so every
+-- joint lands exactly as the audited dialogue tilemap composes it while
+-- the retained art overlaps one pixel onto the content. Corners land
+-- exactly under their side bands and cover the span ends. Returns tile
+-- identities with target positions; drawing stays with the frame
+-- renderer.
 ---@param box FieldDialogueTheme.Rect the target content box
----@return FieldDialogueTheme.ChromeGeometry frame-local title and dismiss rectangles
-function FieldDialogueTheme.applicationChromeGeometry(box)
-  assert(
-    type(box) == "table" and box.x and box.y and box.width and box.height,
-    "applicationChromeGeometry requires the content box"
-  )
-  assert(
-    type(box.x) == "number" and type(box.y) == "number" and type(box.width) == "number" and type(box.height) == "number",
-    "applicationChromeGeometry requires numeric box geometry"
-  )
-  assert(
-    box.width > 0 and box.height > 0 and box.width == math.floor(box.width) and box.height == math.floor(box.height),
-    "applicationChromeGeometry requires positive integral content dimensions"
-  )
-  local insets = FieldDialogueTheme.applicationFrameInsets()
-  local barY = box.y - insets.top
-  local barHeight = insets.top
-  local outerLeft = box.x + insets.left
-  local outerRight = box.x + box.width - insets.right
-  local dismiss = {
-    x = outerRight - CHROME_CORNER_MARGIN - CHROME_DISMISS_WIDTH,
-    y = barY,
-    width = CHROME_DISMISS_WIDTH,
-    height = barHeight,
-  }
-  local title = {
-    x = outerLeft + CHROME_TITLE_LEFT_MARGIN,
-    y = barY,
-    width = dismiss.x - (outerLeft + CHROME_TITLE_LEFT_MARGIN),
-    height = barHeight,
-  }
-  assert(
-    title.width > 0,
-    "applicationChromeGeometry requires room for the title between the left margin and the dismiss control"
-  )
-  return { title = title, dismiss = dismiss }
-end
-
--- Rotated application-frame tile targets derived from the audited
--- standard tilemap: the source composition runs around the content box
--- inset by the 8px application overlap, expands to 8x8 instances, then
--- the whole composition rotates so source right becomes target top,
--- source left becomes target bottom, source top becomes target left,
--- and source bottom becomes target right. The inner band therefore lands
--- on body pixels while only the 0/16/0/8 exterior stays outside the
--- application. Returns tile identities with target positions; drawing
--- and artwork rotation stay with the frame renderer.
----@param box FieldDialogueTheme.Rect the target content box
----@return { tile: integer, x: number, y: number }[]
+---@return { top: { tile: integer, x: number, y: number, flipX: boolean? }[], sides: { tile: integer, x: number, y: number, flipX: boolean? }[], bottom: { tile: integer, x: number, y: number, flipX: boolean? }[] }
 function FieldDialogueTheme.applicationFrameTilePlacements(box)
   assert(
     type(box) == "table" and box.x and box.y and box.width and box.height,
@@ -194,35 +145,43 @@ function FieldDialogueTheme.applicationFrameTilePlacements(box)
     "applicationFrameTilePlacements requires positive integral content dimensions"
   )
   assert(box.width % 8 == 0 and box.height % 8 == 0, "applicationFrameTilePlacements requires 8px-compatible content")
-  assert(
-    box.width > 2 * APPLICATION_FRAME_OVERLAP and box.height > 2 * APPLICATION_FRAME_OVERLAP,
-    "applicationFrameTilePlacements requires room for the 8px overlap on every edge"
-  )
-  local frameBox = {
-    x = box.x + APPLICATION_FRAME_OVERLAP,
-    y = box.y + APPLICATION_FRAME_OVERLAP,
-    width = box.width - 2 * APPLICATION_FRAME_OVERLAP,
-    height = box.height - 2 * APPLICATION_FRAME_OVERLAP,
-  }
-  local targetOuterX = frameBox.x - NOMINAL_FRAME.left
-  local targetOuterY = frameBox.y - NOMINAL_FRAME.top
-  local sourceBox = { x = 16, y = 8, width = frameBox.height, height = frameBox.width }
-  local sourceOuterWidth = sourceBox.width + 16 + 24
-  local placements = {}
-  for _, entry in ipairs(FieldDialogueTheme.frameTilePlacements(sourceBox)) do
-    local countX = entry.spanX or 1
-    local countY = entry.spanY or 1
-    for ix = 0, countX - 1 do
-      for iy = 0, countY - 1 do
-        local sx = entry.x + ix * 8
-        local sy = entry.y + iy * 8
-        local tx = targetOuterX + sy
-        local ty = targetOuterY + (sourceOuterWidth - sx - 8)
-        placements[#placements + 1] = { tile = entry.tile, x = tx, y = ty }
-      end
-    end
+  local capY = box.y + box.height
+  local outerX = box.x - APPLICATION_FRAME_INSETS.left
+  local rightX = box.x + box.width
+  local top = {}
+  local bottom = {}
+  -- Caps tile the body width exactly: 8px corners with the span in 8px
+  -- steps between them. The cap rows sit fully outside the body except
+  -- one overlapping pixel, matching the side bands' 8px rhythm.
+  local topY = box.y - 7
+  local bottomY = capY - 1
+  local x = box.x
+  while x < box.x + box.width do
+    bottom[#bottom + 1] = { tile = 14, x = x, y = bottomY }
+    top[#top + 1] = { tile = 2, x = x, y = topY }
+    x = x + 8
   end
-  return placements
+  bottom[#bottom + 1] = { tile = 12, x = outerX, y = bottomY }
+  bottom[#bottom + 1] = { tile = 13, x = box.x, y = bottomY }
+  bottom[#bottom + 1] = { tile = 13, x = box.x + box.width - 8, y = bottomY, flipX = true }
+  bottom[#bottom + 1] = { tile = 12, x = rightX, y = bottomY, flipX = true }
+  top[#top + 1] = { tile = 0, x = outerX, y = topY }
+  top[#top + 1] = { tile = 1, x = box.x, y = topY }
+  top[#top + 1] = { tile = 1, x = box.x + box.width - 8, y = topY, flipX = true }
+  top[#top + 1] = { tile = 0, x = rightX, y = topY, flipX = true }
+  -- The full source side pair stays on the 8px grid. Its inner tile
+  -- overlaps the body; the keyed application copy holds only border art
+  -- there, so transparent texels reveal the content.
+  local sides = {}
+  local y = box.y
+  while y < capY do
+    sides[#sides + 1] = { tile = 6, x = box.x - 8, y = y }
+    sides[#sides + 1] = { tile = 7, x = box.x, y = y }
+    sides[#sides + 1] = { tile = 7, x = box.x + box.width - 8, y = y, flipX = true }
+    sides[#sides + 1] = { tile = 6, x = box.x + box.width, y = y, flipX = true }
+    y = y + 8
+  end
+  return { top = top, sides = sides, bottom = bottom }
 end
 
 -- Reference-to-screen mapping for one viewport. The canonical 256x192

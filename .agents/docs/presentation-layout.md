@@ -57,8 +57,8 @@ applications, or game instances.
   requires aspect error at most 12 logical pixels per edge; a session
   retains it through 14 and leaves above 14.
 - Wide/tall single surface: a static centered framed box. The complete
-  outer frame (content plus the 0/16/0/8 exterior around the overlapped
-  body) fits at the largest integer scale inside the usable bounds; a box
+  outer frame (content plus the 6px border exterior around the body)
+  fits at the largest integer scale inside the usable bounds; a box
   that cannot fit at unit scale falls back to the native-like case.
   Geometry is deterministic: an equivalent re-resolution returns the
   identical placement.
@@ -102,24 +102,30 @@ the same coordinates.
 ## Application frames, background, and dismissal
 
 Underfilled field applications are decorated with the player's selected
-HGSS dialogue frame (`playerData.options.textFrame`), rotated so the
-source frame's thick right edge becomes the top edge and drawn from the
-masked application atlas. The innermost 8-logical-pixel frame band
-overlaps application content on every edge, so only the 0/16/0/8
-remainder (left/top/right/bottom) reserves room outside the application:
-opaque decoration may cover edge body pixels while cleared padding
-reveals the body underneath. The frame is pure plan geometry until
+HGSS dialogue frame (`playerData.options.textFrame`): the side bands
+reuse the full source side columns with no artwork rotation, stepping a
+whole tile so edge motifs render uncut, and each cap reuses its own
+source edge row. Edge-connected interior fill is keyed out of the
+application copy, but only where the frame overlaps the menu -- the
+inner side column throughout and each cap along its content-facing row
+-- so content shows through the frame exactly where the frame covers it
+while exterior rims and margins paint as authored. Whole tiles
+share the target rows and columns, so ornaments stay complete and border
+lines stay aligned across every joint. The
+body sits inside the exterior room (8px sides, 7px caps) on every edge. Transparent
+corner and edge pixels reveal the already-rendered
+field behind the application, never body content. Application decoration
+samples the same generated dialogue-frame atlas as ordinary dialogue
+windows; no derived mask or second frame asset exists. The frame is pure
+plan geometry until
 field or Starter presentation draws it after application content
 through the shared frame renderer; application code never invents
 border styling.
 
-Plans publish one decorative concept alongside content, input, and render callbacks:
+Plans publish their decorative geometry alongside content, input, and render callbacks:
 
-- `frames`: the decorative outer geometry drawn around content.
-- `chrome`: the optional window identity drawn on visible frames,
-  `{ title, dismissible }`. Titles are leaf presentation policy
-  (`MENU`, `POKéMON`, `BAG`, `TRAINER CARD`, `STARTER CHOICE`);
-  identity without a frame draws and exposes nothing.
+- `frames`: the decorative outer geometry drawn around content, carrying
+  no embedded controls or window identity.
 
 Settled pixels outside application panes and frames stay whatever the
 host already rendered, which is the paused field wherever field
@@ -136,17 +142,13 @@ proves the rule, painting its own backdrop because no field exists
 beneath it.
 
 A decorative frame is part of the application: presses on the border or
-on non-interactive panes are consumed as interior and do nothing. Every
-visible frame carries its title at the left of the top bar; closable
-field windows additionally carry a dash control at the right. A
-pointer-down on the dash dismisses through the same terminal edge as an
-outside press, without acquiring pointer capture; any other border
-press stays inert interior. A pointer-down fully outside every pane and
-frame dismisses the closable field applications (Start Menu, Bag,
-Party, Trainer Card) at once. This dismissal is terminal and bypasses
+on non-interactive panes are consumed as interior and do nothing. Framed
+application borders contain no embedded controls. A pointer-down fully
+outside every pane and frame is the sole pointer dismissal affordance
+for the closable field applications (Start Menu, Bag, Party, Trainer
+Card): it dismisses at once. This dismissal is terminal and bypasses
 nested cancel/unwind behavior; it is not ordinary Cancel and it never
-clicks through to the paused field. The dash is visual chrome only:
-there is no minimized state.
+clicks through to the paused field.
 
 Three surfaces never gain an outer frame or outside dismissal:
 
@@ -155,9 +157,8 @@ Three surfaces never gain an outer frame or outside dismissal:
   name editing.
 - The startup Main Menu is a responsive fullscreen surface with its
   own backdrop and no HGSS frame.
-- Starter Choice draws an outer frame when underfilled and carries its
-  title, but stays blocking: it shows no dash control and outside
-  presses never dismiss it.
+- Starter Choice draws an outer frame when underfilled but stays
+  blocking: outside presses never dismiss it.
 
 ## Feature-local layout responsibility
 

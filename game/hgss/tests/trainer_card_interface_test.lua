@@ -108,7 +108,7 @@ function T.wide_and_tall_center_a_static_framed_box()
   Assert.notNil(wideFrame, "one outer frame decorates the wide pane")
   Assert.deepEqual(
     wideFrame.contentBox,
-    { x = 0, y = 16, width = 256, height = 192 },
+    { x = 8, y = 7, width = 256, height = 192 },
     "the wide content box sits inside the exterior insets"
   )
   assertNoCrop(assert(wide.panes[1].placement, "the card pane carries its placement"), "static frames never crop")
@@ -255,12 +255,12 @@ function T.underfilled_native_like_refits_an_uncropped_decorated_box()
   local frame = assert(plan.frames, "the underfilled card owns its frame list")[1]
   Assert.notNil(frame, "one outer frame decorates the refit pane")
   local outer = assert(frame.placement, "the frame carries its outer placement")
-  Assert.equal(outer.logicalWidth, 256, "the refit frame adds no side room")
-  Assert.equal(outer.logicalHeight, 216, "the refit frame reserves the 16px top and 8px bottom")
+  Assert.equal(outer.logicalWidth, 272, "the refit frame adds outer side room")
+  Assert.equal(outer.logicalHeight, 206, "the refit frame reserves the 7px top and bottom")
   Assert.deepEqual(outer.clipRect, outer.frame, "the refit frame is never clipped to fit")
   Assert.deepEqual(
     frame.contentBox,
-    { x = 0, y = 16, width = 256, height = 192 },
+    { x = 8, y = 7, width = 256, height = 192 },
     "the refit body starts inside the exterior insets"
   )
 end
