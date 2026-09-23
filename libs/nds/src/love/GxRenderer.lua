@@ -3,9 +3,9 @@
 -- The world color/state/depth targets share bounded dimensions; ordinary
 -- opaque/cutout actor billboards resolve the world first and draw to one
 -- presentation-resolution color/coverage/depth layer without writing world
--- renderState or receiving world edges. `presentationPixelScale` only
--- controls the logical grid spacing that snaps each billboard's projected
--- center; it does not reduce the layer's raster resolution.
+-- renderState or receiving world edges. Actor billboard anchors use the same
+-- bounded world-raster lattice as the world pass; the layer itself remains
+-- at presentation resolution.
 --
 -- The HGSS presentation owner builds the world render queue exactly once per
 -- frame and supplies it here. The world MRT pass consumes it. Opaque, cutout, and mixed-opaque
@@ -980,9 +980,8 @@ function GxRenderer:draw(frame)
   assert(frame.worldProjection, "GxRenderer requires a world projection")
   assert(frame.billboardProjection, "GxRenderer requires a billboard projection")
   local hasPresentationSprites = spriteItems ~= nil and #spriteItems > 0
-  local validatedPresentationPixelScale
   if hasPresentationSprites then
-    validatedPresentationPixelScale = validatePresentationPixelScale(frame.presentationPixelScale)
+    validatePresentationPixelScale(frame.presentationPixelScale)
   end
   -- The world MRT shader derives its depth from the host fragment's normalized
   -- window depth (map.glsl's dsZbufferDepth, the DS field Z-buffer domain).
@@ -1180,26 +1179,21 @@ function GxRenderer:draw(frame)
     -- so host depth is never borrowed for sprite ordering or cleared as part
     -- of this path.
     if hasPresentationSprites then
-      local presentationPixelScale = assert(validatedPresentationPixelScale)
       self._activeShader = self:_ensureSpriteShader()
       local spriteShader = assert(self._activeShader)
       spriteShader:send("u_presentationSprite", true)
       -- The sprite raster target is physical/presentation resolution: the
       -- camera projection determines every billboard vertex, so this
-      -- resolution must not coarsen it. `presentationPixelScale` (N) only
-      -- derives the separate logical snap-grid extent used to quantize the
-      -- projected billboard center below.
+      -- resolution must not coarsen it. The world state target below supplies
+      -- the shared anchor lattice used to register the actor to world pixels.
       local visibleW, visibleH = rectangle.width, rectangle.height
       local spriteW, spriteH = math.ceil(visibleW), math.ceil(visibleH)
-      local snapGridW = visibleW / presentationPixelScale
-      local snapGridH = visibleH / presentationPixelScale
       self:_ensureSpriteTargets(spriteW, spriteH)
       local spriteTargets = assert(self._spriteTargets)
       lg.setCanvas(spriteTargets)
       lg.clear(0, 0, 0, 0, false, true)
       lg.setDepthMode("less", true)
       lg.setBlendMode("replace", "premultiplied")
-      spriteShader:send("u_presentationSnapGridSize", { snapGridW, snapGridH })
       -- Embed the exact visible physical viewport into the ceil-allocated
       -- sprite target: any ceil fringe lands only on the right/bottom.
       local scale = self._presentationScale

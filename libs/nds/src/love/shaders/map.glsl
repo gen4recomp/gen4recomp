@@ -90,9 +90,6 @@ uniform bool u_presentationSprite;
 uniform vec2 u_presentationScale;
 uniform vec2 u_presentationOffset;
 uniform vec2 u_stateSize;
-#ifdef PRESENTATION_SPRITE_LAYER
-uniform vec2 u_presentationSnapGridSize;
-#endif
 #endif
 
 // 1.0.9 domain scale shared by normals and the transformed light-direction
@@ -265,15 +262,8 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
     if (centerClip.w > 0.0) {
       vec2 centerNdc = centerClip.xy / centerClip.w;
       vec2 rasterCoord;
-#ifdef PRESENTATION_SPRITE_LAYER
-      rasterCoord = (centerNdc * 0.5 + 0.5) * u_presentationSnapGridSize;
-#else
       rasterCoord = (centerNdc * 0.5 + 0.5) * u_stateSize;
-#endif
       vec2 rasterCenterNdc = ((floor(rasterCoord) + 0.5) / u_stateSize) * 2.0 - 1.0;
-#ifdef PRESENTATION_SPRITE_LAYER
-      rasterCenterNdc = (floor(rasterCoord + 0.5) / u_presentationSnapGridSize) * 2.0 - 1.0;
-#endif
       clip.xy += (rasterCenterNdc - centerNdc) * clip.w;
     }
   }

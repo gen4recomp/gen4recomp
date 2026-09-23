@@ -923,12 +923,10 @@ function T.presentation_sprite_targets_are_physical_and_transactional()
   end
 end
 
--- The physical allocation embedding and the logical anchor-snap grid are two
--- independent uniforms: embedding follows the visible viewport over the
--- ceil-allocated physical target, while the snap grid follows the visible
--- viewport over the presentation pixel scale. Neither may borrow the other's
--- divisor.
-function T.presentation_sprite_allocation_embeds_the_visible_viewport_and_snap_grid_is_independent()
+-- The physical allocation embedding is independent from the world-raster
+-- anchor grid: embedding follows the visible viewport over the ceil-allocated
+-- physical target, while registration follows the published state target.
+function T.presentation_sprite_allocation_embeds_the_visible_viewport_and_uses_world_grid()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg })
   local scene = emptySceneCamera()
@@ -952,13 +950,15 @@ function T.presentation_sprite_allocation_embeds_the_visible_viewport_and_snap_g
   local spriteShader = renderer.spriteShader --[[@as GxRendererTest.Shader]]
   local scale = spriteShader.uniforms.u_presentationScale
   local offset = spriteShader.uniforms.u_presentationOffset
-  local snapGrid = spriteShader.uniforms.u_presentationSnapGridSize
-  Assert.notNil(
-    snapGrid,
-    "the vertex shader receives an explicit anchor snap-grid uniform, separate from allocation embedding"
+  Assert.isNil(
+    spriteShader.uniforms.u_presentationSnapGridSize,
+    "actor registration does not use a separate presentation snap grid"
   )
-  Assert.near(snapGrid[1], 641.4 / 3, 1e-9, "the snap grid extent is the visible width divided by N")
-  Assert.near(snapGrid[2], 479.7 / 3, 1e-9, "the snap grid extent is the visible height divided by N")
+  Assert.deepEqual(
+    spriteShader.uniforms.u_stateSize,
+    { renderer.stateW, renderer.stateH },
+    "actor registration uses the published world-raster dimensions"
+  )
   Assert.near(scale[1], 641.4 / 642, 1e-9, "the embedding scale is the visible width over the physical allocation")
   Assert.near(scale[2], 479.7 / 480, 1e-9, "the embedding scale is the visible height over the physical allocation")
   Assert.near(offset[1], scale[1] - 1, 1e-9)
