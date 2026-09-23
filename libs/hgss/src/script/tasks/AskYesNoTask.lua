@@ -48,21 +48,21 @@ function AskYesNoTask.poll(state, ctx)
     return { complete = false, state = state }
   end
   local input = ctx.input or {}
-  local accepted
-  if input.pressedAction then
-    accepted = true
-  elseif input.pressedCancel then
-    accepted = false
-  end
-  if accepted == nil then
+  host:handleYesNoInput({
+    pressedDirection = input.pressedDirection,
+    pressedAction = input.pressedAction,
+    pressedCancel = input.pressedCancel,
+  })
+  local result = host:takeYesNoResult()
+  if result == nil then
     state.phaseReadyInTicks = 1
     return { complete = false, state = state }
   end
-  host:close(true)
+  host:closeYesNo()
   return {
     complete = true,
     state = state,
-    result = { accepted = accepted, value = accepted and 1 or 0 },
+    result = result.accepted and 1 or 0,
   }
 end
 

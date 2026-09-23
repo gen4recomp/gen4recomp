@@ -258,13 +258,17 @@ local function buildFocusIndicators(focusChars, palette, fontId)
 
   local focusImageWidth = FOCUS_FRAME_WIDTH * FieldMessageText.FOCUS_INDICATOR_COUNT
   local focusRgba = {}
+  local sourceIndices = {}
   for i = 1, focusImageWidth * FOCUS_FRAME_HEIGHT * 4 do
     focusRgba[i] = 0
   end
   for field = 0, FieldMessageText.FOCUS_INDICATOR_COUNT - 1 do
+    sourceIndices[field] = {}
     for y = 0, FOCUS_FRAME_HEIGHT - 1 do
+      sourceIndices[field][y + 1] = {}
       for x = 0, FOCUS_FRAME_WIDTH - 1 do
         local value = focusPixel(field, x, y)
+        sourceIndices[field][y + 1][x + 1] = value
         local r, g, b, a = 0, 0, 0, 0
         if value ~= 0 and value ~= FieldFontDecoder.BG_PALETTE_INDEX then
           local color = palette[value + 1]
@@ -285,6 +289,7 @@ local function buildFocusIndicators(focusChars, palette, fontId)
     width = FOCUS_FRAME_WIDTH,
     height = FOCUS_FRAME_HEIGHT,
     frames = {},
+    sourceIndices = sourceIndices,
   }
   for field = 0, FieldMessageText.FOCUS_INDICATOR_COUNT - 1 do
     indicators.frames[field] = {
@@ -497,7 +502,7 @@ end
 ---@field maskAtlasPath string
 ---@field atlas { width: integer, height: integer, baseHeight: integer, glyphsPerRow: integer, glyphWidth: integer, glyphHeight: integer }
 ---@field colorVariants { count: integer, strideY: integer }
----@field focusIndicators { imagePath: string, count: integer, width: integer, height: integer, frames: table<integer, { x: integer, y: integer, width: integer, height: integer }> }
+---@field focusIndicators { imagePath: string, count: integer, width: integer, height: integer, frames: table<integer, { x: integer, y: integer, width: integer, height: integer }>, sourceIndices: table<integer, integer[][]> }
 ---@field glyphs table<integer, { x: integer, y: integer, w: integer, h: integer, advance: integer, bearingX: integer, bearingY: integer }>
 ---@field charmap table<string, integer>
 ---@field palette { r: integer, g: integer, b: integer }[]

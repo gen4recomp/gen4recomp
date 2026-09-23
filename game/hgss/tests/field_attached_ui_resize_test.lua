@@ -277,6 +277,13 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
           return true
         end,
       },
+      scripts = {
+        dialogueHost = {
+          yesNoPresentation = function()
+            return nil
+          end,
+        },
+      },
       signpost = {
         isModal = function()
           return true

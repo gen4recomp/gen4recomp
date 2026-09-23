@@ -11,6 +11,7 @@ local ScriptDialogueHost = require("libs.hgss.src.script.ScriptDialogueHost")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldYesNoController = require("libs.hgss.src.ui.FieldYesNoController")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 
@@ -144,6 +145,7 @@ local function host(opts)
   local gender = opts.gender or 0
   return ScriptDialogueHost.new({
     controller = controller,
+    yesNoController = FieldYesNoController.new(),
     provider = provider,
     layout = function(formatted)
       return formatted
@@ -390,6 +392,7 @@ local function monsHost()
   local _, controller = host({})
   local withMons = ScriptDialogueHost.new({
     controller = controller,
+    yesNoController = FieldYesNoController.new(),
     provider = assert(FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542) }))),
     layout = function(formatted)
       return formatted
@@ -517,6 +520,7 @@ local function itemTextHost(opts)
     end,
   }
   hostOptions.controller = controller
+  hostOptions.yesNoController = FieldYesNoController.new()
   hostOptions.provider = assert(FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542) })))
   local withItems = ScriptDialogueHost.new(hostOptions)
   return withItems, catalog
@@ -657,6 +661,7 @@ local function productionHostWithPages(pages)
   })
   local hostObject = ScriptDialogueHost.new({
     controller = controller,
+    yesNoController = FieldYesNoController.new(),
     provider = provider,
     layout = function(formatted)
       return formatted

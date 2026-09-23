@@ -100,6 +100,7 @@ local function buildDoubles(sink, calls)
       new = function(_)
         calls.window = (calls.window or 0) + 1
         local instance = {}
+        function instance:drawWindow(_, _, _) end
         function instance:drawApplicationFrame(box, frameIndex)
           sink[#sink + 1] = { "frame", box, frameIndex }
         end
@@ -122,7 +123,12 @@ local function buildDoubles(sink, calls)
     },
     ["libs.hgss.src.ui.FieldTextRenderer"] = {
       new = function(_)
-        return releasable(calls, "text")
+        local instance = releasable(calls, "text")
+        function instance:drawText(_, _, _) end
+        function instance:windowBackgroundColor()
+          return 0, 0, 0, 1
+        end
+        return instance
       end,
     },
     ["libs.hgss.src.presentation.FieldStaticEffectRenderer"] = {

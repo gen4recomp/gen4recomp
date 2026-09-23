@@ -8,6 +8,7 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local ScriptActorWorld = require("libs.hgss.src.script.ScriptActorWorld")
 local ScriptDialogueHost = require("libs.hgss.src.script.ScriptDialogueHost")
+local FieldYesNoController = require("libs.hgss.src.ui.FieldYesNoController")
 local ScriptMenuHost = require("libs.hgss.src.script.ScriptMenuHost")
 local ScriptSignpostHost = require("libs.hgss.src.script.ScriptSignpostHost")
 local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
@@ -295,6 +296,7 @@ function FieldScripts.new(opts)
   local actors = ScriptActorWorld.new(opts.actors --[[@as ScriptActorManager]], player)
   local dialogueHost = ScriptDialogueHost.new({
     controller = opts.dialogue,
+    yesNoController = FieldYesNoController.new(),
     provider = opts.messageProvider,
     layout = opts.layout,
     fontDef = opts.fontDef,

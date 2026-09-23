@@ -259,6 +259,21 @@ function T.compiled_font_def_matches_the_real_focus_and_color_contract(romFs, _)
   local member6 = assert(assert(romFs:openNarc("font")):readMember(6))
   Assert.equal(bundle.dependencies.focusIndicatorMemberSha1, Hashing.sha1hex(member6))
 
+  local sourceIndices = def.focusIndicators.sourceIndices
+  Assert.notNil(sourceIndices, "the generated focus indicator must retain source palette-index semantics")
+  local used = {}
+  for _, frame in pairs(sourceIndices) do
+    for _, row in ipairs(frame) do
+      for _, value in ipairs(row) do
+        used[value] = true
+      end
+    end
+  end
+  Assert.isTrue(used[0] == true, "focus source index 0 must remain transparent")
+  for value = 0x0B, 0x0E do
+    Assert.isTrue(used[value] == true, "focus source index must remain distinguishable: " .. tostring(value))
+  end
+
   -- The default band keeps the pre-change palette mapping: visible pixels
   -- resolve to the font foreground slot 1 and shadow slot 2 (the same slots
   -- the old single-band compiler used), so unstyled dialogue is unchanged.

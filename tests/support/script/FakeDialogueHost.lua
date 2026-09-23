@@ -64,7 +64,32 @@ end
 
 function FakeDialogueHost:askYesNo(message, bindings)
   self.open = true
+  self.yesNoSelected = 0
+  self.yesNoResult = nil
   self:_record("askYesNo", message, bindings)
+end
+
+function FakeDialogueHost:handleYesNoInput(input)
+  if input.pressedDirection == "down" then
+    self.yesNoSelected = math.min(1, self.yesNoSelected + 1)
+  elseif input.pressedDirection == "up" then
+    self.yesNoSelected = math.max(0, self.yesNoSelected - 1)
+  end
+  if input.pressedCancel then
+    self.yesNoResult = { accepted = false }
+  elseif input.pressedAction then
+    self.yesNoResult = { accepted = self.yesNoSelected == 0 }
+  end
+end
+
+function FakeDialogueHost:takeYesNoResult()
+  local result = self.yesNoResult
+  self.yesNoResult = nil
+  return result
+end
+
+function FakeDialogueHost:closeYesNo()
+  self:_record("closeYesNo")
 end
 
 function FakeDialogueHost:hold()
