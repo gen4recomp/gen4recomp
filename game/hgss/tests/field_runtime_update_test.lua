@@ -302,8 +302,15 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
   local runtime = setmetatable({
     session = {
       accumulator = 0,
+      currentMap = { mapId = 61 },
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
       updateFixed = function() end,
     },
+    actors = { currentMapId = 61 },
     transition = {
       phase = "idle",
       error = nil,
@@ -392,6 +399,20 @@ function T.tests.follower_update_carries_no_presentation_policy()
   runtimeWithFollowerPresentation(missingOptions, nil):update(FieldSession.FIXED_DT)
   Assert.equal(missingOptions.calls, 1, "a missing dialogue controller still ticks the follower once")
   Assert.isNil(missingOptions.last, "a missing dialogue controller adds no presentation option")
+end
+
+function T.tests.follower_update_requires_actor_manager()
+  local calls = { count = 0 }
+  local runtime = runtimeForFollowerCoherence(61, 61, false, calls)
+  runtime.actors = nil
+
+  local ok, err = pcall(function()
+    runtime:update(FieldSession.FIXED_DT)
+  end)
+
+  Assert.isFalse(ok, "follower reconciliation requires an actor manager")
+  Assert.isTrue(tostring(err):find("field actor manager is required", 1, true) ~= nil)
+  Assert.equal(calls.count, 0, "follower reconciliation does not run without its actor manager")
 end
 
 function T.tests.follower_update_waits_for_actor_publication_during_map_entry()
