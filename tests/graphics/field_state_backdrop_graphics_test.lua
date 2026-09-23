@@ -5,6 +5,7 @@
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local WindowConfig = require("game.src.WindowConfig")
 
@@ -162,6 +163,35 @@ local function renderOnCanvas(scope, environment)
   Assert.isTrue(ok, "FieldState draw must not throw: " .. tostring(err))
   local image = scope:own(canvas:newImageData())
   return image, worldViewport, windowWidth, windowHeight
+end
+
+function T.portrait_expanded_viewport_fills_host_without_backdrop_strips(scope)
+  local windowWidth, windowHeight = 720, 1280
+  local viewport = FieldViewport.new(windowWidth, windowHeight, { mode = "expanded" })
+  Assert.deepEqual(viewport.worldViewport, { x = 0, y = 0, width = 720, height = 1280 })
+  Assert.deepEqual(viewport.referenceFrame, { x = 0, y = 370, width = 720, height = 540 })
+
+  local state = drawableState("outdoors", viewport.worldViewport, windowWidth, windowHeight)
+  state.runtime.viewport.referenceFrame = viewport.referenceFrame
+  local canvas = scope:own(love.graphics.newCanvas(windowWidth, windowHeight))
+  love.graphics.setCanvas(canvas)
+  local bg = WindowConfig.BACKGROUND_COLOR
+  love.graphics.clear(bg[1], bg[2], bg[3], bg[4] or 1)
+  local ok, err = pcall(function()
+    state:draw()
+  end)
+  love.graphics.setCanvas()
+  Assert.isTrue(ok, "portrait FieldState draw must not throw: " .. tostring(err))
+
+  local image = scope:own(canvas:newImageData())
+  local topRed, topGreen, topBlue = image:getPixel(2, 2)
+  Assert.equal(quantize(topRed), 255, "portrait world must reach the top host edge")
+  Assert.equal(quantize(topGreen), 255, "portrait world must reach the top host edge")
+  Assert.equal(quantize(topBlue), 255, "portrait world must reach the top host edge")
+  local bottomRed, bottomGreen, bottomBlue = image:getPixel(2, windowHeight - 2)
+  Assert.equal(quantize(bottomRed), 255, "portrait world must reach the bottom host edge")
+  Assert.equal(quantize(bottomGreen), 255, "portrait world must reach the bottom host edge")
+  Assert.equal(quantize(bottomBlue), 255, "portrait world must reach the bottom host edge")
 end
 
 function T.building_map_paints_host_area_black_while_world_still_renders(scope)

@@ -30,10 +30,17 @@ function T.expanded_and_strict_are_identical_at_four_by_three()
   Assert.deepEqual(expanded.referenceFrame, strict.referenceFrame)
 end
 
-function T.narrow_expanded_falls_back_to_strict_fit()
-  local viewport = FieldViewport.new(900, 900, { mode = "expanded" })
-  Assert.deepEqual(viewport.worldViewport, { x = 0, y = 113, width = 900, height = 675 })
-  Assert.deepEqual(viewport.referenceFrame, viewport.worldViewport)
+function T.expanded_portrait_fills_host_and_centers_canonical_reference_frame()
+  local viewport = FieldViewport.new(720, 1280, { mode = "expanded" })
+  Assert.deepEqual(viewport.worldViewport, { x = 0, y = 0, width = 720, height = 1280 })
+  Assert.deepEqual(viewport.referenceFrame, { x = 0, y = 370, width = 720, height = 540 })
+  Assert.isTrue(approx(viewport:worldAspect(), 720 / 1280))
+end
+
+function T.expanded_portrait_preserves_nonzero_host_origin()
+  local viewport = FieldViewport.new(720, 1280, { mode = "expanded", x = 13, y = 17 })
+  Assert.deepEqual(viewport.worldViewport, { x = 13, y = 17, width = 720, height = 1280 })
+  Assert.deepEqual(viewport.referenceFrame, { x = 13, y = 387, width = 720, height = 540 })
 end
 
 function T.strict_odd_host_keeps_its_exact_extent_and_snaps_its_origin()

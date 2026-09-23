@@ -4747,7 +4747,7 @@ function T.presentation_sprites_stay_inside_a_wide_strict_world_viewport(scope)
   Assert.isTrue(bar[1] < 0.05 and bar[2] < 0.05 and bar[3] < 0.05, "pillarbox bars remain untouched")
 end
 
-function T.presentation_sprites_stay_inside_a_narrow_expanded_viewport_fallback(scope)
+function T.presentation_sprites_stay_inside_a_portrait_expanded_world_viewport(scope)
   local renderer = scope:own(GxRenderer.new())
   local target, color = presentationTarget(scope, 600, 720)
   local image = solidAlphaImage(scope, 0, 255, 0, 255)
@@ -4761,9 +4761,7 @@ function T.presentation_sprites_stay_inside_a_narrow_expanded_viewport_fallback(
 
   local pixels = color:newImageData()
   local center = { pixels:getPixel(300, 360) }
-  local bar = { pixels:getPixel(300, 32) }
-  Assert.isTrue(center[2] > 0.5, "the centered actor remains visible in the fitted world")
-  Assert.isTrue(bar[1] < 0.05 and bar[2] < 0.05 and bar[3] < 0.05, "top/bottom bars remain untouched")
+  Assert.isTrue(center[2] > 0.5, "the centered actor remains visible in the portrait world")
 end
 
 function T.presentation_sprite_fog_uses_the_world_endpoint_density_rules(scope)
