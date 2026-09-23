@@ -575,9 +575,9 @@ function T.compiles_the_manifest_and_all_assets()
   -- shared icon atlas, the palette record, SUB chrome) plus the sixteen
   -- naming OBJ visuals (six controls, keyboard cursor, five home cursor
   -- variants, two entry slots, two player subjects) plus the six cursor
-  -- pulse-mask atlases, plus the second application-specific dialogue
-  -- frame strip derived from the same indexed source.
-  Assert.equal(assetCount, 37)
+  -- pulse-mask atlases, plus the single dialogue frame strip beside the
+  -- continuation cursor.
+  Assert.equal(assetCount, 36)
   for path, bytes in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
     Assert.isTrue(#bytes > 0)
@@ -2148,157 +2148,25 @@ function T.naming_keyboard_window_with_a_missing_palette_slot_is_a_source_defect
   )
 end
 
--- One 4bpp tile from a sparse pixel map: every pixel defaults to `base`,
--- with per-pixel overrides keyed by y * 8 + x. Two pixels share one byte
--- (low nibble first), mirroring the fixture char layout.
-local function sparseTile(base, overrides)
-  local rows = {}
-  for y = 0, 7 do
-    local bytes = {}
-    for x = 0, 3 do
-      local lo = overrides[y * 8 + x * 2]
-      if lo == nil then
-        lo = base
-      end
-      local hi = overrides[y * 8 + x * 2 + 1]
-      if hi == nil then
-        hi = base
-      end
-      bytes[#bytes + 1] = string.char(lo + hi * 16)
-    end
-    rows[#rows + 1] = table.concat(bytes)
-  end
-  return table.concat(rows)
-end
-
-local function solidTile(value)
-  return string.rep(string.char(value + value * 16), 32)
-end
-
--- Frame 0 with an interior palette index that also appears as padding and
--- as decoration: tile 8 (the window-interior seed cell of the 6x3 frame
--- grid) is uniformly index 5, tile 2 directly above it is the same index
--- (content-facing padding connected to the seed), tile 0 carries a 2x2
--- index-5 island ringed by index 1 plus one index-0 pixel, and every other
--- tile is index 1 behind barrier tiles so the island cannot reach the seed.
-local function frameCharWithInteriorPaddingAndIsland()
-  local tiles = {}
-  for tile = 0, 17 do
-    tiles[tile + 1] = solidTile(1)
-  end
-  tiles[8 + 1] = solidTile(5)
-  tiles[2 + 1] = solidTile(5)
-  tiles[0 + 1] = sparseTile(1, {
-    [0] = 0,
-    [3 * 8 + 3] = 5,
-    [3 * 8 + 4] = 5,
-    [4 * 8 + 3] = 5,
-    [4 * 8 + 4] = 5,
-  })
-  return charDataWithTiles(tiles)
-end
-
-local function fixtureWithFrameInterior()
-  return fixture({
-    tamper = function(alias, members)
-      if alias == "dialogue_frames" then
-        members[3] = lz10Wrap(frameCharWithInteriorPaddingAndIsland())
-      end
-      return members
-    end,
-  })
-end
-
--- The second frame strip derives transparency from raw indexed pixels, not
--- color: the dialogue strip keeps every nonzero source pixel opaque, while
--- the application strip clears the interior-seed-connected padding and
--- source index 0 but preserves the disconnected same-index decorative
--- island with its source palette color. Both strips share dimensions and
--- the same row rectangles.
-function T.application_frame_strip_masks_only_interior_connected_padding()
-  local romFs, sha1, hashLua = fixtureWithFrameInterior()
+-- The compiled dialogue frames publish no application record: one RGBA
+-- frame atlas beside the continuation cursor, with no second PNG payload.
+function T.compiled_dialogue_frames_publish_no_application_record()
+  local romFs, sha1, hashLua = fixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
   local frames = assert(bundle.manifest.dialogueFrames)
-  local application = assert(
-    frames.application,
-    "the compiled field UI must publish the application frame record beside the dialogue frames"
-  )
-  Assert.equal(application.asset, "hgss.application_frame.tiles")
-  local dialogueEntry = assert(bundle.manifest.assets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES])
-  local applicationEntry = assert(bundle.manifest.assets[application.asset])
-  Assert.equal(applicationEntry.width, dialogueEntry.width)
-  Assert.equal(applicationEntry.height, dialogueEntry.height)
-  Assert.equal(applicationEntry.width, 144)
-  Assert.equal(applicationEntry.height, frames.count * 8)
-  local row = assert(frames.frameTiles[0])
-  Assert.isTrue(row.x + row.width <= applicationEntry.width)
-  Assert.isTrue(row.y + row.height <= applicationEntry.height)
-  local dialogueWidth, _, dialogueRgba = PngReader.rgba(assert(bundle.assets[dialogueEntry.image]))
-  local applicationWidth, _, applicationRgba = PngReader.rgba(assert(bundle.assets[applicationEntry.image]))
-  local function dialoguePixel(x, y)
-    return { PngReader.pixel(dialogueRgba, dialogueWidth, x, row.y + y) }
+  Assert.isNil(frames.application, "the compiled field UI carries no application frame record")
+  for _, entry in pairs(bundle.manifest.assets) do
+    Assert.isFalse(
+      (entry.image or ""):find("application-frame-tiles", 1, true) ~= nil,
+      "no indexed asset points at an application frame strip"
+    )
   end
-  local function applicationPixel(x, y)
-    return { PngReader.pixel(applicationRgba, applicationWidth, x, row.y + y) }
+  for path in pairs(bundle.assets) do
+    Assert.isFalse(
+      path:find("application-frame-tiles", 1, true) ~= nil,
+      "no generated payload is an application frame strip"
+    )
   end
-  -- Interior-seed tile 8 and the connected tile-2 padding clear in the
-  -- application strip while staying opaque in the dialogue strip.
-  for _, coord in ipairs({ { 20, 4 }, { 18, 3 } }) do
-    local dialogue = dialoguePixel(coord[1], coord[2])
-    Assert.equal(dialogue[4], 255, "the dialogue strip keeps the interior index opaque")
-    local cleared = applicationPixel(coord[1], coord[2])
-    Assert.equal(cleared[4], 0, "the application strip clears interior-connected padding")
-  end
-  -- The disconnected island keeps its source color in both strips.
-  local islandDialogue = dialoguePixel(3, 3)
-  Assert.equal(islandDialogue[4], 255, "the dialogue strip keeps the decorative island opaque")
-  local islandApplication = applicationPixel(3, 3)
-  Assert.equal(islandApplication[4], 255, "the disconnected island survives the interior flood fill")
-  Assert.deepEqual(
-    { islandApplication[1], islandApplication[2], islandApplication[3] },
-    { islandDialogue[1], islandDialogue[2], islandDialogue[3] },
-    "the surviving island keeps its source palette color"
-  )
-  -- Unconnected ordinary border pixels stay opaque in the application strip.
-  local borderApplication = applicationPixel(0, 1)
-  Assert.equal(borderApplication[4], 255, "ordinary border pixels stay opaque")
-  -- Source index 0 is transparent in both strips.
-  local zeroDialogue = dialoguePixel(0, 0)
-  Assert.equal(zeroDialogue[4], 0, "source index 0 stays transparent in the dialogue strip")
-  local zeroApplication = applicationPixel(0, 0)
-  Assert.equal(zeroApplication[4], 0, "source index 0 stays transparent in the application strip")
-end
-
--- The interior seed tile must be uniformly one source index: a frame whose
--- tile 8 mixes indices cannot supply a flood-fill seed, so the compiler
--- reports the frame and tile instead of guessing a dominant index.
-function T.nonuniform_interior_tile_is_a_typed_source_error()
-  local tiles = {}
-  for tile = 0, 17 do
-    tiles[tile + 1] = solidTile(1)
-  end
-  local mixed = {}
-  for y = 0, 7 do
-    local value = y < 4 and 5 or 6
-    for _ = 0, 3 do
-      mixed[#mixed + 1] = string.char(value + value * 16)
-    end
-  end
-  tiles[8 + 1] = table.concat(mixed)
-  local romFs, sha1, hashLua = fixture({
-    tamper = function(alias, members)
-      if alias == "dialogue_frames" then
-        members[3] = lz10Wrap(charDataWithTiles(tiles))
-      end
-      return members
-    end,
-  })
-  local bundle, err = compileWithTestConfig(romFs, sha1, hashLua)
-  Assert.isNil(bundle, "a frame with a mixed interior seed must not compile")
-  local typed = assert(err, "the compiler reports the defect")
-  Assert.equal(typed.code, FieldUiCompiler.ERROR.SOURCE_INVALID)
-  local context = assert(typed.context, "the defect carries frame context")
-  Assert.isTrue(context.frame == 0 or context.style == 0 or context.member == 2, "the defect identifies frame 0")
 end
 
 return { tests = T }
