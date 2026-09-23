@@ -2999,7 +2999,42 @@ function InteractiveCacheBuild:_sweepExpansionReady()
     return false
   end
   local candidate = self.sweepCandidate ~= nil and self.byKey[self.sweepCandidate] or nil
-  return candidate == nil or candidate.ready or candidate.failure ~= nil
+  if candidate ~= nil then
+    -- Settling an already-admitted candidate is immediate bookkeeping even
+    -- inside the quiet window; a still-running one waits on pool results.
+    return candidate.ready or candidate.failure ~= nil
+  end
+  -- Only fresh enrollment waits out the quiet window, mirroring
+  -- _advanceSweep so runnable planning means progress without a clock wait.
+  return not self:_sweepQuietPending()
+end
+
+---@return number|nil seconds until local planning becomes retryable; nil when no clock-driven wake is needed
+function InteractiveCacheBuild:nextPlanningWakeDelay()
+  -- Retained scalar reads only: no cache IO, pool polling, or corpus scan.
+  if self.retired or not self.sweepAuthorized or self.sweepExhausted then
+    return nil
+  end
+  if not self.sourceLoaded or not self.pagesKnown then
+    return nil
+  end
+  if self.foregroundPendingCount > 0 then
+    return nil
+  end
+  local candidate = self.sweepCandidate ~= nil and self.byKey[self.sweepCandidate] or nil
+  if candidate ~= nil then
+    -- Bookkeeping settles immediately (runnable) or waits on pool results;
+    -- neither is a clock wait owned by this session.
+    return nil
+  end
+  if not self:_sweepQuietPending() then
+    return nil
+  end
+  local remaining = self.lastForegroundActivity + SWEEP_SETTLE_SECONDS - self.clock()
+  if remaining <= 0 then
+    return 0
+  end
+  return remaining
 end
 
 ---@return boolean unexpanded explicit complete demand can advance now

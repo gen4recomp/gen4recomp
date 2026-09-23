@@ -695,6 +695,7 @@ end
 -- One wait/drive decision: an already-queued command outranks every wait
 -- choice, immediately runnable local work pumps with no sleep, an
 -- external compiler or close wait keeps one bounded sleep before polling,
+-- a session clock wait sleeps at most one live cadence before repumping,
 -- and only a fully idle controller blocks on its control channel. A
 -- quiescence barrier that can settle now pumps at once; one still waiting
 -- on worker or close results keeps polling instead of blocking, since
@@ -725,6 +726,22 @@ function Worker:driveOnce(timer)
     timer.sleep(LIVE_TICK_SECONDS)
     self:step()
     return
+  end
+  if self.session ~= nil and self.session.nextPlanningWakeDelay ~= nil then
+    local wakeDelay = self.session:nextPlanningWakeDelay()
+    if wakeDelay ~= nil then
+      assert(
+        type(wakeDelay) == "number" and wakeDelay >= 0 and wakeDelay < math.huge,
+        "session planning wake delay must be a finite non-negative number"
+      )
+      if wakeDelay <= 0 then
+        self:step()
+        return
+      end
+      timer.sleep(math.min(wakeDelay, LIVE_TICK_SECONDS))
+      self:step()
+      return
+    end
   end
   local awakened = self.control:demand()
   self:_handle(awakened)

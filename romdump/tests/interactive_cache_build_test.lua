@@ -3725,6 +3725,120 @@ function T.a_new_near_request_restarts_the_quiet_window()
   Assert.notNil(candidate, "one quiet second after the near request admits background dispatch")
 end
 
+-- A quiet sweep window is a clock wait rather than runnable planning:
+-- inside the settle interval the session reports no immediate work and
+-- instead exposes the remaining delay until admission becomes due.
+function T.quiet_sweep_window_reports_a_timed_wait_instead_of_runnable_planning()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("quiet-timed-wait-generation", pool, backend, clock)
+  session:enableSweep()
+  for _ = 1, 5 do
+    session:update()
+  end
+  Assert.equal(#pool.submitted, 0, "authorization alone dispatches no background candidate")
+  tick.now = 0.5
+  session:update()
+  Assert.equal(#pool.submitted, 0, "no background candidate submits inside the quiet window")
+  Assert.isFalse(session:hasRunnablePlanning(), "quiet sweep admission is not immediately runnable")
+  local delay = session:nextPlanningWakeDelay()
+  Assert.notNil(delay, "quiet time alone exposes a planning wake delay")
+  Assert.isTrue(delay > 0, "the wake delay stays positive inside the quiet window")
+  Assert.isTrue(delay <= 0.5 + 1e-9, "the wake delay never exceeds the remaining quiet time")
+end
+
+-- Reaching the quiet deadline admits exactly one background candidate
+-- and clears the timed wait; with sweep unauthorized there is no wait.
+function T.quiet_deadline_expiry_admits_one_sweep_candidate_and_clears_the_wait()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("quiet-deadline-generation", pool, backend, clock)
+  session:enableSweep()
+  tick.now = 0.5
+  for _ = 1, 5 do
+    session:update()
+  end
+  Assert.isFalse(session:hasRunnablePlanning(), "quiet sweep admission is not immediately runnable")
+  tick.now = 1.0
+  for _ = 1, 5 do
+    session:update()
+  end
+  Assert.equal(#pool.submitted, 1, "the quiet deadline admits exactly one background candidate")
+  Assert.isNil(session:nextPlanningWakeDelay(), "an outstanding candidate leaves no clock wait")
+  local idle = warmingSessionWithClock("quiet-unauthorized-generation", retryCapablePool(), FakeCache.new(), clock)
+  idle:update()
+  Assert.isNil(idle:nextPlanningWakeDelay(), "an unauthorized sweep exposes no clock wait")
+end
+
+-- The quiet deadline is exact to the session epsilon: just inside the
+-- window the clock wait stays positive; at the deadline it clears.
+function T.quiet_deadline_epsilon_boundary_reports_no_negative_wait()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("quiet-epsilon-generation", pool, backend, clock)
+  session:enableSweep()
+  tick.now = 1.0 - 2e-9
+  session:update()
+  Assert.isFalse(session:hasRunnablePlanning(), "just inside the window admission is not runnable")
+  local delay = session:nextPlanningWakeDelay()
+  Assert.notNil(delay, "just inside the window a clock wait remains")
+  Assert.isTrue(delay > 0, "the remaining wait never goes negative at the boundary")
+  Assert.isTrue(delay <= 3e-9, "the remaining wait matches the epsilon-scale remainder")
+  tick.now = 1.0
+  session:update()
+  Assert.isNil(session:nextPlanningWakeDelay(), "at the deadline no clock wait remains")
+end
+
+-- Foreground demand owns the next candidate: while required/near work is
+-- outstanding the session exposes no sweep clock wait.
+function T.foreground_demand_suppresses_the_sweep_clock_wait()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("quiet-foreground-generation", pool, backend, clock)
+  session:enableSweep()
+  local ready, failure = session:requestJob("script-member", "4", "required")
+  Assert.isFalse(ready, "required demand answers pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  tick.now = 0.5
+  session:update()
+  Assert.isNil(session:nextPlanningWakeDelay(), "foreground demand owns the next candidate, not the sweep clock")
+end
+
+-- Settling an already-admitted candidate is immediate bookkeeping: a
+-- ready candidate clears while fresh enrollment still waits out quiet.
+function T.ready_sweep_candidate_settles_inside_the_quiet_window()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("quiet-settle-generation", pool, backend, clock)
+  session:enableSweep()
+  tick.now = 1.0
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  Assert.notNil(candidate, "the deadline admits one background candidate")
+  local before = #pool.submitted
+  -- Fresh foreground demand restarts the quiet window while the admitted
+  -- candidate is still running.
+  local ready, failure = session:requestJob("script-member", "4", "required")
+  Assert.isFalse(ready, "required demand answers pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  pool.states[candidate] = "ready"
+  pool.states["script-member:4"] = "ready"
+  for _ = 1, 5 do
+    session:update()
+  end
+  local entry = session.byKey[candidate]
+  Assert.notNil(entry, "the admitted candidate registers")
+  Assert.isTrue(entry.ready, "the ready candidate settles without waiting out quiet")
+  Assert.isNil(session.sweepCandidate, "settling clears the running candidate")
+  for _, jobKey in ipairs(newSubmissions(pool, before)) do
+    Assert.equal(jobKey, "script-member:4", "no fresh sweep candidate enrolls inside quiet: " .. jobKey)
+  end
+end
+
 function T.a_running_sweep_job_survives_foreground_arrival()
   local backend = FakeCache.new()
   local pool = retryCapablePool()

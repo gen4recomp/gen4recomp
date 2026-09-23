@@ -19,7 +19,7 @@ local function recordingTimer()
   return timer
 end
 
----@param options { runnable: boolean, poolState: string, queued: table[]?, demandCommand: table? }
+---@param options { runnable: boolean, poolState: string, wakeDelay: number?, queued: table[]?, demandCommand: table? }
 ---@return table worker fake-channel controller under test
 ---@return table session fake selected session
 ---@return table pool fake compiler pool
@@ -34,9 +34,12 @@ local function driveSetup(options)
     queued = options.queued or {},
     demandCommand = options.demandCommand,
   }
-  local session = { pumps = 0, runnable = options.runnable }
+  local session = { pumps = 0, runnable = options.runnable, wakeDelay = options.wakeDelay }
   function session.hasRunnablePlanning()
     return session.runnable
+  end
+  function session.nextPlanningWakeDelay()
+    return session.wakeDelay
   end
   function session.update()
     session.pumps = session.pumps + 1
@@ -121,6 +124,84 @@ function T.queued_command_handles_before_any_wait_decision()
   Assert.equal(session.pumps, 1, "the command path pumps the session immediately")
   Assert.equal(#timer.sleeps, 0, "a queued command waits for no sleep")
   Assert.equal(log.demands, 0, "a queued command waits for no demand")
+end
+
+-- A session clock wait sleeps on the live cadence instead of spinning:
+-- exactly one bounded sleep and one pump, with no control-channel block.
+function T.timed_planning_wait_sleeps_once_then_pumps()
+  local worker, session, _, timer, log = driveSetup({
+    runnable = false,
+    poolState = "idle",
+    wakeDelay = 0.5,
+    demandCommand = { op = "unknown-drive-probe" },
+  })
+  worker:driveOnce(timer)
+  Assert.equal(#timer.sleeps, 1, "a timed wait sleeps exactly once before pumping")
+  Assert.isTrue(timer.sleeps[1] <= LIVE_CADENCE_SECONDS, "a timed wait never exceeds the live cadence")
+  Assert.equal(session.pumps, 1, "a timed wait pumps the session exactly once")
+  Assert.equal(log.demands, 0, "a timed wait never blocks on the control channel")
+end
+
+-- An expired clock wait pumps immediately: no sleep is owed when the
+-- deadline is already due.
+function T.expired_timed_wait_pumps_without_sleeping()
+  local worker, session, _, timer, log = driveSetup({
+    runnable = false,
+    poolState = "idle",
+    wakeDelay = 0,
+    demandCommand = { op = "unknown-drive-probe" },
+  })
+  worker:driveOnce(timer)
+  Assert.equal(session.pumps, 1, "an expired wait pumps the session exactly once")
+  Assert.equal(#timer.sleeps, 0, "an expired wait sleeps for no cadence")
+  Assert.equal(log.demands, 0, "an expired wait never blocks on the control channel")
+end
+
+-- Pool worker waiting outranks a session clock wait: the drive keeps the
+-- live poll cadence instead of the shorter clock remainder.
+function T.pool_waiting_outranks_a_shorter_session_clock_wait()
+  local worker, session, _, timer, log = driveSetup({
+    runnable = false,
+    poolState = "waiting",
+    wakeDelay = 0.002,
+    demandCommand = { op = "unknown-drive-probe" },
+  })
+  worker:driveOnce(timer)
+  Assert.equal(#timer.sleeps, 1, "the pool wait sleeps exactly once before polling")
+  Assert.equal(timer.sleeps[1], LIVE_CADENCE_SECONDS, "the pool wait keeps the live poll cadence")
+  Assert.equal(session.pumps, 1, "the wait polls the session exactly once")
+  Assert.equal(log.demands, 0, "the wait never blocks on the control channel")
+end
+
+-- An already-queued command outranks a session clock wait: no sleep is
+-- owed when a command is ready.
+function T.queued_command_outranks_a_session_clock_wait()
+  local worker, session, _, timer, log = driveSetup({
+    runnable = false,
+    poolState = "idle",
+    wakeDelay = 0.5,
+    queued = { { op = "unknown-drive-probe" } },
+  })
+  worker:driveOnce(timer)
+  Assert.isTrue(log.pops >= 1, "the drive consults queued commands first")
+  Assert.equal(session.pumps, 1, "the command path pumps the session immediately")
+  Assert.equal(#timer.sleeps, 0, "a queued command waits for no sleep")
+  Assert.equal(log.demands, 0, "a queued command waits for no demand")
+end
+
+-- A fully idle session with no clock wait still blocks for the next
+-- command instead of polling.
+function T.idle_session_without_a_timed_wait_blocks_for_the_next_command()
+  local worker, session, _, timer, log = driveSetup({
+    runnable = false,
+    poolState = "idle",
+    wakeDelay = nil,
+    demandCommand = { op = "unknown-drive-probe" },
+  })
+  worker:driveOnce(timer)
+  Assert.equal(log.demands, 1, "an idle controller blocks on its control channel")
+  Assert.equal(#timer.sleeps, 0, "an idle controller performs no timed sleep")
+  Assert.equal(session.pumps, 1, "the post-command step pumps the session exactly once")
 end
 
 return { metadata = { capabilities = {} }, tests = T }
