@@ -119,6 +119,57 @@ BagSources.archive = {
   symbol = "NARC_a_0_1_5",
 }
 
+-- The Bag's TM/HM summary uses the shared move-icon resources from the raw
+-- decomp symbol NARC_a_0_0_8. These are producer facts; runtime receives only
+-- the semantic records emitted by the compiler.
+BagSources.moveSummary = {
+  archive = { alias = "NARC_a_0_0_8", symbol = "NARC_a_0_0_8" },
+  shared = { palette = 74, cell = 242, animation = 243, frame = 0 },
+  typeChars = {
+    [0] = 234,
+    [1] = 225,
+    [2] = 227,
+    [3] = 235,
+    [4] = 229,
+    [5] = 237,
+    [6] = 231,
+    [7] = 228,
+    [8] = 238,
+    [9] = 236,
+    [10] = 226,
+    [11] = 241,
+    [12] = 233,
+    [13] = 222,
+    [14] = 223,
+    [15] = 230,
+    [16] = 221,
+    [17] = 224,
+  },
+  typePaletteOverrides = { 0, 0, 1, 1, 0, 0, 2, 1, 0, 2, 0, 1, 2, 0, 1, 1, 2, 0 },
+  categoryChars = { [0] = 244, [1] = 246, [2] = 245 },
+  categoryPaletteOverrides = { 0, 1, 0 },
+  typeCenter = { x = 48, y = 112 },
+  categoryCenter = { x = 144, y = 112 },
+  messages = {
+    type = { bank = 10, index = 101 },
+    pp = { bank = 10, index = 89 },
+    category = { bank = 10, index = 92 },
+    power = { bank = 10, index = 90 },
+    accuracy = { bank = 10, index = 91 },
+    unavailable = { bank = 10, index = 25 },
+  },
+  text = {
+    type = { x = 0, y = 104 },
+    pp = { x = 16, y = 120 },
+    category = { x = 72, y = 104 },
+    power = { x = 168, y = 104 },
+    accuracy = { x = 168, y = 120 },
+    ppValue = { x = 48, y = 120 },
+    powerValue = { x = 232, y = 104 },
+    accuracyValue = { x = 232, y = 120 },
+  },
+}
+
 -- Screen (NSCR) members by semantic role.
 BagSources.screens = {
   upperBase = 54,

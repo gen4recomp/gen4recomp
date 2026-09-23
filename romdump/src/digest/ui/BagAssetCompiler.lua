@@ -74,13 +74,14 @@ local function modelUnits(raw)
   return raw / MapUnits.MODEL_UNITS_PER_TILE
 end
 
-local function readMember(archive, memberId, role, dependencies)
+local function readMember(archive, memberId, role, dependencies, archiveLabel)
   local member, err = archive:readMember(memberId)
   if not member then
     sourceError("member " .. memberId .. " is unreadable: " .. Errors.format(err), { role = role, memberId = memberId })
   end
   assert(member ~= nil, "unreadable members fail above")
-  dependencies[#dependencies + 1] = { name = "bag_ui:member:" .. memberId, role = role, sha1 = Hashing.sha1hex(member) }
+  dependencies[#dependencies + 1] =
+    { name = (archiveLabel or "bag_ui") .. ":member:" .. memberId, role = role, sha1 = Hashing.sha1hex(member) }
   if string.byte(member, 1) == 0x10 then
     local plain, lzErr = Lz10.decode(member)
     if not plain then
@@ -216,7 +217,15 @@ local function renderStaticFrame(spriteData, selector, role)
 end
 
 local function compileVisual(spriteData, selector, role, assets)
-  local rendered = renderStaticFrame(spriteData, selector, role)
+  local ok, rendered = pcall(renderStaticFrame, spriteData, selector, role)
+  if not ok then
+    if Errors.is(rendered) then
+      ---@cast rendered Errors.Error
+      sourceError(role .. " does not rasterize: " .. rendered.message, { role = role, cause = rendered.code })
+    end
+    error(rendered, 0)
+  end
+  assert(type(rendered) == "table", "static visual rasterization returns an image")
   return writeSpriteFrame(rendered, BagCache.assetDir() .. "/" .. role .. "-frame-1.png", assets)
 end
 
@@ -892,6 +901,102 @@ local function compileText(messageArchive, dependencies)
   }
 end
 
+local function compileMoveSummary(moveArchive, messageArchive, dependencies, assets)
+  local facts = assert(BagSources.moveSummary)
+  local function materializeMovePalette(palette)
+    -- The retail loader places the packed NARC8 palette at VRAM bank 4; the
+    -- source selects banks 4..6 after applying the per-icon override. The
+    -- generic rasterizer indexes one flat palette, so preserve that loader
+    -- base explicitly at the producer boundary.
+    local colors = {}
+    for index = 1, 4 * 16 do
+      colors[index] = { r = 0, g = 0, b = 0 }
+    end
+    for index, color in ipairs(palette.colors) do
+      colors[4 * 16 + index] = color
+    end
+    return { colors = colors }
+  end
+  local shared = {
+    materializeMovePalette(
+      decode(
+        "decodePalette",
+        readMember(moveArchive, facts.shared.palette, "move-summary-palette", dependencies, "narc8"),
+        "move-summary-palette"
+      )
+    ),
+    decode(
+      "decodeCell",
+      readMember(moveArchive, facts.shared.cell, "move-summary-cell", dependencies, "narc8"),
+      "move-summary-cell"
+    ),
+    decode(
+      "decodeAnimation",
+      readMember(moveArchive, facts.shared.animation, "move-summary-animation", dependencies, "narc8"),
+      "move-summary-animation"
+    ),
+  }
+  local typeIcons, categoryIcons = {}, {}
+  local MonSources = require("romdump.src.config.MonSources")
+  for typeId, key in pairs(MonSources.typeKeys) do
+    local memberId = assert(facts.typeChars[typeId], "move type source member is missing")
+    local sprite = {
+      decode(
+        "decodeChar",
+        readMember(moveArchive, memberId, "move-type-" .. key, dependencies, "narc8"),
+        "move-type-" .. key
+      ),
+      shared[1],
+      shared[2],
+      shared[3],
+    }
+    typeIcons[key] = compileVisual(
+      sprite,
+      { animation = facts.shared.frame, palette = 4 + facts.typePaletteOverrides[typeId + 1] },
+      "move-type-" .. key,
+      assets
+    )
+  end
+  for categoryId, key in pairs(MonSources.damageCategories) do
+    local memberId = assert(facts.categoryChars[categoryId], "move category source member is missing")
+    local sprite = {
+      decode(
+        "decodeChar",
+        readMember(moveArchive, memberId, "move-category-" .. key, dependencies, "narc8"),
+        "move-category-" .. key
+      ),
+      shared[1],
+      shared[2],
+      shared[3],
+    }
+    categoryIcons[key] = compileVisual(
+      sprite,
+      { animation = facts.shared.frame, palette = 4 + facts.categoryPaletteOverrides[categoryId + 1] },
+      "move-category-" .. key,
+      assets
+    )
+  end
+  local labels = {}
+  local messageBanks = {}
+  local function bankOf(bankId)
+    if messageBanks[bankId] == nil then
+      messageBanks[bankId] = readMessageBank(messageArchive, bankId, "move-summary-bank-" .. bankId, dependencies)
+    end
+    return messageBanks[bankId]
+  end
+  for key, selector in pairs(facts.messages) do
+    labels[key] = lowerLabel(bankOf(selector.bank), selector.bank, selector.index, "move-summary-label:" .. key)
+  end
+  return {
+    labels = labels,
+    text = facts.text,
+    typeCenter = facts.typeCenter,
+    categoryCenter = facts.categoryCenter,
+    typeIcons = typeIcons,
+    categoryIcons = categoryIcons,
+  }
+end
+
 -- Registration marker rasterization: decode the audited source bitmap once,
 -- render it through the shared lower-Bag palette path, and crop the two
 -- audited slot regions. The tile count must match the audited bitmap exactly;
@@ -1171,6 +1276,25 @@ local function _compile(romFs)
   end
   assert(messageArchive ~= nil, "unavailable message archives fail above")
   local text = compileText(messageArchive, dependencies)
+  local moveArchive, moveArchiveErr = romFs:openNarc(BagSources.moveSummary.archive.symbol)
+  if moveArchive == nil then
+    error(
+      moveArchiveErr
+        or Errors.new(
+          BagAssetCompiler.ERROR.SOURCE_INVALID,
+          "move summary archive is unavailable",
+          { alias = BagSources.moveSummary.archive.symbol }
+        ),
+      0
+    )
+  end
+  assert(moveArchive ~= nil, "unavailable move summary archive fails above")
+  local moveInfo =
+    must(romFs:resolvedNarc(BagSources.moveSummary.archive.symbol), "move summary archive has no resolution")
+  local moveBytes = must(romFs:read(moveInfo.fileId), "move summary archive bytes are unavailable")
+  dependencies[#dependencies + 1] = { name = "narc8:narc", sha1 = Hashing.sha1hex(moveBytes) }
+  local moveSummary = compileMoveSummary(moveArchive, messageArchive, dependencies, assets)
+  moveSummary.background = screenReferences["upper-alternate"]
   local sprites = compileSprites(archive, dependencies, assets)
   local backgrounds = compileLowerBackgrounds(lower, sprites.cancelFace, assets)
   local markers = compileRegistrationMarkers(archive, lower.colors, dependencies, assets)
@@ -1208,11 +1332,11 @@ local function _compile(romFs)
       description = {
         frame = {
           image = screenReferences["upper-base"].image,
-          alternateImage = screenReferences["upper-alternate"].image,
           rect = geometry.descriptionFrame,
         },
         textRect = geometry.descriptionText,
       },
+      moveSummary = moveSummary,
       model = { male = male, female = female },
       animations = {
         states = states,
@@ -1348,6 +1472,7 @@ local function _compile(romFs)
     source = BagSources.provenance,
     selection = {
       archive = BagSources.archive,
+      moveSummary = BagSources.moveSummary,
       screens = BagSources.screens,
       chars = BagSources.chars,
       palettes = BagSources.palettes,

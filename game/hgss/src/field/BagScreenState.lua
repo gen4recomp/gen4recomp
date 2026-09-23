@@ -33,6 +33,7 @@ BagScreenState.__index = BagScreenState
 ---@field service HgssBagService the live bag service
 ---@field cursor BagCursor the borrowed runtime-only field cursor
 ---@field manifest table<string, unknown> the validated bag presentation manifest
+---@field monCatalog table<string, unknown> the borrowed compiled mon catalog
 ---@field heroGender "male"|"female" the profile-selected hero backdrop
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field overrides table<string, unknown>? per-case function overrides for this application
@@ -50,6 +51,11 @@ function BagScreenState.new(opts)
   assert(type(cursor.currentPocket) == "function", "the bag screen requires the cursor pocket")
   assert(type(cursor.setPocket) == "function", "the bag screen requires pocket switching")
   local manifest = assert(opts.manifest, "the bag screen requires the bag presentation manifest")
+  local monCatalog = assert(opts.monCatalog, "the bag screen requires the mon catalog")
+  assert(
+    type(monCatalog) == "table" and type(monCatalog.moveByNativeId) == "function",
+    "the bag screen requires move lookup"
+  )
   local heroGender = assert(opts.heroGender, "the bag screen requires the hero gender")
   assert(heroGender == "male" or heroGender == "female", "the hero gender selects its backdrop")
   assert(type(opts.measureDisplay) == "function", "the bag screen requires the display facts")
@@ -64,7 +70,7 @@ function BagScreenState.new(opts)
   }, BagScreenState)
   self._hero = BagHeroPresenter.new({ manifest = manifest, gender = heroGender })
   local function refreshModel()
-    return BagModel.build(service, cursor)
+    return BagModel.build(service, cursor, monCatalog)
   end
   local wrapper = self
   local function resolveLayout()

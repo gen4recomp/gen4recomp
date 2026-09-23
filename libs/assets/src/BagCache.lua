@@ -62,7 +62,13 @@ function BagCache.referencedPaths(manifest)
   addImage(hero.background.male)
   addImage(hero.background.female)
   paths[#paths + 1] = hero.description.frame.image
-  paths[#paths + 1] = hero.description.frame.alternateImage
+  addImage(hero.moveSummary.background)
+  for _, visual in pairs(hero.moveSummary.typeIcons) do
+    addVisual(visual)
+  end
+  for _, visual in pairs(hero.moveSummary.categoryIcons) do
+    addVisual(visual)
+  end
   for _, gender in ipairs({ "male", "female" }) do
     for _, path in ipairs(ModelAsset.referencedPaths(hero.model[gender])) do
       paths[#paths + 1] = path

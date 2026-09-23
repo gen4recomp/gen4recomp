@@ -301,6 +301,71 @@ function T.published_focus_visuals_carry_no_timeline_or_source_identities(romFs)
   end
 end
 
+function T.machine_summary_publishes_the_complete_semantic_contract(romFs)
+  local bundle = compile(romFs)
+  local manifest = assert(bundle.manifest)
+  Assert.equal(manifest.schema, "g4-bag-assets-v10", "the rebuilt Bag cache must publish the move-summary contract")
+  local summary = assert(assert(manifest.hero).moveSummary, "the hero must publish a machine move summary")
+  Assert.isNil(manifest.hero.description.frame.alternateImage, "the retired alternate-image owner is removed")
+  Assert.deepEqual(summary.labels, {
+    type = "TYPE",
+    pp = "PP",
+    category = "CATEGORY",
+    power = "POWER",
+    accuracy = "ACCURACY",
+    unavailable = "---",
+  })
+  Assert.deepEqual(summary.text, {
+    type = { x = 0, y = 104 },
+    pp = { x = 16, y = 120 },
+    category = { x = 72, y = 104 },
+    power = { x = 168, y = 104 },
+    accuracy = { x = 168, y = 120 },
+    ppValue = { x = 48, y = 120 },
+    powerValue = { x = 232, y = 104 },
+    accuracyValue = { x = 232, y = 120 },
+  })
+  Assert.deepEqual(summary.typeCenter, { x = 48, y = 112 })
+  Assert.deepEqual(summary.categoryCenter, { x = 144, y = 112 })
+  local typeKeys, categoryKeys = {}, {}
+  for key, visual in pairs(summary.typeIcons) do
+    typeKeys[#typeKeys + 1] = key
+    assertImage(bundle, visual, "move type " .. key)
+    assertNoTimelineOrSourceIdentity(visual, "move type " .. key)
+  end
+  for key, visual in pairs(summary.categoryIcons) do
+    categoryKeys[#categoryKeys + 1] = key
+    assertImage(bundle, visual, "move category " .. key)
+    assertNoTimelineOrSourceIdentity(visual, "move category " .. key)
+  end
+  table.sort(typeKeys)
+  table.sort(categoryKeys)
+  Assert.deepEqual(typeKeys, {
+    "bug",
+    "dark",
+    "dragon",
+    "electric",
+    "fighting",
+    "fire",
+    "flying",
+    "ghost",
+    "grass",
+    "ground",
+    "ice",
+    "mystery",
+    "normal",
+    "poison",
+    "psychic",
+    "rock",
+    "steel",
+    "water",
+  })
+  Assert.deepEqual(categoryKeys, { "physical", "special", "status" })
+  for _, path in ipairs(BagCache.referencedPaths(manifest)) do
+    Assert.isTrue(type(bundle.assets[path]) == "string", path .. " is ready for runtime acquisition")
+  end
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 return suite

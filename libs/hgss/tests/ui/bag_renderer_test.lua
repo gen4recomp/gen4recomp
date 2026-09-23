@@ -321,6 +321,60 @@ local function seedCache()
   return cache
 end
 
+local function moveSummaryManifest()
+  local manifested = manifest()
+  manifested.hero.moveSummary = {
+    background = { image = "bag/hero-move-summary.png", width = 256, height = 192 },
+    labels = {
+      type = "TYPE",
+      pp = "PP",
+      category = "CATEGORY",
+      power = "POWER",
+      accuracy = "ACCURACY",
+      unavailable = "---",
+    },
+    text = {
+      type = { x = 0, y = 104 },
+      pp = { x = 16, y = 120 },
+      category = { x = 72, y = 104 },
+      power = { x = 168, y = 104 },
+      accuracy = { x = 168, y = 120 },
+      ppValue = { x = 48, y = 120 },
+      powerValue = { x = 232, y = 104 },
+      accuracyValue = { x = 232, y = 120 },
+    },
+    typeCenter = { x = 48, y = 112 },
+    categoryCenter = { x = 144, y = 112 },
+    typeIcons = {
+      normal = { image = "bag/move-type-normal.png", width = 64, height = 16, offset = { x = -32, y = -8 } },
+    },
+    categoryIcons = {
+      physical = { image = "bag/move-category-physical.png", width = 64, height = 16, offset = { x = -32, y = -8 } },
+    },
+  }
+  return manifested
+end
+
+local function moveSummaryCache(reads)
+  local cache = seedCache()
+  local wrapped = {}
+  function wrapped:read(path)
+    reads[#reads + 1] = path
+    return cache:read(path)
+  end
+  function wrapped:write(path, data)
+    return cache:write(path, data)
+  end
+  for _, path in ipairs({
+    "bag/hero-move-summary.png",
+    "bag/move-type-normal.png",
+    "bag/move-category-physical.png",
+  }) do
+    wrapped:write(path, "png-bytes")
+  end
+  return wrapped
+end
+
 local function text()
   local printed = {}
   local palette = {}
@@ -587,6 +641,56 @@ function T.closed_status_draws_nothing()
   Assert.equal(#graphics.primitives, 0, "a closed presentation draws no primitives")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
+end
+
+function T.hero_switches_between_machine_summary_and_ordinary_description()
+  local reads = {}
+  local content = text()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = BagRenderer.new({
+    cacheFs = moveSummaryCache(reads),
+    manifest = moveSummaryManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local machine = slot("TM01", 1)
+  machine.description = "TM01 description"
+  machine.moveSummary = {
+    moveType = "normal",
+    category = "physical",
+    pp = 35,
+    power = 40,
+    accuracy = 100,
+  }
+  local machineCells = visibleSlots()
+  machineCells[1] = machine
+  draw:draw(status({ selected = machine, visibleSlots = machineCells }), plan(true), { icons = icons() })
+  local summaryReads = 0
+  for _, path in ipairs(reads) do
+    if path == "bag/hero-move-summary.png" then
+      summaryReads = summaryReads + 1
+    end
+  end
+  Assert.equal(summaryReads, 1, "a machine selection acquires the semantic summary background")
+  for _, label in ipairs({ "TYPE", "35", "CATEGORY", "40", "100" }) do
+    Assert.isTrue(printedText(content, label), "the machine summary prints " .. label)
+  end
+  Assert.isFalse(printedText(content, "TM01 description"), "the machine summary replaces ordinary description text")
+  draw:release()
+
+  local lowerContent = text()
+  local lowerDraw = BagRenderer.new({
+    cacheFs = moveSummaryCache({}),
+    manifest = moveSummaryManifest(),
+    text = lowerContent,
+    graphics = FakeGraphics({ imageSizes = IMAGE_SIZES }),
+    heroRenderer = heroSpy(nil),
+  })
+  lowerDraw:draw(status({ selected = machine, visibleSlots = machineCells }), plan(false), { icons = icons() })
+  Assert.isFalse(printedText(lowerContent, "TYPE"), "lower-only topology does not invent the hidden summary")
+  Assert.isTrue(printedText(lowerContent, "TM01 description"), "lower-only topology keeps compact ordinary description")
+  lowerDraw:release()
 end
 
 function T.two_pane_mode_draws_hero_and_interactive_content()

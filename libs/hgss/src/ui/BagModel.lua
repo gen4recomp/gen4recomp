@@ -50,10 +50,11 @@ end
 ---@param registrationSlot integer? the registration slot identity (1, 2, or nil)
 ---@param itemKey string
 ---@param quantity integer
+---@param monCatalog table<string, unknown>?
 ---@return table<string, unknown>
-local function projectSlot(service, registrationSlot, itemKey, quantity)
+local function projectSlot(service, registrationSlot, itemKey, quantity, monCatalog)
   local definition = service:catalog():item(itemKey)
-  return {
+  local slot = {
     item = itemKey,
     nativeId = definition.nativeId,
     name = definition.name,
@@ -62,12 +63,36 @@ local function projectSlot(service, registrationSlot, itemKey, quantity)
     icon = definition.icon,
     registrationSlot = registrationSlot,
   }
+  if definition.tmhmMoveNativeId ~= nil then
+    assert(
+      type(monCatalog) == "table" and type(monCatalog.moveByNativeId) == "function",
+      "TM/HM projection requires the mon catalog"
+    )
+    local move = assert(monCatalog:moveByNativeId(definition.tmhmMoveNativeId), "TM/HM move lookup returned no move")
+    assert(
+      type(move.moveType) == "string" and type(move.category) == "string",
+      "TM/HM move carries semantic type and category"
+    )
+    assert(
+      type(move.basePp) == "number" and type(move.power) == "number" and type(move.accuracy) == "number",
+      "TM/HM move carries display facts"
+    )
+    slot.moveSummary = {
+      moveType = move.moveType,
+      category = move.category,
+      pp = move.basePp,
+      power = move.power,
+      accuracy = move.accuracy,
+    }
+  end
+  return slot
 end
 
 ---@param service HgssBagService
 ---@param cursor BagCursor
+---@param monCatalog table<string, unknown>?
 ---@return table<string, unknown>
-function BagModel.build(service, cursor)
+function BagModel.build(service, cursor, monCatalog)
   assert(type(service) == "table", "the bag view needs the live bag service")
   assert(type(cursor) == "table", "the bag view needs the runtime bag cursor")
   assert(type(service.pocketItems) == "function", "the bag view needs pocket reads")
@@ -92,7 +117,7 @@ function BagModel.build(service, cursor)
   end
   local slots = {}
   for index, entry in ipairs(pocketSlots) do
-    slots[index] = projectSlot(service, registrationByItem[entry.item], entry.item, entry.quantity)
+    slots[index] = projectSlot(service, registrationByItem[entry.item], entry.item, entry.quantity, monCatalog)
   end
   local selectedAbsoluteIndex = clampSelection(count, cursor:position(pocket))
   local visibleStart = clampStart(count, cursor:scroll(pocket))

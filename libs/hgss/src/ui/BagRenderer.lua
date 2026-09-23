@@ -273,6 +273,16 @@ function BagRenderer.new(opts)
       width = 256,
       height = 192,
     })
+    local moveSummary = hero.moveSummary
+    if moveSummary ~= nil then
+      acquire("moveSummaryBackground", moveSummary.background)
+      for key, visual in pairs(moveSummary.typeIcons) do
+        acquire("moveType:" .. key, visual)
+      end
+      for key, visual in pairs(moveSummary.categoryIcons) do
+        acquire("moveCategory:" .. key, visual)
+      end
+    end
     for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
       local pockets = assert(interactive.backgrounds[state], "the bag manifest carries its " .. state .. " backgrounds")
       for _, pocket in ipairs(BagSave.POCKET_ORDER) do
@@ -444,6 +454,32 @@ end
 function BagRenderer:_drawHeroForeground(presentation, descriptionPalette)
   local graphics = self._graphics
   local manifest = self._manifest
+  local selected = presentation.selected
+  if selected ~= nil and selected.moveSummary ~= nil and promptText(presentation, manifest) == nil then
+    local summary = assert(manifest.hero.moveSummary)
+    drawVisual(graphics, assert(self._visuals.moveSummaryBackground), 0, 0)
+    local facts = assert(selected.moveSummary)
+    local typeVisual =
+      assert(self._visuals["moveType:" .. assert(facts.moveType)], "the move type visual is unavailable")
+    local categoryVisual =
+      assert(self._visuals["moveCategory:" .. assert(facts.category)], "the move category visual is unavailable")
+    drawVisual(graphics, typeVisual, summary.typeCenter.x, summary.typeCenter.y)
+    drawVisual(graphics, categoryVisual, summary.categoryCenter.x, summary.categoryCenter.y)
+    local labels = assert(summary.labels)
+    local text = assert(summary.text)
+    local function printAt(value, point)
+      self._text:drawTextWithPalette(plainText(value), point.x, point.y, descriptionPalette)
+    end
+    printAt(labels.type, text.type)
+    printAt(labels.pp, text.pp)
+    printAt(labels.category, text.category)
+    printAt(labels.power, text.power)
+    printAt(labels.accuracy, text.accuracy)
+    printAt(tostring(facts.pp), text.ppValue)
+    printAt(facts.power <= 1 and labels.unavailable or tostring(facts.power), text.powerValue)
+    printAt(facts.accuracy == 0 and labels.unavailable or tostring(facts.accuracy), text.accuracyValue)
+    return
+  end
   drawVisual(graphics, assert(self._visuals.descriptionFrame), 0, 0)
   local textRect = manifest.hero.description.textRect
   local contextual = contextualText(presentation, manifest)

@@ -245,6 +245,48 @@ local function decodePalette(data, opts)
       { paletteBytes = paletteBytes }
     )
   end
+  -- Nintendo's older G2D converter writes compressed palettes with the
+  -- complement of the stored byte count in TTLP.  The companion PMCP chunk
+  -- is the format marker; without it, the TTLP size is literal.  HGSS NARC8
+  -- member 74 is this form (0x200 - 0x1a0 = 0x60 stored bytes).
+  if chunkCount >= 2 then
+    local pcmpOffset = ttlpOffset + chunkSize
+    if pcmpOffset + 8 > size or reader:ascii(pcmpOffset, 4) ~= "PMCP" then
+      Errors.raise(
+        "FONT_FORMAT_INVALID",
+        "palette RLCN has an invalid compressed-palette chunk",
+        { pcmpOffset = pcmpOffset, size = size }
+      )
+    end
+    local pcmpSize = reader:u32le(pcmpOffset + 4)
+    if pcmpSize < 0x10 or pcmpOffset + pcmpSize > size then
+      Errors.raise(
+        "FONT_FORMAT_INVALID",
+        "palette RLCN compressed-palette chunk exceeds the member",
+        { pcmpOffset = pcmpOffset, pcmpSize = pcmpSize, size = size }
+      )
+    end
+    local fullPaletteBytes = depth == 3 and 0x200 or 0x2000
+    local literalEnd = ttlpOffset + 8 + dataOffset + paletteBytes
+    if literalEnd > ttlpOffset + chunkSize then
+      if paletteBytes >= fullPaletteBytes then
+        Errors.raise(
+          "FONT_FORMAT_INVALID",
+          "compressed palette size is outside the full palette",
+          { paletteBytes = paletteBytes, fullPaletteBytes = fullPaletteBytes }
+        )
+      end
+      local unpackedBytes = fullPaletteBytes - paletteBytes
+      if ttlpOffset + 8 + dataOffset + unpackedBytes > ttlpOffset + chunkSize then
+        Errors.raise(
+          "FONT_FORMAT_INVALID",
+          "compressed palette data exceeds the TTLP chunk",
+          { paletteBytes = paletteBytes, unpackedBytes = unpackedBytes, chunkSize = chunkSize }
+        )
+      end
+      paletteBytes = unpackedBytes
+    end
+  end
   local colorsOffset = ttlpOffset + 8 + dataOffset
   if dataOffset < 8 or colorsOffset + paletteBytes > ttlpOffset + chunkSize or colorsOffset + paletteBytes > size then
     Errors.raise(

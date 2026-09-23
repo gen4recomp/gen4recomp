@@ -24,7 +24,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v9"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v10"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -556,7 +556,7 @@ local function checkHero(hero, context)
   end
   checkKeys(
     hero,
-    { background = true, description = true, model = true, animations = true, presentation = true },
+    { background = true, description = true, moveSummary = true, model = true, animations = true, presentation = true },
     context,
     "hero"
   )
@@ -575,15 +575,94 @@ local function checkHero(hero, context)
   if type(description.frame) ~= "table" then
     fail("hero.description.frame must be a record", context)
   end
-  checkKeys(description.frame, { image = true, alternateImage = true, rect = true }, context, "hero.description.frame")
+  checkKeys(description.frame, { image = true, rect = true }, context, "hero.description.frame")
   if type(description.frame.image) ~= "string" or description.frame.image == "" then
     fail("hero.description.frame.image must be a non-empty path", context)
   end
-  if type(description.frame.alternateImage) ~= "string" or description.frame.alternateImage == "" then
-    fail("hero.description.frame.alternateImage must be a non-empty path", context)
-  end
   checkRect(description.frame.rect, context, "hero.description.frame.rect")
   checkRect(description.textRect, context, "hero.description.textRect")
+  local summary = hero.moveSummary
+  if type(summary) ~= "table" then
+    fail("hero.moveSummary must be a record", context)
+  end
+  checkKeys(summary, {
+    background = true,
+    labels = true,
+    text = true,
+    typeCenter = true,
+    categoryCenter = true,
+    typeIcons = true,
+    categoryIcons = true,
+  }, context, "hero.moveSummary")
+  checkImage(summary.background, context, "hero.moveSummary.background")
+  local labels = summary.labels
+  if type(labels) ~= "table" then
+    fail("hero.moveSummary.labels must be a record", context)
+  end
+  checkKeys(
+    labels,
+    { type = true, pp = true, category = true, power = true, accuracy = true, unavailable = true },
+    context,
+    "hero.moveSummary.labels"
+  )
+  for _, key in ipairs({ "type", "pp", "category", "power", "accuracy", "unavailable" }) do
+    if type(labels[key]) ~= "string" or labels[key] == "" then
+      fail("hero.moveSummary.labels." .. key .. " must be text", context)
+    end
+  end
+  local text = summary.text
+  if type(text) ~= "table" then
+    fail("hero.moveSummary.text must be a record", context)
+  end
+  checkKeys(text, {
+    type = true,
+    pp = true,
+    category = true,
+    power = true,
+    accuracy = true,
+    ppValue = true,
+    powerValue = true,
+    accuracyValue = true,
+  }, context, "hero.moveSummary.text")
+  for _, key in ipairs({ "type", "pp", "category", "power", "accuracy", "ppValue", "powerValue", "accuracyValue" }) do
+    checkPoint(text[key], context, "hero.moveSummary.text." .. key)
+  end
+  checkPoint(summary.typeCenter, context, "hero.moveSummary.typeCenter")
+  checkPoint(summary.categoryCenter, context, "hero.moveSummary.categoryCenter")
+  local function checkIconMap(value, keys, what)
+    if type(value) ~= "table" then
+      fail(what .. " must be a record", context)
+    end
+    local allowed = {}
+    for _, key in ipairs(keys) do
+      allowed[key] = true
+    end
+    checkKeys(value, allowed, context, what)
+    for _, key in ipairs(keys) do
+      checkVisual(value[key], context, what .. "." .. key)
+    end
+  end
+  checkIconMap(summary.typeIcons, {
+    "normal",
+    "fighting",
+    "flying",
+    "poison",
+    "ground",
+    "rock",
+    "bug",
+    "ghost",
+    "steel",
+    "mystery",
+    "fire",
+    "water",
+    "grass",
+    "electric",
+    "psychic",
+    "ice",
+    "dragon",
+    "dark",
+  }, "hero.moveSummary.typeIcons")
+  checkIconMap(summary.categoryIcons, { "physical", "special", "status" }, "hero.moveSummary.categoryIcons")
   local model = hero.model
   if type(model) ~= "table" then
     fail("hero.model must be a record", context)

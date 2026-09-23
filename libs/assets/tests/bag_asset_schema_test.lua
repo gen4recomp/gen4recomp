@@ -425,7 +425,59 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v9"
+  manifest.schema = "g4-bag-assets-v10"
+  manifest.hero.description.frame.alternateImage = nil
+  local icon = function(key)
+    return { image = "assets/generated/bag/move-" .. key .. ".png", width = 64, height = 16 }
+  end
+  local typeIcons = {}
+  for _, key in ipairs({
+    "normal",
+    "fighting",
+    "flying",
+    "poison",
+    "ground",
+    "rock",
+    "bug",
+    "ghost",
+    "steel",
+    "mystery",
+    "fire",
+    "water",
+    "grass",
+    "electric",
+    "psychic",
+    "ice",
+    "dragon",
+    "dark",
+  }) do
+    typeIcons[key] = icon(key)
+  end
+  manifest.hero.moveSummary = {
+    background = imageRef("assets/generated/bag/hero-move-summary.png"),
+    labels = {
+      type = "TYPE",
+      pp = "PP",
+      category = "CATEGORY",
+      power = "POWER",
+      accuracy = "ACCURACY",
+      unavailable = "---",
+    },
+    text = {
+      type = { x = 0, y = 104 },
+      pp = { x = 16, y = 120 },
+      category = { x = 72, y = 104 },
+      power = { x = 168, y = 104 },
+      accuracy = { x = 168, y = 120 },
+      ppValue = { x = 48, y = 120 },
+      powerValue = { x = 232, y = 104 },
+      accuracyValue = { x = 232, y = 120 },
+    },
+    typeCenter = { x = 48, y = 112 },
+    categoryCenter = { x = 144, y = 112 },
+    typeIcons = typeIcons,
+    categoryIcons = { physical = icon("physical"), special = icon("special"), status = icon("status") },
+  }
   manifest.interactive.backgrounds.browse = countVariantBackgrounds()
   manifest.interactive.cancel = {
     rect = rect(192, 168, 64, 24),
@@ -462,7 +514,7 @@ function T.previous_manifest_fails_schema_and_cache_contract()
   Assert.isFalse(pcall(BagCache.validateManifest, manifest), "the cache validator must reject the stale fixture")
   Assert.isNil(manifest.interactive.widgets, "the stale manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v9")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v10")
 end
 
 function T.schema_rejects_wrong_logical_size()
@@ -547,9 +599,9 @@ local function assertInvalid(manifest, why)
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v9")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v9")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v9")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v10")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v10")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v10")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
 end
 
@@ -885,9 +937,13 @@ function T.control_overlay_rejects_incomplete_or_timeline_shapes()
 end
 
 function T.stale_previous_manifest_fails_once_the_focus_contract_is_current()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v9", "the schema carries the control contract")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v9", "the central contract carries the control schema")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v9", "the loader requires the control schema")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v10", "the schema carries the move summary contract")
+  Assert.equal(
+    DerivedAssetContract.bag.schema,
+    "g4-bag-assets-v10",
+    "the central contract carries the move summary schema"
+  )
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v10", "the loader requires the move summary schema")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing is unchanged")
   Assert.isFalse(
     BagAssetSchema.isValidManifest(validManifest()),
@@ -1179,9 +1235,9 @@ local function validStripManifest()
 end
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v9")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v9")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v9")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v10")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v10")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v10")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")

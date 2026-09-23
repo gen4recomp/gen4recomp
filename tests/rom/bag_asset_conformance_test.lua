@@ -862,6 +862,60 @@ function T.hero_edge_colors_carry_the_retail_table(romFs, versionId)
   }, "the compiled edge records match the retail table")
 end
 
+function T.narc8_move_summary_sources_decode_and_resolve_every_semantic_key(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local narc8 = assert(romFs:openNarc("NARC_a_0_0_8"))
+  local function assertDecodes(kind, memberId)
+    local bytes = assert(narc8:readMember(memberId), "NARC8 member " .. memberId .. " must exist")
+    local record, err = G2dDecoder[kind](bytes, { label = "NARC8 member " .. memberId })
+    Assert.notNil(record, "NARC8 member " .. memberId .. " must decode: " .. (err and err.message or "?"))
+  end
+  assertDecodes("decodePalette", 74)
+  assertDecodes("decodeCell", 242)
+  assertDecodes("decodeAnimation", 243)
+  for _, memberId in ipairs({
+    221,
+    222,
+    223,
+    224,
+    225,
+    226,
+    227,
+    228,
+    229,
+    230,
+    231,
+    233,
+    234,
+    235,
+    236,
+    237,
+    238,
+    241,
+    244,
+    245,
+    246,
+  }) do
+    assertDecodes("decodeChar", memberId)
+  end
+
+  local summary = assert(bundle.manifest.hero.moveSummary, "the compiled bundle must publish semantic move visuals")
+  local typeCount, categoryCount = 0, 0
+  for key, visual in pairs(summary.typeIcons) do
+    typeCount = typeCount + 1
+    Assert.isTrue(type(visual.image) == "string" and #bundle.assets[visual.image] > 0, "type " .. key .. " has pixels")
+  end
+  for key, visual in pairs(summary.categoryIcons) do
+    categoryCount = categoryCount + 1
+    Assert.isTrue(
+      type(visual.image) == "string" and #bundle.assets[visual.image] > 0,
+      "category " .. key .. " has pixels"
+    )
+  end
+  Assert.equal(typeCount, 18, "every reachable HGSS move type resolves one visual")
+  Assert.equal(categoryCount, 3, "every move category resolves one visual")
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 return suite

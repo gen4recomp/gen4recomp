@@ -231,6 +231,40 @@ function T.registration_compaction_and_final_removal_refresh_slot_numbers()
   Assert.isNil(cleared.slots[1].registered, "the lossy boolean stays absent after removal")
 end
 
+function T.projects_machine_move_facts_without_publishing_native_identity()
+  local bag = service()
+  Assert.isTrue(bag:add("TM01", 1))
+  Assert.isTrue(bag:add("POTION", 1))
+  local cursor = BagCursor.new()
+  cursor:setPocket("tmhm")
+  local monCatalog = {
+    moveByNativeId = function(_, nativeId)
+      Assert.equal(nativeId, 264, "the item catalog supplies the move lookup identity")
+      return {
+        moveType = "normal",
+        category = "physical",
+        basePp = 35,
+        power = 40,
+        accuracy = 100,
+      }
+    end,
+  }
+
+  local machine = BagModel.build(bag, cursor, monCatalog)
+  Assert.deepEqual(machine.selected.moveSummary, {
+    moveType = "normal",
+    category = "physical",
+    pp = 35,
+    power = 40,
+    accuracy = 100,
+  })
+  Assert.isNil(machine.selected.tmhmMoveNativeId, "the projected record does not leak the item move identity")
+
+  cursor:setPocket("medicine")
+  local ordinary = BagModel.build(bag, cursor, monCatalog)
+  Assert.isNil(ordinary.selected.moveSummary, "ordinary items carry no synthetic move summary")
+end
+
 function T.builds_return_fresh_tables()
   local bag = stocked()
   local cursor = BagCursor.new()

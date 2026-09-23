@@ -134,6 +134,11 @@ local function composition(overrides)
   local box = { width = 512, height = 384, topologyObject = topology(512, 384) }
   local options = {
     service = bag,
+    monCatalog = {
+      moveByNativeId = function()
+        error("test catalog lookup is not exercised", 0)
+      end,
+    },
     cursor = BagCursor.new(),
     manifest = manifest(),
     heroGender = "male",

@@ -610,7 +610,7 @@ local function tapButton(control, layout, layoutManifest, buttonIndex)
   else
     geometry = assert(overlay.actionMenu.slots[4], "the confirm slot must be generated").hitRect
   end
-  local rect = assert(geometry, "the tapped control must be generated")
+  local rect = assert(geometry, "the tapped control must be generated") --[[@as { x: number, y: number, width: number, height: number }]]
   tap(control, layout, rect.x + rect.width / 2, rect.y + rect.height / 2)
 end
 

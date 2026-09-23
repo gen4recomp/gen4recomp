@@ -306,6 +306,11 @@ function T.open_bag_stays_controllable_across_window_blur()
   end
   local screen = BagScreenState.new({
     service = bag,
+    monCatalog = {
+      moveByNativeId = function()
+        error("test catalog lookup is not exercised", 0)
+      end,
+    },
     cursor = cursor,
     manifest = {
       hero = {
