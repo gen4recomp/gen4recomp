@@ -33,6 +33,23 @@ return S.script({
   },
 })
 ]],
+  ["acceptance.field_yes_no_message"] = [[
+local S = require("gen4.script")
+
+return S.script({
+  api = 1,
+  id = "acceptance.field_yes_no_message",
+  steps = {
+    S.askYesNo({
+      message = "msg.hgss.0542.00034",
+      result = S.var("VAR_UNK_407C"),
+    }),
+    S.waitTicks({ ticks = 2 }),
+    S.closeMessage({ erase = true }),
+    S.stop(),
+  },
+})
+]],
   ["acceptance.script_runtime"] = [[
 local S = require("gen4.script")
 

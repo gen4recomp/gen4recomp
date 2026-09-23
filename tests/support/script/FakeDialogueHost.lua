@@ -62,11 +62,10 @@ function FakeDialogueHost:close(erase)
   self:_record("close", erase)
 end
 
-function FakeDialogueHost:askYesNo(message, bindings)
-  self.open = true
+function FakeDialogueHost:askYesNo()
   self.yesNoSelected = 0
   self.yesNoResult = nil
-  self:_record("askYesNo", message, bindings)
+  self:_record("askYesNo")
 end
 
 function FakeDialogueHost:handleYesNoInput(input)

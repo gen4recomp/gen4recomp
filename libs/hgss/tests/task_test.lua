@@ -329,9 +329,58 @@ T["askYesNo source result"] = function()
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
 end
 
+T["askYesNo prints its optional message before opening the choice"] = function()
+  local h = harness({ printTicks = 2 })
+  local bindings = { [0] = S.playerName() }
+  local textArgs = { [1] = S.playerName() }
+  local instance = { scriptId = "test.yesno_message", textArgs = textArgs }
+  local node = {
+    message = S.gendered("msg.male", "msg.female"),
+    bindings = bindings,
+  }
+  local state = AskYesNoTask.create({ node = node }, {
+    services = h.services,
+    instance = instance,
+  })
+
+  Assert.isTrue(h.host:isOpen(), "printing the message opens ordinary dialogue")
+  Assert.equal(h.host.calls[1].name, "openMessage")
+  Assert.equal(h.host.calls[1].args[1], node)
+  Assert.equal(h.host.calls[2].name, "startPrint")
+  Assert.equal(h.host.calls[2].args[1], "msg.male", "message descriptors are evaluated by runtime semantics")
+  Assert.equal(h.host.calls[2].args[2], bindings)
+  Assert.equal(h.host.calls[2].args[3], textArgs)
+  Assert.equal(state.phase, "printing_message")
+
+  local context = { services = h.services, instance = instance }
+  Assert.isFalse(AskYesNoTask.poll(state, context).complete)
+  Assert.equal(#h.host.calls, 2, "the choice waits while printing")
+  h.host:advance()
+  Assert.isFalse(AskYesNoTask.poll(state, context).complete)
+  Assert.equal(#h.host.calls, 2, "the choice waits for printer completion")
+  h.host:advance()
+  Assert.isFalse(AskYesNoTask.poll(state, context).complete)
+  Assert.equal(state.phase, "opening")
+  Assert.equal(#h.host.calls, 2, "completion retains a full opening tick")
+  Assert.isNil(AskYesNoTask.validate(state))
+
+  AskYesNoTask.poll(state, context)
+  Assert.equal(h.host.calls[3].name, "askYesNo")
+  Assert.isTrue(h.host:isOpen(), "choice opening does not own ordinary dialogue state")
+end
+
+T["askYesNo without a message does not open ordinary dialogue"] = function()
+  local host = FakeDialogueHost.new()
+  local state = AskYesNoTask.create({ node = {} }, {})
+  AskYesNoTask.poll(state, { services = { dialogue = host } })
+  Assert.isFalse(host:isOpen(), "the choice-only fake must not invent ordinary dialogue")
+  Assert.equal(host.calls[1].name, "askYesNo")
+  Assert.notNil(AskYesNoTask.validate({ phase = "unknown" }))
+end
+
 local function directYesNoResult(inputs)
   local host = FakeDialogueHost.new()
-  local state = AskYesNoTask.create({ node = { message = "msg.choose" } }, {})
+  local state = AskYesNoTask.create({ node = {} }, {})
   local context = { services = { dialogue = host } }
   AskYesNoTask.poll(state, context)
   local result
