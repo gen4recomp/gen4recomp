@@ -283,9 +283,10 @@ function FieldResidencyCoordinator:mapForPreflight(mapId)
     return resident.runtimeMap
   end
   -- Collision preflight is read-only. If movement outruns logical prefetch,
-  -- borrow a map-loader entry without attaching actors or changing active
-  -- state; the next committed boundary counts its own fallback.
-  local logicalMap = self.mapLoader:load(mapId)
+  -- borrow a semantic map without attaching actors or changing active
+  -- state; the next committed boundary counts its own fallback. The probe
+  -- never touches visual readiness: a pending scene alone is not a failure.
+  local logicalMap = self.mapLoader:loadLogical(mapId)
   self.synchronousLogicalFallbackLoads = self.synchronousLogicalFallbackLoads + 1
   return self.composeMap(logicalMap, self.coverage)
 end

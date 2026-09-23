@@ -496,13 +496,55 @@ end
 local function resident_lookup_does_not_borrow_nonresident_maps()
   local coordinator, _, loader = coordinatorFixture()
   coordinator:initialize()
-  local beforeLoads = loader.loads
+  local fallbacks = coordinator:status().synchronousLogicalFallbackLoads
+  local resident = assert(coordinator:mapForId(10), "the committed map starts resident")
+
+  Assert.equal(coordinator:mapForPreflight(10), resident, "a resident preflight returns the resident view")
+  Assert.equal(loader.loads, 0, "a resident preflight never touches full realization")
+  Assert.equal(loader.logicalLoads, 2, "a resident preflight never acquires a semantic map")
+  Assert.equal(
+    coordinator:status().synchronousLogicalFallbackLoads,
+    fallbacks,
+    "a resident preflight counts no fallback"
+  )
 
   Assert.isNil(coordinator:mapForId(30))
   local borrowed = coordinator:mapForPreflight(30)
-  Assert.equal(borrowed.mapId, 30)
-  Assert.equal(loader.loads, beforeLoads + 1)
-  Assert.isNil(loader.protections[30])
+  Assert.equal(borrowed.mapId, 30, "a missed preflight still answers the semantic map")
+  Assert.equal(loader.loadCounts[30], nil, "a missed preflight never invokes full realization")
+  Assert.equal(loader.logicalLoadCounts[30], 1, "a missed preflight acquires exactly one semantic map")
+  Assert.equal(
+    coordinator:status().synchronousLogicalFallbackLoads,
+    fallbacks + 1,
+    "a missed preflight counts exactly one fallback"
+  )
+  Assert.isNil(coordinator:mapForId(30), "the borrowed preflight map never publishes residency")
+  Assert.isNil(loader.protections[30], "the borrowed preflight map is never protected")
+  coordinator:dispose()
+end
+
+-- A nonresident seam probe must answer from semantic readiness plus owned
+-- physical coverage even when full visual realization for that neighbor is
+-- still pending: the visual failure alone is never the probe's failure.
+local function preflight_succeeds_while_neighbor_visual_realization_is_pending()
+  local coordinator, _, loader = coordinatorFixture()
+  coordinator:initialize()
+  loader.failFullLoads = { [30] = "visual map 30 is not ready" }
+  local fallbacks = coordinator:status().synchronousLogicalFallbackLoads
+  local fullLoads = loader.loads
+
+  local borrowed = coordinator:mapForPreflight(30)
+
+  Assert.equal(borrowed.mapId, 30, "the probe answers the semantic map despite pending visuals")
+  Assert.equal(loader.loads, fullLoads, "the probe never attempts full realization")
+  Assert.equal(loader.logicalLoadCounts[30], 1, "the probe acquires exactly one semantic map")
+  Assert.equal(
+    coordinator:status().synchronousLogicalFallbackLoads,
+    fallbacks + 1,
+    "the probe counts exactly one fallback"
+  )
+  Assert.isNil(coordinator:mapForId(30), "the probed map never publishes residency")
+  Assert.isNil(loader.protections[30], "the probed map is never protected")
   coordinator:dispose()
 end
 
@@ -894,6 +936,7 @@ return {
     shared_headers_have_one_resident_and_one_protection = shared_headers_have_one_resident_and_one_protection,
     resident_removal_is_paired_once = resident_removal_is_paired_once,
     resident_lookup_does_not_borrow_nonresident_maps = resident_lookup_does_not_borrow_nonresident_maps,
+    preflight_succeeds_while_neighbor_visual_realization_is_pending = preflight_succeeds_while_neighbor_visual_realization_is_pending,
     overlapping_anchor_moves_do_not_churn_retained_residents = overlapping_anchor_moves_do_not_churn_retained_residents,
     prepared_hook_failure_releases_map_ownership = prepared_hook_failure_releases_map_ownership,
     outrunning_prefetch_keeps_the_world_coherent_and_counts_fallbacks = outrunning_prefetch_keeps_the_world_coherent_and_counts_fallbacks,

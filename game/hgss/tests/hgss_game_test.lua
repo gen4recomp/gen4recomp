@@ -484,17 +484,30 @@ end
 -- manifest; every other generated read fails loudly so the tests prove the
 -- composition never reaches past the manifest before field-runtime readiness.
 local function cannedWorld()
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
   return {
+    schema = MapAssetCache.WORLD_SCHEMA,
     maps = {
-      { id = 60, mapCode = "MAP_NEW_BARK_PLAYER_HOUSE_2F", worldOriginX = 0, worldOriginZ = 0 },
+      {
+        id = 60,
+        symbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+        mapSection = "TEST_SECTION",
+        mapSectionNativeId = 7,
+        followMode = "ALLOW",
+        worldOriginX = 0,
+        worldOriginZ = 0,
+        matrix = { memberId = 0 },
+      },
     },
     byId = { [60] = 1 },
     bySymbol = { MAP_NEW_BARK_PLAYER_HOUSE_2F = 60 },
+    analysis = { mapHeaderCount = 1, excluded = {} },
   }
 end
 
 local function withProductionLoaderObservation(worldOrNil, fn)
   local CacheFs = require("libs.storage.src.CacheFs")
+  local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
   local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
   local MapAssetCache = require("libs.assets.src.MapAssetCache")
   local originalForVersion = CacheFs.forVersion
@@ -511,6 +524,9 @@ local function withProductionLoaderObservation(worldOrNil, fn)
       if path == MapAssetCache.worldPath() then
         observation.worldReads = observation.worldReads + 1
         return observation.world
+      end
+      if path == FieldCellCache.indexPath() then
+        return { schema = FieldCellCache.INDEX_SCHEMA, matrices = {} }
       end
       return nil
     end

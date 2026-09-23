@@ -44,36 +44,6 @@
 local FieldPreparationState = {}
 FieldPreparationState.__index = FieldPreparationState
 
----@param loader table<string, unknown>|nil retained planning loader
----@param idOrSymbol integer|string destination identity
----@return integer|nil numeric map id, or nil when the loader carries no world metadata
-local function resolveTargetMapId(loader, idOrSymbol)
-  if type(idOrSymbol) == "number" then
-    if idOrSymbol % 1 == 0 and idOrSymbol >= 0 then
-      return math.floor(idOrSymbol)
-    end
-    return nil
-  end
-  if type(idOrSymbol) ~= "string" then
-    return nil
-  end
-  local world = loader ~= nil and loader.world or nil
-  if type(world) ~= "table" then
-    return nil
-  end
-  if type(world.bySymbol) == "table" and type(world.bySymbol[idOrSymbol]) == "number" then
-    return world.bySymbol[idOrSymbol]
-  end
-  if type(world.maps) == "table" then
-    for _, candidate in ipairs(world.maps) do
-      if type(candidate) == "table" and candidate.mapCode == idOrSymbol and type(candidate.id) == "number" then
-        return candidate.id
-      end
-    end
-  end
-  return nil
-end
-
 ---@param options FieldPreparationOptions
 ---@return FieldPreparationState
 function FieldPreparationState.new(options)
@@ -243,27 +213,6 @@ function FieldPreparationState:_pollGeometry()
   if failure ~= nil then
     self:_fail(failure)
     return
-  end
-  -- Warm the destination logical channel alongside location demand: the
-  -- transfer's load ensures the logical field first, and on the async path
-  -- that ensure is the first logical-field observation unless preparation
-  -- enrolls it here. A pending channel holds the transfer; a failure fails
-  -- it with the underlying cause. Targets the loader cannot resolve to a
-  -- numeric id leave warming to the location demand alone.
-  local logicalId = resolveTargetMapId(loader, target.idOrSymbol)
-  if logicalId ~= nil then
-    local warmOk, warmReady, warmFailure = pcall(self.derivedAssets.requestLogicalField, logicalId, "required")
-    if not warmOk then
-      self:_fail(warmReady)
-      return
-    end
-    if warmFailure ~= nil then
-      self:_fail(warmFailure)
-      return
-    end
-    if not warmReady then
-      return
-    end
   end
   if not ready then
     return

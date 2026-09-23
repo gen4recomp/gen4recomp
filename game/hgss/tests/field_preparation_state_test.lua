@@ -354,65 +354,91 @@ function T.disposal_drops_references_without_releasing_the_borrowed_loader()
   Assert.equal(releases, 0, "the borrowed loader is never released by state disposal")
 end
 
-function T.new_game_warms_the_destination_logical_closure_alongside_geometry()
-  local log = {}
-  local calls = {}
-  local gates = { planning = true, runtime = true, logical = false }
-  local loader = gatedLoader(calls, { ready = false })
-  loader.world = { bySymbol = { MAP_NEW_BARK_PLAYER_HOUSE_2F = 64 }, maps = {} }
-  local state = FieldPreparationState.new(newGameOptions(gates, log, calls, { ready = false }, {
+-- The destination closure has exactly one owner: the planning loader's
+-- location demand. Preparation never inspects loader world metadata and
+-- never enrolls a second direct logical demand alongside it, so these hosts
+-- offer no direct logical channel at all: any such call fails the test run.
+local function singleOwnerHost(gates, log)
+  local host = gatedHost(gates, log)
+  host.requestLogicalField = nil
+  return host
+end
+
+local function singleOwnerOptions(gates, log, calls, behavior, loaderWorld)
+  local loader = gatedLoader(calls, behavior)
+  loader.world = loaderWorld
+  return newGameOptions(gates, log, calls, behavior, {
     createLoader = function()
       return loader
     end,
-  }))
+  })
+end
+
+local function assertNoDirectLogicalDemand(host)
+  Assert.isNil(host.requestLogicalField, "preparation hosts offer no direct logical channel")
+end
+
+function T.geometry_polling_demands_the_destination_through_location_only()
+  local log = {}
+  local calls = {}
+  local gates = { planning = true, runtime = true }
+  local host = singleOwnerHost(gates, log)
+  assertNoDirectLogicalDemand(host)
+  local options = singleOwnerOptions(gates, log, calls, { ready = false }, {
+    bySymbol = { MAP_NEW_BARK_PLAYER_HOUSE_2F = 64 },
+    maps = {},
+  })
+  options.derivedAssets = host
+  local state = FieldPreparationState.new(options)
   settle(state)
-  local logicalCalls = gates.logicalCalls or {}
-  Assert.isTrue(#logicalCalls >= 1, "the destination logical closure is demanded while geometry is pending")
-  for _, demand in ipairs(logicalCalls) do
-    Assert.equal(demand.mapId, 64, "warming names the resolved destination map")
-    Assert.equal(demand.urgency, "required", "warming holds required urgency")
-  end
-  Assert.equal(calls.transfers or 0, 0, "a pending logical channel never transfers")
+  Assert.isTrue((calls.requests or 0) >= 1, "pending geometry is demanded through location")
+  Assert.equal(calls.transfers or 0, 0, "pending geometry never transfers")
   Assert.equal(state.phase, "location")
   state:dispose()
 end
-function T.transfer_waits_for_the_warmed_destination_logical_closure()
+
+function T.transfer_waits_for_location_and_runtime_together()
   local log = {}
   local calls = {}
-  local gates = { planning = true, runtime = true, logical = false }
-  local loader = gatedLoader(calls, { ready = true })
-  loader.world = { bySymbol = { MAP_NEW_BARK_PLAYER_HOUSE_2F = 64 }, maps = {} }
-  local state = FieldPreparationState.new(newGameOptions(gates, log, calls, { ready = true }, {
-    createLoader = function()
-      return loader
-    end,
-  }))
+  local gates = { planning = true, runtime = true }
+  local host = singleOwnerHost(gates, log)
+  assertNoDirectLogicalDemand(host)
+  local location = { ready = false }
+  local options = singleOwnerOptions(gates, log, calls, location, {
+    bySymbol = { MAP_NEW_BARK_PLAYER_HOUSE_2F = 64 },
+    maps = {},
+  })
+  options.derivedAssets = host
+  local state = FieldPreparationState.new(options)
   settle(state)
-  Assert.equal(calls.transfers or 0, 0, "a pending logical channel holds the transfer")
-  gates.logical = true
+  Assert.equal(calls.transfers or 0, 0, "pending location holds the transfer")
+  Assert.equal(state.phase, "location")
+  location.ready = true
   settle(state)
-  Assert.equal(calls.transfers or 0, 1, "the transfer runs once the logical channel is terminal")
+  Assert.equal(calls.transfers or 0, 1, "the transfer runs once location and runtime are ready")
   Assert.equal(state.phase, "done")
   state:dispose()
 end
-function T.destination_logical_failure_is_visible_before_transfer()
+
+function T.location_failure_is_visible_before_transfer()
   local log = {}
   local calls = {}
-  local gates = { planning = true, runtime = true, logicalFailure = "injected logical failure" }
-  local loader = gatedLoader(calls, { ready = true })
-  loader.world = { bySymbol = { MAP_NEW_BARK_PLAYER_HOUSE_2F = 64 }, maps = {} }
-  local state = FieldPreparationState.new(newGameOptions(gates, log, calls, { ready = true }, {
-    createLoader = function()
-      return loader
-    end,
-  }))
+  local gates = { planning = true, runtime = true }
+  local host = singleOwnerHost(gates, log)
+  assertNoDirectLogicalDemand(host)
+  local options = singleOwnerOptions(gates, log, calls, { ready = false, failure = "injected location failure" }, {
+    bySymbol = { MAP_NEW_BARK_PLAYER_HOUSE_2F = 64 },
+    maps = {},
+  })
+  options.derivedAssets = host
+  local state = FieldPreparationState.new(options)
   settle(state)
-  Assert.equal(state.phase, "failed", "a logical failure fails preparation visibly")
+  Assert.equal(state.phase, "failed", "a location failure fails preparation visibly")
   Assert.isTrue(
-    string.find(tostring(state.error), "injected logical failure", 1, true) ~= nil,
-    "the logical cause is preserved"
+    string.find(tostring(state.error), "injected location failure", 1, true) ~= nil,
+    "the location cause is preserved"
   )
-  Assert.equal(calls.transfers or 0, 0, "a failed logical channel never transfers")
+  Assert.equal(calls.transfers or 0, 0, "a failed location never transfers")
   state:dispose()
 end
 

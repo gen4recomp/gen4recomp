@@ -378,7 +378,13 @@ end
 
 function FieldMapLoader.new(cacheFs, world, options)
   assert(cacheFs and cacheFs.loadLua, "FieldMapLoader requires a CacheFs-shaped object")
-  assert(world and world.maps and world.byId and world.bySymbol, "world manifest required")
+  if not MapAssetCache.isStructuralWorld(world) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_WORLD_INVALID,
+      "world manifest is not a current structural world; rebuild the derived cache",
+      { schema = type(world) == "table" and world.schema or nil }
+    )
+  end
   options = options or {}
   local capacity = options.capacity or 4
   assert(capacity >= 1 and capacity == math.floor(capacity), "map capacity must be a positive integer")
@@ -450,17 +456,9 @@ function FieldMapLoader:loadLogical(idOrSymbol)
   local record = worldRecord(self.world, idOrSymbol)
   local fieldData = self:_acquireSemantic(record)
   -- The coordinate origin comes from the structural world record alone:
-  -- semantic acquisition must never fall back to the visual scene matrix.
-  -- Records without a manifest origin degrade to the field-domain origin;
-  -- the generated world schema requires finite numeric origins, so
-  -- production records always carry the real one.
+  -- the constructor rejects non-structural worlds, so the manifest origin
+  -- is always present and no visual scene fallback exists.
   local originX, originZ = record.worldOriginX, record.worldOriginZ
-  if type(originX) ~= "number" then
-    originX = 0
-  end
-  if type(originZ) ~= "number" then
-    originZ = 0
-  end
   local logicalMap = {
     mapId = record.id,
     mapSymbol = record.symbol,
@@ -681,9 +679,8 @@ function FieldMapLoader:load(idOrSymbol, _)
 end
 
 -- Converts map-local coordinates into the global field domain normal
--- loading uses. The structural world record carries the origin; records
--- from a manifest without it fall back to the load-authoritative scene
--- matrix, which is the same origin the collision load consumes.
+-- loading uses. The structural world record carries the origin; the
+-- constructor rejects worlds without one, so no scene read happens here.
 ---@param idOrSymbol integer|string
 ---@param localX integer
 ---@param localZ integer
@@ -694,22 +691,6 @@ function FieldMapLoader:globalPosition(idOrSymbol, localX, localZ)
   assert(type(localZ) == "number" and localZ % 1 == 0, "local z must be an integer")
   local record = worldRecord(self.world, idOrSymbol)
   local originX, originZ = record.worldOriginX, record.worldOriginZ
-  if type(originX) ~= "number" or type(originZ) ~= "number" then
-    local mapDir = MapAssetCache.mapDir(record.id)
-    local scene = loadRequired(self.cacheFs, mapDir .. "/scene.lua", FieldErrors.FIELD_MAP_VISUAL_CACHE_MISSING)
-    -- loadRequired either returns the scene table or raises, so the matrix
-    -- below is unknown-typed and its origin reads need no nil guard beyond
-    -- the validated check that follows.
-    local matrix = scene.matrix
-    if type(matrix) ~= "table" or type(matrix.worldOriginX) ~= "number" or type(matrix.worldOriginZ) ~= "number" then
-      Errors.raise(
-        FieldErrors.FIELD_MAP_WORLD_INVALID,
-        "world manifest and scene matrix origins are missing; rebuild the derived cache",
-        { mapId = record.id }
-      )
-    end
-    originX, originZ = matrix.worldOriginX, matrix.worldOriginZ
-  end
   return { x = localX + originX, z = localZ + originZ }
 end
 
@@ -750,6 +731,14 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
   local mapFailure = consume(host.requestField(record.id, urgency))
   if mapFailure ~= nil then
     return false, mapFailure
+  end
+  -- The destination logical closure is requested explicitly, not only as a
+  -- session-side member of the full visual demand: synchronous acquisition
+  -- (load/loadLogical) asserts on the logical readiness edge, which only
+  -- exists once this request reaches the cache service.
+  local destinationFailure = consume(host.requestLogicalField(record.id, urgency))
+  if destinationFailure ~= nil then
+    return false, destinationFailure
   end
   local seen = {}
   local matrix = record.matrix
