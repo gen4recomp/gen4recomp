@@ -210,7 +210,7 @@ function T.accepted_step_commits_on_exactly_tick_eight()
   near(p.worldY, 0.5)
 end
 
-function T.different_facing_input_turns_in_place_for_two_updates()
+function T.held_perpendicular_direction_turns_then_walks_at_retail_cadence()
   local p = player(runtimeMap(), 0, 4, 0, "south")
   local start = {
     fieldX = p.fieldX,
@@ -223,11 +223,12 @@ function T.different_facing_input_turns_in_place_for_two_updates()
     worldZ = p.worldZ,
   }
 
-  local firstResult = p:updateFixed({ heldDirection = "north", pressedDirection = "north" })
-  Assert.equal(p.facing, "north")
+  local movementRevision = p:movementRevision()
+  local firstResult = p:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  Assert.equal(p.facing, "east")
   Assert.equal(p.motion, "turning")
-  Assert.equal(p.progressTicks, 1)
-  Assert.equal(p.durationTicks, 2)
+  Assert.equal(p.progressTicks, 0)
+  Assert.equal(p.durationTicks, 3)
   Assert.isFalse(firstResult)
   Assert.equal(p.fieldX, start.fieldX)
   Assert.equal(p.fieldZ, start.fieldZ)
@@ -238,19 +239,54 @@ function T.different_facing_input_turns_in_place_for_two_updates()
   near(p.worldY, start.worldY)
   near(p.worldZ, start.worldZ)
 
-  local secondResult = p:updateFixed({})
-  Assert.equal(p.facing, "north")
-  Assert.equal(p.motion, "idle")
-  Assert.equal(p.progressTicks, 0)
-  Assert.isFalse(secondResult)
+  Assert.equal(p:movementRevision(), movementRevision)
+  for waitTick = 1, 3 do
+    local waitResult = p:updateFixed({ heldDirection = "east" })
+    Assert.isFalse(waitResult)
+    Assert.equal(p.facing, "east")
+    Assert.equal(p.fieldX, start.fieldX)
+    Assert.equal(p.fieldZ, start.fieldZ)
+    Assert.equal(p.motion, waitTick == 3 and "idle" or "turning")
+    Assert.equal(p:movementRevision(), movementRevision)
+    near(p.worldX, start.worldX)
+    near(p.worldY, start.worldY)
+    near(p.worldZ, start.worldZ)
+  end
+
+  local walkResult = p:updateFixed({ heldDirection = "east" })
+  Assert.isFalse(walkResult)
+  Assert.equal(p.facing, "east")
+  Assert.equal(p.motion, "walking")
   Assert.equal(p.fieldX, start.fieldX)
   Assert.equal(p.fieldZ, start.fieldZ)
-  Assert.equal(p.localX, start.localX)
-  Assert.equal(p.localZ, start.localZ)
-  Assert.equal(p.surfaceId, start.surfaceId)
-  near(p.worldX, start.worldX)
-  near(p.worldY, start.worldY)
-  near(p.worldZ, start.worldZ)
+  Assert.equal(p:movementRevision(), movementRevision)
+  Assert.notNil(p:movementTransaction())
+end
+
+function T.quick_turn_tap_never_steps()
+  local p = player(runtimeMap(), 0, 4, 0, "south")
+  local movementRevision = p:movementRevision()
+
+  p:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  local firstWaitResult = p:updateFixed({})
+  Assert.isFalse(firstWaitResult)
+  Assert.equal(p.motion, "turning")
+  Assert.equal(p.facing, "east")
+  Assert.equal(p.fieldX, 0)
+  Assert.equal(p.fieldZ, 4)
+
+  for _ = 1, 2 do
+    p:updateFixed({})
+  end
+  local result = p:updateFixed({})
+
+  Assert.isFalse(result)
+  Assert.equal(p.facing, "east")
+  Assert.equal(p.motion, "idle")
+  Assert.equal(p.fieldX, 0)
+  Assert.equal(p.fieldZ, 4)
+  Assert.equal(p:movementRevision(), movementRevision)
+  Assert.isNil(p:movementTransaction())
 end
 
 function T.different_facing_input_does_not_resolve_an_illegal_destination()
@@ -263,7 +299,9 @@ function T.different_facing_input_does_not_resolve_an_illegal_destination()
   local p = player(map, 0, 4, 0, "south")
 
   Assert.isFalse(p:updateFixed({ heldDirection = "north", pressedDirection = "north" }))
-  Assert.isFalse(p:updateFixed({}))
+  for _ = 1, 3 do
+    Assert.isFalse(p:updateFixed({}))
+  end
   Assert.equal(p.facing, "north")
   Assert.equal(p.motion, "idle")
   Assert.equal(p.fieldZ, 4)
@@ -660,10 +698,13 @@ function T.direction_tap_during_a_turn_is_not_remembered_by_the_player()
   tick(p, "north", "north")
   Assert.equal(p.motion, "turning")
   tick(p, nil, "west")
-  Assert.equal(p.motion, "idle")
+  Assert.equal(p.motion, "turning")
   Assert.equal(p.facing, "north")
   Assert.equal(p.fieldX, 0)
   Assert.equal(p.fieldZ, 4)
+
+  tick(p)
+  Assert.equal(p.motion, "idle")
 
   tick(p)
   Assert.equal(p.motion, "idle")
@@ -1145,10 +1186,13 @@ function T.direction_tap_during_a_turn_is_not_remembered_by_the_player()
   tick(p, "north", "north")
   Assert.equal(p.motion, "turning")
   tick(p, nil, "west")
-  Assert.equal(p.motion, "idle")
+  Assert.equal(p.motion, "turning")
   Assert.equal(p.facing, "north")
   Assert.equal(p.fieldX, 0)
   Assert.equal(p.fieldZ, 4)
+
+  tick(p)
+  Assert.equal(p.motion, "turning")
 
   tick(p)
   Assert.equal(p.motion, "idle")

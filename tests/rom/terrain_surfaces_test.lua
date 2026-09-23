@@ -274,7 +274,10 @@ function T.field_player_traverses_new_bark_east_staircase(romFs)
   local committedSurfaces = {}
   for directionIndex, direction in ipairs(directions) do
     local beforeY = player.worldY
-    local turnTicks = direction == player.facing and 0 or FieldPlayer.TURN_TICKS
+    -- TURN_TICKS counts only the three post-init source waits. A changed
+    -- direction also consumes its separate initiation tick before the next
+    -- arbitration can admit the held walk.
+    local turnTicks = direction == player.facing and 0 or FieldPlayer.TURN_TICKS + 1
     local commandTicks = turnTicks + FieldPlayer.WALK_STEP_TICKS
     local changesDirection = directions[directionIndex + 1] ~= direction
     for tick = 1, commandTicks do

@@ -57,7 +57,7 @@ FieldPlayer.__index = FieldPlayer
 -- Gameplay timing constants, centralized so emulator calibration changes
 -- exactly one place.
 FieldPlayer.WALK_STEP_TICKS = 8
-FieldPlayer.TURN_TICKS = 2
+FieldPlayer.TURN_TICKS = 3
 FieldPlayer.LEDGE_JUMP_TICKS = 16
 
 ---@alias FieldDirection "north"|"south"|"west"|"east"
@@ -798,7 +798,7 @@ function FieldPlayer:updateFixed(input)
   self.bufferedDirection = nil
   if not isWalkingContinuation and direction ~= self.facing then
     self:_beginTurn(direction)
-    return self:_advanceTurn()
+    return false
   end
   if self:tryStep(direction) then
     if self.motion == "jumping" then
