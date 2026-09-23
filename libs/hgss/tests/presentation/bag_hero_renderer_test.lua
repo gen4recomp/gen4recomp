@@ -99,29 +99,6 @@ local function heroDescriptor(gender)
   }
 end
 
-local function tabs()
-  local out = {}
-  for i = 0, 7 do
-    out[#out + 1] = rect(i * 32, 0, 32, 32)
-  end
-  return out
-end
-
-local function slots()
-  local out = {}
-  local index = 0
-  for row = 0, 2 do
-    for col = 0, 1 do
-      index = index + 1
-      out[index] = {
-        rect = rect(col == 0 and 32 or 160, 40 + row * 40, 88, 32),
-        iconCenter = { x = col == 0 and 48 or 176, y = 56 + row * 40 },
-      }
-    end
-  end
-  return out
-end
-
 local function validManifest()
   local states = {}
   for _, pocket in ipairs(POCKETS) do
@@ -193,86 +170,6 @@ local function validManifest()
           { r = 0, g = 0, b = 0 },
           { r = 0, g = 0, b = 0 },
         },
-      },
-    },
-    interactive = {
-      background = {
-        browse = {
-          slots = imageRef("assets/generated/bag/list-slots.png"),
-          wash = imageRef("assets/generated/bag/list-wash.png"),
-        },
-        action = {
-          slots = imageRef("assets/generated/bag/action-slots.png"),
-          wash = imageRef("assets/generated/bag/action-wash.png"),
-        },
-        banner = imageRef("assets/generated/bag/strip.png"),
-      },
-      pocketTabs = {
-        image = imageRef("assets/generated/bag/tabs.png"),
-        tabs = tabs(),
-      },
-      itemSlots = {
-        slots = slots(),
-        cursor = {
-          image = imageRef("assets/generated/bag/cursor.png"),
-          size = 16,
-          anchorY = 177,
-          anchorXBase = 16,
-          anchorXStep = 16,
-          anchorCount = 8,
-          origin = "center",
-        },
-        registration = {
-          slot1 = { image = "assets/generated/bag/registration-slot-1.png", width = 40, height = 16 },
-          slot2 = { image = "assets/generated/bag/registration-slot-2.png", width = 40, height = 16 },
-          offset = { x = 0, y = 16 },
-        },
-      },
-      pageIndicator = { rect = rect(80, 168, 56, 16), textAt = { x = 0, y = 0 } },
-      cancel = rect(192, 168, 56, 16),
-      text = {
-        actions = {
-          toss = "TOSS",
-          move = "MOVE",
-          register = "REGISTER",
-          unregister = "DESELECT",
-          cancel = "CANCEL",
-          confirm = "YES",
-        },
-        movePrompt = {
-          segments = {
-            { kind = "text", value = "Move " },
-            { kind = "item" },
-            { kind = "text", value = "?" },
-          },
-        },
-        tossQuantity = {
-          segments = {
-            { kind = "text", value = "Toss how many " },
-            { kind = "item" },
-            { kind = "text", value = "?" },
-          },
-        },
-        tossConfirm = {
-          segments = {
-            { kind = "text", value = "Toss " },
-            { kind = "quantity" },
-            { kind = "text", value = " " },
-            { kind = "item" },
-            { kind = "text", value = "?" },
-          },
-        },
-      },
-      overlays = {
-        actionMenu = {
-          buttons = { rect(8, 136, 80, 16), rect(104, 136, 80, 16), rect(8, 168, 80, 16), rect(104, 168, 80, 16) },
-        },
-        quantity = {
-          layers = { imageRef("assets/generated/bag/quantity.png"), imageRef("assets/generated/bag/quantity-alt.png") },
-          digits = { rect(128, 112, 16, 24), rect(160, 112, 16, 24), rect(192, 112, 16, 24) },
-        },
-        confirmation = { screen = imageRef("assets/generated/bag/confirmation.png") },
-        descriptionFallback = { frame = rect(0, 144, 256, 48), textRect = rect(20, 144, 228, 40) },
       },
     },
   }

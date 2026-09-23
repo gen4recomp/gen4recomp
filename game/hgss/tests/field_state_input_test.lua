@@ -339,14 +339,6 @@ function T.open_bag_stays_controllable_across_window_blur()
             frame = { x = 0, y = 144, width = 256, height = 48 },
             textRect = { x = 20, y = 144, width = 236, height = 48 },
           },
-          actionMenu = {
-            buttons = {
-              { x = 8, y = 136, width = 80, height = 16 },
-              { x = 104, y = 136, width = 80, height = 16 },
-              { x = 8, y = 168, width = 80, height = 16 },
-              { x = 104, y = 168, width = 80, height = 16 },
-            },
-          },
         },
       },
     },

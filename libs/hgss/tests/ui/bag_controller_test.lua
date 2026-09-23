@@ -109,67 +109,11 @@ end
 ---@param cursor BagCursor
 ---@param heroVisible boolean? true unless the constrained lower-only composition is under test
 ---@return BagController
+---@return table<string, unknown>
 local function controller(bag, cursor, heroVisible)
   local layoutManifest = manifest()
   local function resolveLayout()
     return BagLayout.resolve({ manifest = layoutManifest, heroVisible = heroVisible ~= false })
-  end
-  return BagController.new({
-    model = {
-      refresh = function()
-        return BagModel.build(bag, cursor)
-      end,
-    },
-    cursor = cursor,
-    resolveLayout = resolveLayout,
-    commands = {
-      toss = function(itemKey, quantity)
-        return bag:take(itemKey, quantity)
-      end,
-      move = function(pocketKey, fromIndex, toIndex)
-        return bag:move(pocketKey, fromIndex, toIndex)
-      end,
-      register = function(itemKey)
-        return bag:tryRegister(itemKey)
-      end,
-      unregister = function(itemKey)
-        return bag:unregister(itemKey)
-      end,
-    },
-    resolveActions = BagActionPolicy.forService(bag),
-  })
-end
-
-local BUTTON_RECTS = {
-  { x = 8, y = 136, width = 80, height = 16 },
-  { x = 104, y = 136, width = 80, height = 16 },
-  { x = 8, y = 168, width = 80, height = 16 },
-  { x = 104, y = 168, width = 80, height = 16 },
-}
-
-local function manifestWithButtons()
-  local layoutManifest = manifest()
-  local buttons = {}
-  for index, rect in ipairs(BUTTON_RECTS) do
-    buttons[index] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
-  end
-  layoutManifest.interactive.overlays.actionMenu.slots = {
-    { hitRect = buttons[1] },
-    { hitRect = buttons[2] },
-    { hitRect = buttons[3] },
-    { hitRect = buttons[4] },
-  }
-  return layoutManifest
-end
-
----@param bag HgssBagService
----@param cursor BagCursor
----@return BagController
----@return table<string, unknown>
-local function controllerWithButtons(bag, cursor)
-  local layoutManifest = manifestWithButtons()
-  local function resolveLayout()
-    return BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   end
   local control = BagController.new({
     model = {
@@ -501,7 +445,7 @@ function T.action_menu_uses_physical_nodes_and_fixed_cancel()
   Assert.isTrue(bag:add("ITEM_1", 2))
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
-  local control = controllerWithButtons(bag, cursor)
+  local control = controller(bag, cursor)
   control:updateFixed({ { type = "confirm" } })
   local status = control:status()
   Assert.equal(status.state, "action_menu")
@@ -645,7 +589,7 @@ function T.pointer_tap_on_a_different_cell_selects_only_while_tap_on_the_selecte
   local bag = stockTwoPockets(service())
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("balls")
-  local control, layoutManifest = controllerWithButtons(bag, pocketCursor)
+  local control, layoutManifest = controller(bag, pocketCursor)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   tap(control, layout, 204, 56)
@@ -660,13 +604,13 @@ function T.pointer_tap_on_a_different_cell_selects_only_while_tap_on_the_selecte
   Assert.equal(bag:revision(), revision, "opening the menu never mutates the inventory")
 end
 
-function T.pointer_action_button_tap_chooses_the_offered_button_position()
+function T.pointer_action_slot_tap_chooses_the_offered_slot_position()
   local bag = service()
   Assert.isTrue(bag:add("POTION", 5), "setup stocks a first manual-order item")
   Assert.isTrue(bag:add("ITEM_1", 2), "setup stocks a second manual-order item")
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("medicine")
-  local control, layoutManifest = controllerWithButtons(bag, pocketCursor)
+  local control, layoutManifest = controller(bag, pocketCursor)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   tap(control, layout, 76, 56)
   Assert.equal(control:status().state, "action_menu", "activating the selected cell opens the action menu")
@@ -674,7 +618,7 @@ function T.pointer_action_button_tap_chooses_the_offered_button_position()
   Assert.equal(
     control:status().state,
     "move_select",
-    "the second button chooses the second offered action through pointer alone"
+    "the second slot chooses the second offered action through pointer alone"
   )
 end
 
@@ -683,7 +627,7 @@ function T.quantity_keyboard_and_pointer_use_source_control_identity()
   Assert.isTrue(bag:add("POTION", 25))
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
-  local control, layoutManifest = controllerWithButtons(bag, cursor)
+  local control, layoutManifest = controller(bag, cursor)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   tap(control, layout, 76, 56)
   control:updateFixed({ { type = "confirm" } })
@@ -702,7 +646,7 @@ function T.pointer_quantity_steps_confirm_and_nested_cancel_hold_across_updates(
   local bag = stockTwoPockets(service())
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("medicine")
-  local control, layoutManifest = controllerWithButtons(bag, pocketCursor)
+  local control, layoutManifest = controller(bag, pocketCursor)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   tap(control, layout, 76, 56)
@@ -753,7 +697,7 @@ function T.dismiss_from_a_toss_state_closes_without_unwinding()
   local bag = stockTwoPockets(service())
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("medicine")
-  local control, layoutManifest = controllerWithButtons(bag, pocketCursor)
+  local control, layoutManifest = controller(bag, pocketCursor)
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   tap(control, layout, 76, 56)
