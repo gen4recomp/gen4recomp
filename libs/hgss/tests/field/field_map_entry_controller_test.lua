@@ -99,4 +99,34 @@ function T.tests.blocked_or_failed_progression_keeps_the_current_phase()
   Assert.equal(controller:currentStage(), "transition")
 end
 
+function T.tests.full_entry_waits_for_lifecycle_owned_work_after_foreground_finishes()
+  local settled = false
+  local controller = controllerFixture({
+    initController = {
+      hasLifecycle = function(_, lifecycle)
+        return lifecycle == "on_load"
+      end,
+      startLifecycle = function()
+        return true
+      end,
+      isLifecycleSettled = function()
+        return settled
+      end,
+    },
+  })
+
+  controller:begin("full")
+  controller:advance(1)
+  controller:advance(2)
+  controller:advance(3)
+  controller:advance(4)
+  Assert.equal(controller:currentStage(), "load_running")
+  Assert.isFalse(controller:destinationWorldPresentable())
+
+  settled = true
+  Assert.isTrue(controller:advance(5))
+  Assert.equal(controller:currentStage(), "await_presentation")
+  Assert.isTrue(controller:destinationWorldPresentable())
+end
+
 return T

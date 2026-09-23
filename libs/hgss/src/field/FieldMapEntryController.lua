@@ -6,6 +6,7 @@
 ---| "actors"
 ---| "load"
 ---| "load_running"
+---| "load_resume_running"
 ---| "await_presentation"
 ---| "resume"
 ---| "resume_running"
@@ -16,6 +17,7 @@
 ---@class FieldMapEntryLifecycle
 ---@field hasLifecycle fun(self: FieldMapEntryLifecycle, lifecycle: string): boolean
 ---@field startLifecycle fun(self: FieldMapEntryLifecycle, lifecycle: string, tick: integer): boolean
+---@field isLifecycleSettled fun(self: FieldMapEntryLifecycle): boolean|nil
 
 ---@class FieldMapEntryControllerOptions
 ---@field scriptScheduler table<string, unknown>
@@ -31,6 +33,7 @@
 ---@field private stageName FieldMapEntryStage?
 ---@field private mode FieldMapEntryMode|nil
 ---@field private connectionArrivalPending boolean
+---@field private prePresentationResume boolean
 local FieldMapEntryController = {}
 FieldMapEntryController.__index = FieldMapEntryController
 
@@ -40,6 +43,7 @@ local HIDDEN_STAGES = {
   actors = true,
   load = true,
   load_running = true,
+  load_resume_running = true,
 }
 
 ---@param scheduler table<string, unknown>
@@ -49,6 +53,15 @@ local function foregroundEnvironmentId(scheduler)
     return scheduler:foregroundEnvironmentId()
   end
   return nil
+end
+
+---@param controller FieldMapEntryLifecycle
+---@return boolean
+local function lifecycleSettled(controller)
+  if controller.isLifecycleSettled then
+    return controller:isLifecycleSettled() == true
+  end
+  return true
 end
 
 ---@param options unknown
@@ -65,6 +78,7 @@ function FieldMapEntryController.new(options)
     stageName = nil,
     mode = nil,
     connectionArrivalPending = false,
+    prePresentationResume = false,
   }, FieldMapEntryController)
 end
 
@@ -76,6 +90,7 @@ function FieldMapEntryController:begin(mode)
   self.mode = mode
   self.stageName = "transition"
   self.connectionArrivalPending = mode == "connection"
+  self.prePresentationResume = false
 end
 
 ---@return FieldMapEntryStage?
@@ -161,12 +176,23 @@ function FieldMapEntryController:advance(tick)
       if self:startLifecycle("on_load", tick) then
         self.stageName = "load_running"
       end
+    elseif self:hasLifecycle("on_resume") then
+      if self:startLifecycle("on_resume", tick) then
+        self.prePresentationResume = true
+        self.stageName = "load_resume_running"
+      end
     else
       self.stageName = "await_presentation"
     end
     return true
   elseif stage == "load_running" then
-    if foregroundEnvironmentId(self.scriptScheduler) ~= nil then
+    if foregroundEnvironmentId(self.scriptScheduler) ~= nil or not lifecycleSettled(self.initController) then
+      return false
+    end
+    self.stageName = "await_presentation"
+    return true
+  elseif stage == "load_resume_running" then
+    if foregroundEnvironmentId(self.scriptScheduler) ~= nil or not lifecycleSettled(self.initController) then
       return false
     end
     self.stageName = "await_presentation"
@@ -178,6 +204,10 @@ function FieldMapEntryController:advance(tick)
     end
     return false
   elseif stage == "resume" then
+    if self.prePresentationResume then
+      self.stageName = "ready"
+      return true
+    end
     if foregroundEnvironmentId(self.scriptScheduler) ~= nil then
       return false
     end

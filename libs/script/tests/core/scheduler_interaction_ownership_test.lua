@@ -16,6 +16,7 @@ local TaskRegistry = require("libs.script.src.TaskRegistry")
 local Scheduler = require("libs.script.src.Scheduler")
 local WaitTicksTask = require("libs.script.src.tasks.WaitTicksTask")
 local ChildScriptTask = require("libs.script.src.tasks.ChildScriptTask")
+local MovementTask = require("libs.hgss.src.script.tasks.MovementTask")
 local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
 local FakeServices = require("tests.support.script.FakeServices")
 ---@cast WaitTicksTask TaskImplementation
@@ -30,6 +31,7 @@ local function harness()
   local taskRegistry = TaskRegistry.new()
   taskRegistry:register("wait_ticks", 1, WaitTicksTask)
   taskRegistry:register("child_script", 1, ChildScriptTask)
+  taskRegistry:register("movement", 1, MovementTask)
   local scheduler = Scheduler.new({
     semantics = require("libs.hgss.src.script.RuntimeValues"),
     services = services,
@@ -188,6 +190,48 @@ function T.map_init_root_does_not_implicitly_own_player_input()
     "map initialization must never acquire the field-interaction claim"
   )
   Assert.isFalse(h.scheduler:playerInputOwned(), "a non-owning map-init root must not own player input")
+end
+
+function T.map_init_lifecycle_does_not_settle_after_root_cancellation()
+  local h = harness()
+  install(
+    h,
+    script("test.map_init_cancelled", {
+      S.waitTicks({ ticks = 5 }),
+      S.stop(),
+    })
+  )
+
+  Assert.isTrue(h.client:startInitScript("test.map_init_cancelled", 300))
+  local environmentId = assert(h.scheduler:foregroundEnvironmentId())
+  h.scheduler:cancelEnvironment(environmentId, "test cancellation")
+
+  Assert.isFalse(h.client:isInitLifecycleSettled(), "a cancelled map-init root must not publish entry readiness")
+end
+
+function T.map_init_lifecycle_waits_for_nonblocking_movement_started_by_root()
+  local h = harness()
+  h.services.actors:add("elm", { fieldX = 4, fieldZ = 6, facing = "north" })
+  install(
+    h,
+    script("test.map_init_moves_actor", {
+      S.applyMovement({
+        actor = "elm",
+        movement = { S.m.face({ direction = "east" }) },
+      }),
+      S.stop(),
+    })
+  )
+
+  Assert.isTrue(h.client:startInitScript("test.map_init_moves_actor", 350))
+  Assert.isFalse(
+    h.client:isInitLifecycleSettled(),
+    "map-init readiness must include nonblocking movement owned by the lifecycle"
+  )
+
+  h.scheduler:step(351, nil)
+  Assert.equal(h.services.actors.actors.elm.facing, "east")
+  Assert.isTrue(h.client:isInitLifecycleSettled(), "readiness follows the movement commit")
 end
 
 function T.map_init_root_with_explicit_lock_owns_input_only_while_held()

@@ -113,7 +113,7 @@ local function samePose(a, b)
   return a.fieldX == b.fieldX and a.fieldZ == b.fieldZ and a.facing == b.facing
 end
 
-function T.tests.fresh_entry_triggers_the_welcome_scene_through_elms_post_chime_movement()
+function T.tests.first_visible_lab_frame_has_settled_elm_and_opening_continues()
   withGame(function(game)
     local world = game.runtime.scripts.worldState
     Assert.equal(world:getVar(VAR_SCENE_ELMS_LAB), 0, "a genuinely fresh save starts Elm's Lab scene at 0")
@@ -133,15 +133,41 @@ function T.tests.fresh_entry_triggers_the_welcome_scene_through_elms_post_chime_
     local expectedScriptId =
       ScriptIdentity.formatVanilla(game.runtime.runtimeMap.fieldData.scriptBankId, welcomeEvent.scriptId - 1)
 
+    -- Actors must exist early enough for the real on-load script, while the
+    -- destination remains hidden until that script's placement has settled.
+    -- Observe the first presentable boundary directly; waiting for ordinary
+    -- field input first would conceal a transient pre-placement draw.
+    local spawnPose
+    local firstVisiblePose
+    local firstVisibleDraw
+    local hiddenTicks = 0
+    for _ = 1, 120 do
+      if not spawnPose and game:snapshot().actors[ELM_ACTOR_ID] then
+        spawnPose = elmPose(game)
+      end
+      if game.runtime.session:destinationWorldPresentable() then
+        firstVisiblePose = elmPose(game)
+        firstVisibleDraw =
+          assert(elmDrawRecord(game), "Elm must have a production actor draw record on the first visible lab frame")
+        break
+      end
+      hiddenTicks = hiddenTicks + 1
+      game:step()
+    end
+    Assert.notNil(spawnPose, "Elm must exist while the hidden entry lifecycle runs")
+    Assert.notNil(firstVisiblePose, "the lab entry must eventually become presentable")
+    Assert.isTrue(hiddenTicks > 0, "the destination must remain hidden while entry work runs")
+    Assert.isTrue(
+      not samePose(firstVisiblePose, spawnPose),
+      "Elm must already have the on-load placement when the lab first becomes visible"
+    )
+    Assert.isTrue(firstVisibleDraw.visible, "Elm must be visible on the first presentable lab frame")
+
     game:waitForFieldEntry()
-    Assert.notNil(game:snapshot().actors[ELM_ACTOR_ID], "Elm must be a live, drawable actor before the scene starts")
-    local initialDraw =
-      assert(elmDrawRecord(game), "Elm must have a production actor draw record before the scene starts")
-    Assert.isTrue(initialDraw.visible, "Elm's production draw record must be visible before the scene starts")
-    -- The lab's own on-load lifecycle rule already repositions Elm at map
-    -- entry (HGSS `MovePersonFacing` at fresh scene value 0); only the
-    -- welcome scene's own foreground script is under test here, so record
-    -- the baseline instead of assuming Elm's zone-event spawn tile.
+    Assert.notNil(
+      game:snapshot().actors[ELM_ACTOR_ID],
+      "Elm must remain a live, drawable actor before the scene starts"
+    )
     local baselineStarts = #recordsNamed(game, "script.started")
 
     -- Walk from the real spawn/exit-warp tile north into the entry hallway;

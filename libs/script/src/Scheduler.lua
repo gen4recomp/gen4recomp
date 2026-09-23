@@ -48,6 +48,8 @@ local ScriptTask = require("libs.script.src.ScriptTask")
 ---@field private _nextEnvironmentId integer
 ---@field private _nextInstanceId integer
 ---@field private _nextTaskId integer
+---@field private _deferredInitEnvironments table<string, string>
+---@field private _settledInitLifecycles table<string, boolean>
 local Scheduler = {}
 Scheduler.__index = Scheduler
 
@@ -79,6 +81,8 @@ function Scheduler.new(opts)
     _nextEnvironmentId = 0,
     _nextInstanceId = 0,
     _nextTaskId = 0,
+    _deferredInitEnvironments = {},
+    _settledInitLifecycles = {},
   }, Scheduler)
 end
 
@@ -443,6 +447,7 @@ function Scheduler:step(tick, input)
   self:_promoteResumePending(tick, pendingSnapshot)
   self:_runEnvironments(tick, input)
   self:_resolveInteraction(tick, input)
+  self:_settleDeferredInitEnvironments()
 end
 
 function Scheduler:_resumePendingSnapshot()
@@ -800,9 +805,14 @@ function Scheduler:_releaseInstanceOwnership(instance)
         movement[#movement + 1] = task
       end
     end
-    for _, task in ipairs(movement) do
-      environment:unregisterMovementTask(task.taskId)
-      self:_cancelTaskState(task, "owner ended")
+    local preservesMovement = instance.status == ScriptInstance.STATUSES.completed
+      and instance.trigger ~= nil
+      and instance.trigger.type == "map_init"
+    if not preservesMovement then
+      for _, task in ipairs(movement) do
+        environment:unregisterMovementTask(task.taskId)
+        self:_cancelTaskState(task, "owner ended")
+      end
     end
   end
 end
@@ -872,6 +882,9 @@ end
 -- and pruned once that task ends. Live iteration and save capture see only
 -- running state.
 function Scheduler:_archiveInstance(instance)
+  if self._deferredInitEnvironments[instance.environmentId] == instance.instanceId then
+    return
+  end
   self._instances[instance.instanceId] = nil
   if self:_hasObservingTask(instance.instanceId) then
     self._endedInstances[instance.instanceId] = instance
@@ -915,7 +928,34 @@ function Scheduler:_finishInstanceInEnvironment(instance, reason)
   if instance.contextSlot > 0 then
     environment:clearContext(instance.contextSlot)
   else
+    if
+      instance.status == ScriptInstance.STATUSES.completed
+      and instance.trigger ~= nil
+      and instance.trigger.type == "map_init"
+      and environment:hasOutstandingMovement()
+    then
+      self._deferredInitEnvironments[environment.environmentId] = instance.instanceId
+      return
+    end
+    if instance.trigger ~= nil and instance.trigger.type == "map_init" then
+      self._settledInitLifecycles[instance.instanceId] = true
+    end
     self:_teardownEnvironment(environment, reason)
+  end
+end
+
+function Scheduler:_settleDeferredInitEnvironments()
+  for environmentId, instanceId in pairs(self._deferredInitEnvironments) do
+    local environment = self._environments[environmentId]
+    if environment ~= nil and not environment:hasOutstandingMovement() then
+      self._deferredInitEnvironments[environmentId] = nil
+      self._settledInitLifecycles[instanceId] = true
+      self:_teardownEnvironment(environment, "completed")
+      local instance = self._instances[instanceId]
+      if instance ~= nil then
+        self:_archiveInstance(instance)
+      end
+    end
   end
 end
 
@@ -1259,6 +1299,19 @@ end
 ---@return ScriptInstance|nil
 function Scheduler:instance(instanceId)
   return self._instances[instanceId] or self._endedInstances[instanceId]
+end
+
+---@param instanceId string
+---@return boolean
+function Scheduler:isInitLifecycleSettled(instanceId)
+  if self._settledInitLifecycles[instanceId] then
+    return true
+  end
+  local instance = self:instance(instanceId)
+  if instance ~= nil and self._deferredInitEnvironments[instance.environmentId] == instanceId then
+    return false
+  end
+  return instance ~= nil and instance.status == ScriptInstance.STATUSES.completed
 end
 
 ---@param taskId string
