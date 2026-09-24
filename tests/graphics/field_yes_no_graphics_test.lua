@@ -1,12 +1,9 @@
--- Graphics contract for the production field Yes/No renderer. The smoke uses
--- synthetic UI resources but keeps topology and frame ownership real.
+-- Graphics contract for the production field Yes/No renderer.
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
-local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
-local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
@@ -17,7 +14,8 @@ local function loadYesNoRenderer()
   return renderer
 end
 
-local function dualTopology()
+local function dualTopology(width, height)
+  width, height = width or 256, height or 192
   return ScreenTopology.dualDisplay({
     id = "world",
     rect = { x = 0, y = 0, width = 512, height = 384 },
@@ -25,43 +23,87 @@ local function dualTopology()
     touch = false,
   }, {
     id = "auxiliary",
-    rect = { x = 520, y = 40, width = 256, height = 192 },
+    rect = { x = 520, y = 40, width = width, height = height },
+    safeRect = { x = 520, y = 40, width = width, height = height },
     role = "auxiliary",
     touch = false,
   })
 end
 
-function T.dual_display_choice_uses_canonical_auxiliary_geometry()
+local function status(selectedIndex, frameIndex)
+  return { active = true, selectedIndex = selectedIndex, yesText = "YES", noText = "NO", frameIndex = frameIndex }
+end
+
+local function testRenderer()
   local rendererModule = loadYesNoRenderer()
-  local graphics = require("tests.support.FakeGraphics").new({ imageSizes = { { 144, 16 } } })
-  local cache = FieldUiFixture.cacheWithFontAndFrames()
-  local text = FieldTextRenderer.new({ cacheFs = cache, graphics = graphics })
-  local window = FieldWindowRenderer.new({ cacheFs = cache, manifest = FieldUiFixture.manifest(), graphics = graphics })
-  local renderer = rendererModule.new({ text = text, window = window, graphics = graphics })
-  local layout = renderer:layout({
-    active = true,
-    selectedIndex = 0,
-    yesText = "YES",
-    noText = "NO",
-    frameIndex = 1,
-  }, dualTopology(), nil)
-  Assert.equal(layout.surface.role, "auxiliary")
-  Assert.equal(layout.content.x, 520 + 25 * 8)
-  Assert.equal(layout.content.y, 40 + 13 * 8)
-  Assert.equal(layout.content.width, 6 * 8)
-  Assert.equal(layout.content.height, 4 * 8)
+  local graphics = require("tests.support.FakeGraphics").new()
+  local sourcePalette = {}
+  local userPalette = {}
+  for slot = 0, 15 do
+    sourcePalette[slot] = { r = 30 + slot, g = 60 + slot, b = 90 + slot }
+    userPalette[slot] = { r = 130 + slot, g = 160 + slot, b = 190 + slot }
+  end
+  local windowCalls = {}
+  local textCalls = {}
+  local window = {
+    drawStandardWindow = function(_, box, fill)
+      windowCalls[#windowCalls + 1] = {
+        kind = "standard",
+        box = { x = box.x, y = box.y, width = box.width, height = box.height },
+        fill = fill,
+        transformed = { graphics.transformPoint(box.x, box.y) },
+      }
+    end,
+    standardFramePalette = function()
+      return sourcePalette
+    end,
+    drawWindow = function(_, box, frameIndex, fill)
+      windowCalls[#windowCalls + 1] = {
+        kind = "user",
+        frameIndex = frameIndex,
+        box = { x = box.x, y = box.y, width = box.width, height = box.height },
+        fill = fill,
+        transformed = { graphics.transformPoint(box.x, box.y) },
+      }
+    end,
+    framePalette = function(_, frameIndex)
+      Assert.equal(frameIndex, 1)
+      return userPalette
+    end,
+  }
+  local text = {
+    drawText = function() end,
+    drawTextWithPalette = function(_, value, x, y, palette)
+      textCalls[#textCalls + 1] = {
+        value = value,
+        x = x,
+        y = y,
+        palette = palette,
+        transformed = { graphics.transformPoint(x, y) },
+      }
+    end,
+  }
+  return rendererModule.new({ text = text, window = window, graphics = graphics }),
+    graphics,
+    windowCalls,
+    textCalls,
+    sourcePalette
+end
+
+function T.dual_display_choice_keeps_canonical_content_under_a_two_x_placement()
+  local renderer = testRenderer()
+  local layout = renderer:layout(status(0, 1), dualTopology(512, 384), nil)
+  Assert.equal(layout.presentation, "source")
+  Assert.deepEqual(layout.content, { x = 200, y = 104, width = 48, height = 32 })
+  Assert.deepEqual(layout.placement.frame, { x = 520, y = 40, width = 512, height = 384 })
+  Assert.deepEqual(layout.placement.origin, { x = 520, y = 40 })
+  Assert.equal(layout.placement.scale, 2)
+  Assert.deepEqual(layout.placement.clipRect, { x = 520, y = 40, width = 512, height = 384 })
   renderer:release()
-  window:release()
-  text:release()
 end
 
 function T.single_display_choice_stays_inside_portrait_safe_area()
-  local rendererModule = loadYesNoRenderer()
-  local graphics = require("tests.support.FakeGraphics").new({ imageSizes = { { 144, 16 } } })
-  local cache = FieldUiFixture.cacheWithFontAndFrames()
-  local text = FieldTextRenderer.new({ cacheFs = cache, graphics = graphics })
-  local window = FieldWindowRenderer.new({ cacheFs = cache, manifest = FieldUiFixture.manifest(), graphics = graphics })
-  local renderer = rendererModule.new({ text = text, window = window, graphics = graphics })
+  local renderer = testRenderer()
   local topology = ScreenTopology.oneDisplay({
     id = "main",
     rect = { x = 0, y = 0, width = 360, height = 640 },
@@ -69,30 +111,21 @@ function T.single_display_choice_stays_inside_portrait_safe_area()
     role = "world",
     touch = false,
   })
-  local layout = renderer:layout({
-    active = true,
-    selectedIndex = 1,
-    yesText = "YES",
-    noText = "NO",
-    frameIndex = 1,
-  }, topology, { x = 12, y = 300, width = 336, height = 160 })
+  local layout = renderer:layout(status(1, 1), topology, { x = 12, y = 300, width = 336, height = 160 })
   local safe = topology.surfaces[1].safeRect
-  Assert.isTrue(layout.content.x >= safe.x)
-  Assert.isTrue(layout.content.y >= safe.y)
-  Assert.isTrue(layout.content.x + layout.content.width <= safe.x + safe.width)
-  Assert.isTrue(layout.content.y + layout.content.height <= safe.y + safe.height)
+  local hostContent = layout.placement.origin
+  Assert.equal(layout.presentation, "adapted")
+  Assert.deepEqual(layout.content, { x = 0, y = 0, width = 48, height = 32 })
+  Assert.equal(layout.placement.scale, 1)
+  Assert.isTrue(hostContent.x >= safe.x)
+  Assert.isTrue(hostContent.y >= safe.y)
+  Assert.isTrue(hostContent.x + 48 * layout.placement.scale <= safe.x + safe.width)
+  Assert.isTrue(hostContent.y + 32 * layout.placement.scale <= safe.y + safe.height)
   renderer:release()
-  window:release()
-  text:release()
 end
 
 function T.single_display_choice_uses_dialogue_aware_candidate_order()
-  local rendererModule = loadYesNoRenderer()
-  local graphics = require("tests.support.FakeGraphics").new({ imageSizes = { { 144, 16 } } })
-  local cache = FieldUiFixture.cacheWithFontAndFrames()
-  local text = FieldTextRenderer.new({ cacheFs = cache, graphics = graphics })
-  local window = FieldWindowRenderer.new({ cacheFs = cache, manifest = FieldUiFixture.manifest(), graphics = graphics })
-  local renderer = rendererModule.new({ text = text, window = window, graphics = graphics })
+  local renderer = testRenderer()
   local topology = ScreenTopology.oneDisplay({
     id = "main",
     rect = { x = 0, y = 0, width = 640, height = 480 },
@@ -100,27 +133,225 @@ function T.single_display_choice_uses_dialogue_aware_candidate_order()
     role = "world",
     touch = false,
   })
-  local status = { active = true, selectedIndex = 0, yesText = "YES", noText = "NO", frameIndex = 1 }
-  local right = 12 + 616 - 6 * 8
-  local below = renderer:layout(status, topology, { x = 100, y = 100, width = 200, height = 80 })
-  Assert.deepEqual(below.content, { x = right, y = 180, width = 48, height = 32 }, "below-right wins when it fits")
+  local choice = status(0, 1)
+  local right = 12 + 616 - 48
+  local below = renderer:layout(choice, topology, { x = 100, y = 100, width = 200, height = 80 })
+  Assert.deepEqual(below.placement.origin, { x = right, y = 180 }, "below-right wins when it fits")
 
-  local above = renderer:layout(status, topology, { x = 100, y = 410, width = 200, height = 40 })
-  Assert.deepEqual(
-    above.content,
-    { x = right, y = 378, width = 48, height = 32 },
-    "above-right is next when below does not fit"
-  )
+  local above = renderer:layout(choice, topology, { x = 100, y = 410, width = 200, height = 40 })
+  Assert.deepEqual(above.placement.origin, { x = right, y = 378 }, "above-right is next when below does not fit")
 
-  local fallback = renderer:layout(status, topology, { x = 12, y = 24, width = 616, height = 432 })
-  Assert.deepEqual(
-    fallback.content,
-    { x = right, y = 424, width = 48, height = 32 },
-    "fallback stays at safe bottom-right"
-  )
+  local fallback = renderer:layout(choice, topology, { x = 12, y = 24, width = 616, height = 432 })
+  Assert.deepEqual(fallback.placement.origin, { x = right, y = 424 }, "fallback stays at safe bottom-right")
   renderer:release()
-  window:release()
-  text:release()
+end
+
+function T.list_cursor_and_labels_use_source_glyph_rows_and_palette_roles()
+  local renderer, _, windowCalls, textCalls, sourcePalette = testRenderer()
+  local topology = dualTopology()
+  for selectedIndex = 0, 1 do
+    local choice = status(selectedIndex)
+    renderer:draw(choice, renderer:layout(choice, topology, nil))
+  end
+  Assert.equal(#windowCalls, 2)
+  Assert.equal(windowCalls[1].kind, "standard")
+  Assert.equal(windowCalls[2].kind, "standard")
+  Assert.equal(#textCalls, 6)
+  for selectedIndex = 0, 1 do
+    local cursor = textCalls[selectedIndex * 3 + 1]
+    Assert.equal(cursor.value, "‣")
+    Assert.equal(cursor.x, 200)
+    Assert.equal(cursor.y, 104 + selectedIndex * 16)
+  end
+  Assert.equal(textCalls[1].value, "‣")
+  Assert.equal(textCalls[2].value, "YES")
+  Assert.equal(textCalls[2].x, 208)
+  Assert.equal(textCalls[2].y, 104)
+  Assert.equal(textCalls[3].value, "NO")
+  Assert.equal(textCalls[3].x, 208)
+  Assert.equal(textCalls[3].y, 120)
+  for _, call in ipairs(textCalls) do
+    Assert.deepEqual(call.palette, {
+      foreground = sourcePalette[1],
+      shadow = sourcePalette[2],
+      background = sourcePalette[15],
+    })
+  end
+  Assert.deepEqual(windowCalls[1].fill, {
+    sourcePalette[15].r / 255,
+    sourcePalette[15].g / 255,
+    sourcePalette[15].b / 255,
+    1,
+  })
+  renderer:release()
+end
+
+function T.source_and_adapted_presentations_select_their_own_frame_contracts()
+  local renderer, _, calls = testRenderer()
+  local source = status(0, nil)
+  renderer:draw(source, renderer:layout(source, dualTopology(), nil))
+  local adapted = status(1, 1)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    role = "world",
+    touch = false,
+  })
+  renderer:draw(adapted, renderer:layout(adapted, topology, nil))
+  Assert.equal(calls[1].kind, "standard")
+  Assert.equal(calls[2].kind, "user")
+  Assert.equal(calls[2].frameIndex, 1)
+  renderer:release()
+end
+
+function T.complete_menu_uses_one_two_x_transform_and_restores_graphics_state()
+  local statusValue = status(1, nil)
+  local origin = {
+    canvas = {},
+    shader = {},
+    blendMode = "add",
+    blendAlpha = "alphamultiply",
+    depthMode = "less",
+    depthWrite = true,
+    wireframe = true,
+    cullMode = "front",
+    color = { 0.2, 0.3, 0.4, 0.5 },
+    scissor = { 3, 4, 50, 60 },
+  }
+  local graphics = require("tests.support.FakeGraphics").new(origin)
+  -- The renderer and recording collaborators share the injected graphics transform.
+  local rendererModule = loadYesNoRenderer()
+  local calls = {}
+  local window = {
+    drawStandardWindow = function(_, box)
+      calls[#calls + 1] = {
+        kind = "window",
+        point = { graphics.transformPoint(box.x, box.y) },
+        farPoint = { graphics.transformPoint(box.x + box.width, box.y + box.height) },
+      }
+    end,
+    standardFramePalette = function()
+      return { [1] = { r = 1, g = 2, b = 3 }, [2] = { r = 4, g = 5, b = 6 }, [15] = { r = 7, g = 8, b = 9 } }
+    end,
+    drawWindow = function()
+      error("adapted window used for source presentation")
+    end,
+    framePalette = function()
+      error("user palette used for source presentation")
+    end,
+  }
+  local text = {
+    drawText = function() end,
+    drawTextWithPalette = function(_, value, x, y)
+      calls[#calls + 1] = { kind = value, point = { graphics.transformPoint(x, y) } }
+    end,
+  }
+  local renderer = rendererModule.new({ text = text, window = window, graphics = graphics })
+  local layout = renderer:layout(statusValue, dualTopology(512, 384), nil)
+  renderer:draw(statusValue, layout)
+  Assert.equal(#calls, 4)
+  Assert.deepEqual(calls[1].point, { 920, 248 })
+  Assert.deepEqual(calls[1].farPoint, { 1016, 312 })
+  Assert.deepEqual(
+    { calls[1].farPoint[1] - calls[1].point[1], calls[1].farPoint[2] - calls[1].point[2] },
+    { 96, 64 },
+    "the logical window body uses the same 2x transform as its glyphs"
+  )
+  Assert.deepEqual(calls[2].point, { 920, 280 })
+  Assert.deepEqual(calls[3].point, { 936, 248 })
+  Assert.deepEqual(calls[4].point, { 936, 280 })
+  Assert.deepEqual(graphics.transforms, { { "translate", 520, 40 }, { "scale", 2, 2 } })
+  Assert.equal(graphics.pushDepth(), 0)
+  Assert.equal(graphics.getCanvas(), origin.canvas)
+  Assert.equal(graphics.getShader(), origin.shader)
+  Assert.deepEqual({ graphics.getColor() }, origin.color)
+  Assert.deepEqual({ graphics.getBlendMode() }, { origin.blendMode, origin.blendAlpha })
+  Assert.deepEqual({ graphics.getDepthMode() }, { origin.depthMode, origin.depthWrite })
+  Assert.equal(graphics.isWireframe(), origin.wireframe)
+  Assert.equal(graphics.getMeshCullMode(), origin.cullMode)
+  Assert.deepEqual({ graphics.getScissor() }, origin.scissor)
+  renderer:release()
+end
+
+function T.constrained_single_display_scale_keeps_the_complete_menu_inside_its_host_rect()
+  local renderer, graphics, windows, texts = testRenderer()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 80, height = 64 },
+    safeRect = { x = 10, y = 12, width = 24, height = 16 },
+    role = "world",
+    touch = false,
+  })
+  local choice = status(1, 1)
+  local layout = renderer:layout(choice, topology, nil)
+  Assert.equal(layout.placement.scale, 0.5)
+  Assert.deepEqual(layout.content, { x = 0, y = 0, width = 48, height = 32 })
+  Assert.deepEqual(layout.placement.frame, { x = 10, y = 12, width = 24, height = 16 })
+  renderer:draw(choice, layout)
+  Assert.deepEqual(windows[1].box, { x = 0, y = 0, width = 48, height = 32 })
+  Assert.deepEqual(texts[1].transformed, { 10, 20 })
+  Assert.deepEqual(texts[2].transformed, { 14, 12 })
+  Assert.deepEqual(texts[3].transformed, { 14, 20 })
+  Assert.equal(graphics.pushDepth(), 0)
+  renderer:release()
+end
+
+function T.graphics_state_is_restored_when_nested_menu_drawing_fails()
+  local graphics = require("tests.support.FakeGraphics").new({
+    canvas = {},
+    shader = {},
+    blendMode = "add",
+    blendAlpha = "premultiplied",
+    depthMode = "greater",
+    depthWrite = false,
+    wireframe = true,
+    cullMode = "back",
+    color = { 0.4, 0.3, 0.2, 0.1 },
+    scissor = { 5, 6, 7, 8 },
+  })
+  local before = {
+    canvas = graphics.getCanvas(),
+    shader = graphics.getShader(),
+    color = { graphics.getColor() },
+    blend = { graphics.getBlendMode() },
+    depth = { graphics.getDepthMode() },
+    wireframe = graphics.isWireframe(),
+    cull = graphics.getMeshCullMode(),
+    scissor = { graphics.getScissor() },
+  }
+  local rendererModule = loadYesNoRenderer()
+  local palette = { [1] = { r = 1, g = 2, b = 3 }, [2] = { r = 4, g = 5, b = 6 }, [15] = { r = 7, g = 8, b = 9 } }
+  local renderer = rendererModule.new({
+    graphics = graphics,
+    window = {
+      drawStandardWindow = function()
+        error("injected window failure")
+      end,
+      standardFramePalette = function()
+        return palette
+      end,
+      drawWindow = function() end,
+      framePalette = function()
+        return palette
+      end,
+    },
+    text = { drawText = function() end, drawTextWithPalette = function() end },
+  })
+  local choice = status(0)
+  local layout = renderer:layout(choice, dualTopology(), nil)
+  local ok, err = pcall(renderer.draw, renderer, choice, layout)
+  Assert.isFalse(ok)
+  Assert.isTrue(tostring(err):find("injected window failure", 1, true) ~= nil)
+  Assert.equal(graphics.pushDepth(), 0)
+  Assert.equal(graphics.getCanvas(), before.canvas)
+  Assert.equal(graphics.getShader(), before.shader)
+  Assert.deepEqual({ graphics.getColor() }, before.color)
+  Assert.deepEqual({ graphics.getBlendMode() }, before.blend)
+  Assert.deepEqual({ graphics.getDepthMode() }, before.depth)
+  Assert.equal(graphics.isWireframe(), before.wireframe)
+  Assert.equal(graphics.getMeshCullMode(), before.cull)
+  Assert.deepEqual({ graphics.getScissor() }, before.scissor)
+  renderer:release()
 end
 
 function T.focus_indicator_draw_uses_the_focus_asset_without_black_tint()
@@ -146,44 +377,6 @@ function T.focus_indicator_draw_uses_the_focus_asset_without_black_tint()
     )
   end
   text:release()
-end
-
-function T.yes_no_focus_indicator_uses_its_selected_window_frame_palette()
-  local rendererModule = loadYesNoRenderer()
-  local graphics = require("tests.support.FakeGraphics").new()
-  local selectedPalette = { [11] = { r = 17, g = 83, b = 149 } }
-  local focusCalls = {}
-  local window = {
-    drawWindow = function() end,
-    framePalette = function(_, frameIndex)
-      Assert.equal(frameIndex, 1)
-      return selectedPalette
-    end,
-  }
-  local text = {
-    drawText = function() end,
-    drawFocusIndicator = function(_, field, x, y, palette)
-      focusCalls[#focusCalls + 1] = { field = field, x = x, y = y, palette = palette }
-    end,
-    windowBackgroundColor = function()
-      return { 0, 0, 0, 1 }
-    end,
-  }
-  local renderer = rendererModule.new({ text = text, window = window, graphics = graphics })
-  local status = { active = true, selectedIndex = 0, yesText = "YES", noText = "NO", frameIndex = 1 }
-  local topology = ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = 640, height = 480 },
-    role = "world",
-    touch = false,
-  })
-  local layout = renderer:layout(status, topology, nil)
-
-  renderer:draw(status, layout)
-
-  Assert.equal(#focusCalls, 1)
-  Assert.equal(focusCalls[1].field, 0)
-  Assert.equal(focusCalls[1].palette, selectedPalette, "focus tint uses the selected frame palette")
 end
 
 return GraphicsSmoke.suite(T)

@@ -108,6 +108,10 @@ local function buildDoubles(sink, calls)
           end
           return palette
         end
+        function instance:drawStandardWindow(_, _) end
+        function instance:standardFramePalette()
+          return self:framePalette(0)
+        end
         function instance:drawApplicationFrame(box, frameIndex)
           sink[#sink + 1] = { "frame", box, frameIndex }
         end
@@ -132,6 +136,7 @@ local function buildDoubles(sink, calls)
       new = function(_)
         local instance = releasable(calls, "text")
         function instance:drawText(_, _, _) end
+        function instance:drawTextWithPalette(_, _, _, _) end
         function instance:windowBackgroundColor()
           return 0, 0, 0, 1
         end
