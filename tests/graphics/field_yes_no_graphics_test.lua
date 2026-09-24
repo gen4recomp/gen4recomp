@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
@@ -58,10 +59,20 @@ local function testRenderer()
       return sourcePalette
     end,
     drawWindow = function(_, box, frameIndex, fill)
+      local tiles = {}
+      for _, tile in ipairs(FieldDialogueTheme.frameTilePlacements(box)) do
+        local x, y = graphics.transformPoint(tile.x, tile.y)
+        local farX, farY = graphics.transformPoint(
+          tile.x + FieldDialogueTheme.frameTileSize * (tile.spanX or 1),
+          tile.y + FieldDialogueTheme.frameTileSize * (tile.spanY or 1)
+        )
+        tiles[#tiles + 1] = { x = x, y = y, width = farX - x, height = farY - y }
+      end
       windowCalls[#windowCalls + 1] = {
         kind = "user",
         frameIndex = frameIndex,
         box = { x = box.x, y = box.y, width = box.width, height = box.height },
+        tiles = tiles,
         fill = fill,
         transformed = { graphics.transformPoint(box.x, box.y) },
       }
@@ -117,10 +128,11 @@ function T.single_display_choice_stays_inside_portrait_safe_area()
   Assert.equal(layout.presentation, "adapted")
   Assert.deepEqual(layout.content, { x = 0, y = 0, width = 48, height = 32 })
   Assert.equal(layout.placement.scale, 1)
-  Assert.isTrue(hostContent.x >= safe.x)
-  Assert.isTrue(hostContent.y >= safe.y)
-  Assert.isTrue(hostContent.x + 48 * layout.placement.scale <= safe.x + safe.width)
-  Assert.isTrue(hostContent.y + 32 * layout.placement.scale <= safe.y + safe.height)
+  Assert.isTrue(layout.placement.frame.x >= safe.x)
+  Assert.isTrue(layout.placement.frame.y >= safe.y)
+  Assert.isTrue(layout.placement.frame.x + layout.placement.frame.width <= safe.x + safe.width)
+  Assert.isTrue(layout.placement.frame.y + layout.placement.frame.height <= safe.y + safe.height)
+  Assert.isTrue(hostContent.x > layout.placement.frame.x, "the body remains inset inside the exterior frame")
   renderer:release()
 end
 
@@ -134,15 +146,30 @@ function T.single_display_choice_uses_dialogue_aware_candidate_order()
     touch = false,
   })
   local choice = status(0, 1)
-  local right = 12 + 616 - 48
+  local right = 12 + 616 - 88
   local below = renderer:layout(choice, topology, { x = 100, y = 100, width = 200, height = 80 })
-  Assert.deepEqual(below.placement.origin, { x = right, y = 180 }, "below-right wins when it fits")
+  Assert.deepEqual(
+    below.placement.frame,
+    { x = right, y = 180, width = 88, height = 48 },
+    "below-right frame wins when it fits"
+  )
+  Assert.deepEqual(below.placement.origin, { x = right + 16, y = 188 }, "content sits inside the fitted frame")
 
   local above = renderer:layout(choice, topology, { x = 100, y = 410, width = 200, height = 40 })
-  Assert.deepEqual(above.placement.origin, { x = right, y = 378 }, "above-right is next when below does not fit")
+  Assert.deepEqual(
+    above.placement.frame,
+    { x = right, y = 362, width = 88, height = 48 },
+    "above-right fits the complete frame"
+  )
+  Assert.deepEqual(above.placement.origin, { x = right + 16, y = 370 }, "content retains its frame inset")
 
   local fallback = renderer:layout(choice, topology, { x = 12, y = 24, width = 616, height = 432 })
-  Assert.deepEqual(fallback.placement.origin, { x = right, y = 424 }, "fallback stays at safe bottom-right")
+  Assert.deepEqual(
+    fallback.placement.frame,
+    { x = right, y = 408, width = 88, height = 48 },
+    "fallback fits at safe bottom-right"
+  )
+  Assert.deepEqual(fallback.placement.origin, { x = right + 16, y = 416 }, "fallback content remains inside the frame")
   renderer:release()
 end
 
@@ -284,16 +311,72 @@ function T.constrained_single_display_scale_keeps_the_complete_menu_inside_its_h
   })
   local choice = status(1, 1)
   local layout = renderer:layout(choice, topology, nil)
-  Assert.equal(layout.placement.scale, 0.5)
+  Assert.equal(layout.placement.scale, 24 / 88)
   Assert.deepEqual(layout.content, { x = 0, y = 0, width = 48, height = 32 })
-  Assert.deepEqual(layout.placement.frame, { x = 10, y = 12, width = 24, height = 16 })
+  Assert.deepEqual(
+    layout.placement.frame,
+    { x = 10, y = 12 + 16 - 48 * layout.placement.scale, width = 24, height = 48 * layout.placement.scale }
+  )
   renderer:draw(choice, layout)
   Assert.deepEqual(windows[1].box, { x = 0, y = 0, width = 48, height = 32 })
-  Assert.deepEqual(texts[1].transformed, { 10, 20 })
-  Assert.deepEqual(texts[2].transformed, { 14, 12 })
-  Assert.deepEqual(texts[3].transformed, { 14, 20 })
+  Assert.deepEqual(texts[2].transformed, {
+    texts[1].transformed[1] + 8 * layout.placement.scale,
+    texts[1].transformed[2] - 16 * layout.placement.scale,
+  })
+  Assert.deepEqual(texts[3].transformed, {
+    texts[2].transformed[1],
+    texts[2].transformed[2] + 16 * layout.placement.scale,
+  })
   Assert.equal(graphics.pushDepth(), 0)
   renderer:release()
+end
+
+function T.adapted_user_frame_fits_inside_constrained_and_portrait_safe_areas()
+  local cases = {
+    {
+      topology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 80, height = 64 },
+        safeRect = { x = 10, y = 12, width = 24, height = 16 },
+        role = "world",
+        touch = false,
+      }),
+      dialogue = nil,
+    },
+    {
+      topology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 360, height = 640 },
+        safeRect = { x = 12, y = 24, width = 336, height = 592 },
+        role = "world",
+        touch = false,
+      }),
+      dialogue = { x = 12, y = 300, width = 336, height = 160 },
+    },
+  }
+
+  for _, case in ipairs(cases) do
+    local renderer, _, windows, texts = testRenderer()
+    local choice = status(1, 1)
+    local layout = renderer:layout(choice, case.topology, case.dialogue)
+    renderer:draw(choice, layout)
+
+    local safe = case.topology.surfaces[1].safeRect
+    local frame = windows[1]
+    Assert.equal(frame.kind, "user")
+    Assert.equal(#frame.tiles, #FieldDialogueTheme.frameTilePlacements({ x = 0, y = 0, width = 48, height = 32 }))
+    for _, tile in ipairs(frame.tiles) do
+      Assert.isTrue(tile.x >= safe.x, "frame tile starts inside the safe area's left edge")
+      Assert.isTrue(tile.y >= safe.y, "frame tile starts inside the safe area's top edge")
+      Assert.isTrue(tile.x + tile.width <= safe.x + safe.width, "frame tile ends inside the safe area's right edge")
+      Assert.isTrue(tile.y + tile.height <= safe.y + safe.height, "frame tile ends inside the safe area's bottom edge")
+    end
+    Assert.deepEqual(texts[2].transformed, {
+      frame.transformed[1] + 8 * layout.placement.scale,
+      frame.transformed[2],
+    }, "label placement remains tied to the canonical menu body")
+    renderer:release()
+  end
 end
 
 function T.graphics_state_is_restored_when_nested_menu_drawing_fails()

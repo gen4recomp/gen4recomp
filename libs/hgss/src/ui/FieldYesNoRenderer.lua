@@ -1,6 +1,7 @@
 -- Renders the field Yes/No list in source coordinates under one host placement.
 
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@alias FieldYesNoRenderer.Color { r: integer, g: integer, b: integer }
@@ -30,6 +31,20 @@ local function fits(rect, bounds)
     and rect.y >= bounds.y
     and rect.x + rect.width <= bounds.x + bounds.width
     and rect.y + rect.height <= bounds.y + bounds.height
+end
+
+local function adaptedFrameBounds()
+  local minX, minY = 0, 0
+  local maxX, maxY = CONTENT.width, CONTENT.height
+  for _, tile in
+    ipairs(FieldDialogueTheme.frameTilePlacements({ x = 0, y = 0, width = CONTENT.width, height = CONTENT.height }))
+  do
+    minX = math.min(minX, tile.x)
+    minY = math.min(minY, tile.y)
+    maxX = math.max(maxX, tile.x + FieldDialogueTheme.frameTileSize * (tile.spanX or 1))
+    maxY = math.max(maxY, tile.y + FieldDialogueTheme.frameTileSize * (tile.spanY or 1))
+  end
+  return { x = minX, y = minY, width = maxX - minX, height = maxY - minY }
 end
 
 local function surfaceFor(topology)
@@ -113,34 +128,37 @@ function FieldYesNoRenderer:layout(status, topology, dialogueBox)
     }
   end
 
-  local scale = math.min(1, safe.width / CONTENT.width, safe.height / CONTENT.height)
+  local outer = adaptedFrameBounds()
+  local scale = math.min(1, safe.width / outer.width, safe.height / outer.height)
   assert(scale > 0, "yes/no adapted presentation requires a positive scale")
-  local width = CONTENT.width * scale
-  local height = CONTENT.height * scale
-  local hostContent =
+  local width = outer.width * scale
+  local height = outer.height * scale
+  local hostFrame =
     { x = safe.x + safe.width - width, y = safe.y + safe.height - height, width = width, height = height }
   if dialogueBox then
     local candidates = {
-      { x = hostContent.x, y = dialogueBox.y + dialogueBox.height, width = width, height = height },
-      { x = hostContent.x, y = dialogueBox.y - height, width = width, height = height },
+      { x = hostFrame.x, y = dialogueBox.y + dialogueBox.height, width = width, height = height },
+      { x = hostFrame.x, y = dialogueBox.y - height, width = width, height = height },
     }
     for _, candidate in ipairs(candidates) do
       if fits(candidate, safe) then
-        hostContent = candidate
+        hostFrame = candidate
         break
       end
     end
   end
-  assert(hostContent.x >= safe.x and hostContent.y >= safe.y, "yes/no choice leaves the safe area")
-  assert(hostContent.x + hostContent.width <= safe.x + safe.width, "yes/no choice exceeds the safe width")
-  assert(hostContent.y + hostContent.height <= safe.y + safe.height, "yes/no choice exceeds the safe height")
+  assert(fits(hostFrame, safe), "yes/no choice frame leaves the safe area")
+  local hostContentOrigin = {
+    x = hostFrame.x - outer.x * scale,
+    y = hostFrame.y - outer.y * scale,
+  }
   return {
     surface = surface,
     presentation = "adapted",
     content = { x = 0, y = 0, width = CONTENT.width, height = CONTENT.height },
     placement = {
-      frame = hostContent,
-      origin = { x = hostContent.x, y = hostContent.y },
+      frame = hostFrame,
+      origin = hostContentOrigin,
       scale = scale,
       clipRect = safe,
     },
