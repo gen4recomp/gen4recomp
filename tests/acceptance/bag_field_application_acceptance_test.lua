@@ -456,7 +456,7 @@ end
 -- composed host: open the action menu, enter the quantity picker, step
 -- once, confirm through the quantity, latch the prompt choice through its
 -- confirmation interval so the acknowledgement state opens, and
--- acknowledge on a later input to commit and land back in browsing.
+-- acknowledge with the first later input to commit and land back in browsing.
 local function tossSelectedWithSingleCopyStep(game, state)
   confirm(game)
   Assert.equal(bagView(game).state, "action_menu", "confirming the composed selection opens the action menu")
@@ -474,9 +474,7 @@ local function tossSelectedWithSingleCopyStep(game, state)
   game:step()
   Assert.equal(bagView(game).state, "toss_ack", "accepting the prompt opens the acknowledgement state")
   confirm(game)
-  Assert.equal(bagView(game).state, "toss_ack", "the acknowledgement waits for a later input")
-  confirm(game)
-  Assert.equal(bagView(game).state, "browsing", "a committed toss returns to browsing")
+  Assert.equal(bagView(game).state, "browsing", "the first acknowledgement commits back to browsing")
 end
 
 -- The display matrix through the real field factory: native-like shows

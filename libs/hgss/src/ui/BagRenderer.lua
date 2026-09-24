@@ -112,11 +112,16 @@ local function promptText(presentation, manifest)
     return formatBagTemplate(assert(generated.tossQuantity, "the bag manifest carries its toss prompt"), name)
   elseif state == "toss_confirm" then
     local selected = assert(presentation.selected, "the toss prompt needs its selected item")
-    local name = assert(selected.name, "the confirmation prompt needs its selected display name")
     local quantity = assert(presentation.quantity, "the confirmation prompt carries its amount")
+    local itemName
+    if quantity == 1 then
+      itemName = assert(selected.name, "the toss prompt needs its singular display name")
+    else
+      itemName = assert(selected.namePlural, "the toss prompt needs its plural display name")
+    end
     return formatBagTemplate(
       assert(generated.tossConfirm, "the bag manifest carries its confirmation prompt"),
-      name,
+      itemName,
       quantity
     )
   elseif state == "toss_ack" then

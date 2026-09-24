@@ -1297,9 +1297,31 @@ function T.confirmation_state_draws_its_own_screen_and_prompt()
     icons = icons(),
   })
   local joined = joinedText(content)
-  Assert.isTrue(joined:find("Toss 2 POTION?", 1, true) ~= nil, "the confirmation state formats item and quantity")
+  Assert.isTrue(joined:find("Toss 2 POTIONs?", 1, true) ~= nil, "the confirmation state formats item and quantity")
   Assert.isFalse(printedText(content, "x2"), "the confirmation state never reuses the legacy amount panel text")
   Assert.equal(fillCount(graphics), 0, "no generic fill covers the generated confirmation screen")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+-- A single tossed copy keeps the singular item name in the same
+-- generated confirmation template that names the plural for several.
+function T.confirmation_state_keeps_the_singular_name_for_one_copy()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  draw:draw(status({ state = "toss_confirm", quantity = 1, quantityMax = 5 }), plan(true), {
+    icons = icons(),
+  })
+  local joined = joinedText(content)
+  Assert.isTrue(joined:find("Toss 1 POTION?", 1, true) ~= nil, "the confirmation names the singular for one copy")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
 end
@@ -1341,7 +1363,7 @@ end
 function T.toss_states_communicate_their_prompts_in_every_topology()
   local cases = {
     { state = "toss_quantity", quantity = 2, expected = "Toss POTION?" },
-    { state = "toss_confirm", quantity = 2, expected = "Toss 2 POTION?" },
+    { state = "toss_confirm", quantity = 2, expected = "Toss 2 POTIONs?" },
   }
   for _, case in ipairs(cases) do
     for _, mode in ipairs({ "horizontal", "vertical", "interactive_only" }) do
@@ -2608,7 +2630,7 @@ function T.compact_browsing_description_follows_item_focus_while_prompts_persist
       joined[#joined + 1] = entry.text
     end
     Assert.isTrue(
-      table.concat(joined, "\n"):find("Toss 2 POTION?", 1, true) ~= nil,
+      table.concat(joined, "\n"):find("Toss 2 POTIONs?", 1, true) ~= nil,
       "the toss confirmation keeps item and quantity"
     )
     draw:release()

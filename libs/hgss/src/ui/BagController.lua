@@ -45,7 +45,6 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _state "browsing"|"action_menu"|"toss_quantity"|"toss_confirm"|"toss_ack"|"move_select"
 ---@field _prompt YesNoPromptController the owned modal prompt for toss confirmation
 ---@field _tossPrompt { x: integer, y: integer, shape: string, initialSelection: string } the generated semantic prompt placement
----@field _ackArmed boolean whether the acknowledgement state accepts its commit input yet
 ---@field _actions table<string, unknown>[]
 ---@field _actionNode integer
 ---@field _actionItemKey string?
@@ -204,7 +203,6 @@ function BagController.new(opts)
     _quantityPressedTicks = 0,
     _prompt = prompt,
     _tossPrompt = opts.tossPrompt,
-    _ackArmed = false,
   }, BagController)
   self._view = self:_refresh()
   self:_reconcile()
@@ -479,7 +477,6 @@ end
 -- return.
 function BagController:_toBrowsing()
   self._prompt:dispose()
-  self._ackArmed = false
   self._state = "browsing"
   self._actions = {}
   self._actionNode = 4
@@ -684,7 +681,6 @@ function BagController:_resolveTossPrompt()
   elseif result == "yes" then
     self._prompt:dispose()
     self._state = "toss_ack"
-    self._ackArmed = false
   end
 end
 
@@ -877,9 +873,7 @@ function BagController:_confirm()
     -- opens it here waits for the next update instead of reusing it.
     return
   elseif self._state == "toss_ack" then
-    if self._ackArmed then
-      self:_commitToss()
-    end
+    self:_commitToss()
   elseif self._state == "move_select" then
     self:_commitMove()
   elseif self._focusNode == CANCEL_NODE then
@@ -910,9 +904,7 @@ function BagController:_cancel()
     -- opens it here waits for the next update instead of reusing it.
     return
   elseif self._state == "toss_ack" then
-    if self._ackArmed then
-      self:_commitToss()
-    end
+    self:_commitToss()
   elseif self._state == "move_select" then
     self:_cancelMove()
   else
@@ -1093,7 +1085,7 @@ function BagController:_pointerDown(event)
     return
   end
   if self._state == "toss_ack" then
-    if self._ackArmed and pressInsidePane(event) then
+    if pressInsidePane(event) then
       self:_commitToss()
     end
     return
@@ -1267,12 +1259,6 @@ function BagController:updateFixed(uiInput)
     else
       error("unknown bag event type " .. tostring(event.type), 2)
     end
-  end
-  -- The acknowledgement only accepts input from a later update: arming it
-  -- here keeps the YES-producing batch from doubling as its own
-  -- acknowledgement.
-  if self._state == "toss_ack" then
-    self._ackArmed = true
   end
 end
 
