@@ -1681,4 +1681,98 @@ function T.icon_page_dispatch_reaches_the_selected_session()
   Assert.isFalse(unknownOk, "an unlisted kind never dispatches")
 end
 
+-- First-play preparation presentation: the launcher state stays
+-- policy-agnostic, delegating readiness to the opaque preparation object
+-- while owning liveness, exactly-once transfer, and disposal.
+local function scriptedFirstPlayPreparation(script)
+  local preparation = {}
+  function preparation:poll()
+    script.polls = (script.polls or 0) + 1
+    if script.failure ~= nil then
+      return nil, script.failure
+    end
+    if script.ready then
+      return true, nil
+    end
+    return nil, nil
+  end
+  function preparation:dispose()
+    script.disposals = (script.disposals or 0) + 1
+  end
+  return preparation
+end
+
+local function firstPlayState(script, overrides)
+  local options = {
+    kind = "first-play",
+    epoch = 7,
+    preparation = scriptedFirstPlayPreparation(script),
+    provisioner = {
+      status = function()
+        return {}
+      end,
+    },
+    isCurrent = function()
+      return true
+    end,
+    onReady = function()
+      script.fired = (script.fired or 0) + 1
+    end,
+    onCancel = function()
+      script.cancelled = (script.cancelled or 0) + 1
+    end,
+  }
+  for key, value in pairs(overrides or {}) do
+    options[key] = value
+  end
+  return CachePreparationState.new(options)
+end
+
+function T.first_play_preparation_delegates_readiness_without_milestone_policy()
+  local script = { ready = false }
+  local state = firstPlayState(script)
+  state:update(0.016)
+  Assert.equal(script.polls, 1, "the launcher polls the opaque preparation object")
+  Assert.isNil(script.fired, "pending preparation never transfers")
+  Assert.isNil(state.error, "pending preparation carries no error")
+  script.ready = true
+  state:update(0.016)
+  Assert.equal(script.fired, 1, "preparation readiness transfers")
+  state:update(0.016)
+  Assert.equal(script.fired, 1, "the transfer fires exactly once")
+end
+
+function T.first_play_failure_latches_without_policy_knowledge()
+  local script = { ready = false, failure = "intro milestone failed in the fixture" }
+  local state = firstPlayState(script)
+  state:update(0.016)
+  Assert.isNil(script.fired, "a failed preparation never transfers")
+  Assert.notNil(state.error, "the preparation failure surfaces on the launcher state")
+  state:update(0.016)
+  Assert.isNil(script.fired, "a latched failure never recovers into a transfer")
+end
+
+function T.stale_first_play_epoch_never_launches()
+  local script = { ready = true }
+  local state = firstPlayState(script, {
+    isCurrent = function()
+      return false
+    end,
+  })
+  state:update(0.016)
+  Assert.isNil(script.fired, "a stale epoch never calls its ready callback")
+  Assert.equal(script.polls or 0, 0, "a stale epoch never polls preparation")
+end
+
+function T.first_play_disposal_releases_the_preparation_once()
+  local script = { ready = true }
+  local state = firstPlayState(script)
+  state:dispose()
+  Assert.equal(script.disposals, 1, "launcher disposal releases the preparation object")
+  state:dispose()
+  Assert.equal(script.disposals, 1, "repeated launcher disposal releases exactly once")
+  state:update(0.016)
+  Assert.isNil(script.fired, "a disposed state never transfers even when preparation is ready")
+end
+
 return { tests = T }

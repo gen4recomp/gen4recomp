@@ -112,8 +112,9 @@ end
 -- wait: no new session writes shared version roots before the controller
 -- acknowledges that every source reader closed successfully.
 ---@param versionId string newly selected game version
+---@param options { freshImport: boolean? }? private selection mode
 ---@return boolean
-function App._waitForQuiescence(versionId)
+function App._waitForQuiescence(versionId, options)
   local pending = App.pendingQuiesce
   local service = App.service
   if pending == nil or service == nil then
@@ -133,7 +134,7 @@ function App._waitForQuiescence(versionId)
     end,
     onReady = function()
       App.pendingQuiesce = nil
-      App._selectVersion(versionId)
+      App._selectVersion(versionId, options)
     end,
     onCancel = function()
       App.pendingQuiesce = nil
@@ -147,9 +148,12 @@ end
 -- provisioner, then launches the menu immediately when bootstrap is
 -- already ready or waits through a visible preparation state otherwise.
 -- A ready bootstrap never recompiles; broader warming starts only after
--- the menu is installed.
-function App._selectVersion(versionId)
-  if App._waitForQuiescence(versionId) then
+-- the menu is installed. A fresh import instead waits through the
+-- mandatory first-play preparation before the menu may launch.
+---@param versionId string newly selected game version
+---@param options { freshImport: boolean? }? private selection mode, default bootstrap-only
+function App._selectVersion(versionId, options)
+  if App._waitForQuiescence(versionId, options) then
     return
   end
   App._retireSelection()
@@ -158,6 +162,30 @@ function App._selectVersion(versionId)
   App.epoch = assert(provisioner.epoch, "selection borrowed no epoch")
   local epoch = App.epoch
   local host = provisioner:gameHost()
+  if options ~= nil and options.freshImport == true then
+    -- One provisioner epoch owns the mandatory preparation and the
+    -- launched game: no retirement or reselection happens between them.
+    local preparation = HgssGame.newFirstPlayCachePreparation({
+      versionId = versionId,
+      derivedAssets = host,
+    })
+    App.setState(CachePreparationState.new({
+      kind = "first-play",
+      epoch = epoch,
+      preparation = preparation,
+      provisioner = host,
+      isCurrent = function(selected)
+        return App.epoch == selected
+      end,
+      onReady = function()
+        App._launchMenuWithProvisioner(versionId)
+      end,
+      onCancel = function()
+        App._showVersionSelector()
+      end,
+    }))
+    return
+  end
   local checkOk, ready = pcall(host.requestMilestone, "bootstrap", "required")
   if checkOk and ready then
     App._launchMenuWithProvisioner(versionId)
@@ -217,7 +245,7 @@ end
 
 function App._onImported(versionId)
   App.importer = nil
-  App._selectVersion(versionId)
+  App._selectVersion(versionId, { freshImport = true })
 end
 
 function App._bootMainMenu(versions)

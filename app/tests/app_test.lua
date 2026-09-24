@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local RomImporter = require("romdump.src.source.RomImporter")
 local HgssGame = require("game.hgss.src.HgssGame")
+local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local defaultAppBackend = ProducerFingerprint.appBackend
 local defaultCheckoutBackend = ProducerFingerprint.checkoutBackend
@@ -409,11 +410,30 @@ function T.completed_import_launches_the_imported_version_through_the_hgss_entry
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    App._onImported("heartgold")
-    local launch = assert(result.launches[1])
-    Assert.keySet(launch, "derivedAssets,development,onExit,versionId")
-    Assert.equal(launch.versionId, "heartgold")
-    Assert.equal(App.state, result.state)
+    -- A fresh import frontloads first-play preparation before the menu:
+    -- once the closure is ready, the import still lands on the Hgss
+    -- menu entry with the same launch contract as before.
+    local original = HgssGame.newFirstPlayCachePreparation
+    HgssGame.newFirstPlayCachePreparation = function(_)
+      local preparation = {}
+      function preparation:poll()
+        return true, nil
+      end
+      function preparation:dispose() end
+      return preparation
+    end
+    local ok, err = pcall(function()
+      App._onImported("heartgold")
+      App.update(0.016)
+      local launch = assert(result.launches[1])
+      Assert.keySet(launch, "derivedAssets,development,onExit,versionId")
+      Assert.equal(launch.versionId, "heartgold")
+      Assert.equal(App.state, result.state)
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
   end)
 end
 
@@ -538,6 +558,198 @@ function T.development_startup_passes_frozen_checkout_selectors_without_scanning
         Assert.equal(#result.launches, 2)
       end)
     end)
+  end)
+end
+
+-- A scripted first-play preparation stand-in behind the app-facing
+-- factory seam. It reports pending until its script releases it, so App
+-- wiring tests prove epoch ownership and sweep ordering without
+-- rebuilding the real bedroom closure (owned by the preparation tests).
+local function installFirstPlayFactory(script)
+  local original = HgssGame.newFirstPlayCachePreparation
+  HgssGame.newFirstPlayCachePreparation = function(options)
+    script.captured = options
+    local preparation = {}
+    function preparation:poll()
+      script.polls = (script.polls or 0) + 1
+      if script.failure ~= nil then
+        return nil, script.failure
+      end
+      if script.ready then
+        return true, nil
+      end
+      return nil, nil
+    end
+    function preparation:dispose()
+      script.disposals = (script.disposals or 0) + 1
+    end
+    return preparation
+  end
+  return original
+end
+
+-- Records every controller request selector so tests prove the mandatory
+-- import interval requests exactly the bounded first-play set and never a
+-- whole-corpus scope.
+local function recordServiceRequests(result)
+  local requests = {}
+  local baseRequest = result.service.request
+  result.service.request = function(_, epoch, selector)
+    requests[#requests + 1] = selector
+    return baseRequest(_, epoch, selector)
+  end
+  return requests
+end
+
+local function requestedMilestones(requests)
+  local names = {}
+  local urgencies = {}
+  local seen = {}
+  for _, selector in ipairs(requests) do
+    if selector.requestKind == "milestone" then
+      -- Interest is re-affirmed on every poll until terminal readiness,
+      -- so the same milestone is requested repeatedly: the contract is
+      -- the exact SET of names, never a total call count.
+      if not seen[selector.name] then
+        seen[selector.name] = true
+        names[#names + 1] = selector.name
+      end
+      urgencies[selector.name] = selector.urgency
+    end
+  end
+  table.sort(names)
+  return names, urgencies
+end
+
+-- A fresh import must not reach the menu while first-play preparation is
+-- pending: the import transaction frontloads the existing global set plus
+-- the initial bedroom closure through production App and preparation
+-- composition, with bootstrap ready and everything else pending below.
+function T.fresh_import_waits_for_the_first_play_closure_before_the_menu()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    local requests = recordServiceRequests(result)
+    App._onImported("heartgold")
+    for _ = 1, 3 do
+      App.update(0.016)
+    end
+    Assert.equal(#result.launches, 0, "a fresh import must not launch the menu while first-play preparation is pending")
+    Assert.equal(
+      getmetatable(App.state).__index,
+      CachePreparationState,
+      "the import waits through the visible preparation state"
+    )
+    local names, urgencies = requestedMilestones(requests)
+    Assert.deepEqual(
+      names,
+      { "bootstrap", "field-planning", "field-runtime", "new-game-intro" },
+      "fresh import requests exactly the existing first-play milestone set"
+    )
+    for _, name in ipairs(names) do
+      Assert.equal(urgencies[name], "required", "first-play milestone demand is required urgency")
+    end
+    for _, selector in ipairs(requests) do
+      Assert.isFalse(
+        selector.requestKind == "complete",
+        "mandatory import preparation never requests whole-corpus scope"
+      )
+    end
+  end)
+end
+
+-- Ordinary selection is untouched by the import frontload: a ready version
+-- launches through the bootstrap path without constructing first-play
+-- preparation. (Already green today; kept as the preservation contract.)
+function T.existing_selection_stays_on_the_bootstrap_path_without_first_play_preparation()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    local factoryCalls = 0
+    local original = HgssGame.newFirstPlayCachePreparation
+    if original ~= nil then
+      HgssGame.newFirstPlayCachePreparation = function(options)
+        factoryCalls = factoryCalls + 1
+        return original(options)
+      end
+    end
+    local ok, err = pcall(function()
+      App._bootExisting()
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
+    Assert.equal(#result.launches, 1, "an existing ready version still launches through selection")
+    Assert.equal(factoryCalls, 0, "ordinary selection never constructs first-play preparation")
+  end)
+end
+
+-- One provisioner epoch spans mandatory preparation and gameplay: the
+-- import selects once, never disposes or reselects before launch, and the
+-- game inherits the preparation host.
+function T.fresh_import_hands_the_same_provisioner_epoch_to_the_game()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    local script = { ready = false }
+    local original = installFirstPlayFactory(script)
+    local ok, err = pcall(function()
+      App._onImported("heartgold")
+      Assert.equal(#result.launches, 0, "the menu waits while first-play preparation is pending")
+      local epoch = assert(App.epoch, "fresh import borrows a controller epoch")
+      local selections = #result.selectOptions
+      script.ready = true
+      App.update(0.016)
+      local launch = assert(result.launches[1], "preparation readiness launches the game")
+      Assert.equal(#result.selectOptions, selections, "the launch reuses the preparation epoch without reselection")
+      Assert.equal(result.provisionerDisposals, 0, "nothing disposes between preparation and launch")
+      Assert.equal(App.epoch, epoch, "the epoch is stable across the handoff")
+      Assert.equal(
+        launch.derivedAssets,
+        script.captured.derivedAssets,
+        "the game inherits the host preparation compiled against"
+      )
+      Assert.equal(script.captured.versionId, "heartgold", "preparation serves the imported version")
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+-- Mandatory import work never races whole-corpus warmup: no sweep
+-- authorizes before the menu, and menu installation authorizes it exactly
+-- once.
+function T.fresh_import_preparation_requests_no_corpus_work_or_early_sweep()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    local requests = recordServiceRequests(result)
+    local script = { ready = false }
+    local original = installFirstPlayFactory(script)
+    local ok, err = pcall(function()
+      App._onImported("heartgold")
+      App.update(0.016)
+      Assert.equal(result.warmups, 0, "no background sweep authorizes before the menu launches")
+      for _, selector in ipairs(requests) do
+        Assert.isFalse(
+          selector.requestKind == "complete",
+          "mandatory import preparation never requests whole-corpus scope"
+        )
+      end
+      script.ready = true
+      App.update(0.016)
+      assert(result.launches[1], "preparation readiness launches the game")
+      Assert.equal(result.warmups, 1, "menu installation authorizes background completion exactly once")
+      App.update(0.016)
+      Assert.equal(result.warmups, 1, "sweep authorization never repeats")
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
   end)
 end
 

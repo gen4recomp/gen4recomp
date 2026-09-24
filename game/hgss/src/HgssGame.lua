@@ -7,6 +7,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+local FirstPlayCachePreparation = require("game.hgss.src.newgame.FirstPlayCachePreparation")
 local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
@@ -228,6 +229,16 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
   -- milestone to required. Readiness is ignored here; pending work simply
   -- continues in the background.
   derivedAssets.requestMilestone("new-game-intro", "near")
+end
+
+-- App-facing first-play preparation for the fresh-import path: builds
+-- the HGSS semantic-demand coordinator over the borrowed provisioner
+-- host. No milestone/location policy lives here; the coordinator owns
+-- which closures constitute first play.
+---@param options { versionId: string, derivedAssets: table<string, function> }
+---@return FirstPlayCachePreparation
+function HgssGame.newFirstPlayCachePreparation(options)
+  return FirstPlayCachePreparation.new(options)
 end
 
 ---@param options HgssGameOptions

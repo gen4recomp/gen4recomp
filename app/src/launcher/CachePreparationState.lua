@@ -1,13 +1,14 @@
--- Concrete bootstrap/quiescence progress state for the app shell. It pumps
+-- Concrete bootstrap/quiescence/first-play progress state for the app shell. It pumps
 -- no compilation itself: normal App updates keep the source session moving
 -- while this state waits, displays concrete progress or failure, and
 -- transfers exactly once on readiness. A disposed or stale state never
 -- fires its completion callback.
 
 ---@class CachePreparationOptions
----@field kind "bootstrap"|"quiescence"
+---@field kind "bootstrap"|"quiescence"|"first-play"
 ---@field epoch integer selected source epoch guarded against stale completion
----@field provisioner? table<string, function> bootstrap only: the borrowed selected session host
+---@field provisioner? table<string, function> bootstrap/first-play: the borrowed selected session host
+---@field preparation? table<string, function> first-play only: the opaque HGSS demand object
 ---@field service table<string, function>? quiescence only: the process cache service, required
 ---@field barrier integer? quiescence only: the exact source-close barrier token
 ---@field isCurrent fun(epoch: integer): boolean owner liveness: the epoch is still selected
@@ -18,6 +19,7 @@
 ---@field kind string
 ---@field epoch integer
 ---@field provisioner table<string, function>?
+---@field preparation table<string, function>?
 ---@field service table<string, function>?
 ---@field barrier integer?
 ---@field isCurrent fun(epoch: integer): boolean
@@ -34,7 +36,10 @@ CachePreparationState.__index = CachePreparationState
 ---@return CachePreparationState
 function CachePreparationState.new(options)
   assert(type(options) == "table", "cache preparation requires its composition")
-  assert(options.kind == "bootstrap" or options.kind == "quiescence", "cache preparation kind is required")
+  assert(
+    options.kind == "bootstrap" or options.kind == "quiescence" or options.kind == "first-play",
+    "cache preparation kind is required"
+  )
   assert(
     type(options.epoch) == "number" and options.epoch % 1 == 0 and options.epoch >= 0,
     "cache preparation epoch must be a non-negative integer"
@@ -44,6 +49,14 @@ function CachePreparationState.new(options)
   assert(type(options.onCancel) == "function", "cache preparation requires its cancellation")
   if options.kind == "bootstrap" then
     assert(type(options.provisioner) == "table", "bootstrap preparation requires the selected session host")
+  elseif options.kind == "first-play" then
+    assert(type(options.provisioner) == "table", "first-play preparation requires the selected session host")
+    assert(
+      type(options.preparation) == "table"
+        and type(options.preparation.poll) == "function"
+        and type(options.preparation.dispose) == "function",
+      "first-play preparation requires its demand object"
+    )
   else
     assert(type(options.service) == "table", "quiescence preparation requires the process cache service")
     assert(
@@ -55,6 +68,7 @@ function CachePreparationState.new(options)
     kind = options.kind,
     epoch = options.epoch,
     provisioner = options.provisioner,
+    preparation = options.preparation,
     service = options.service,
     barrier = options.barrier,
     isCurrent = options.isCurrent,
@@ -98,6 +112,25 @@ function CachePreparationState:_pollBootstrap()
   end
 end
 
+function CachePreparationState:_pollFirstPlay()
+  -- The opaque preparation object owns which closures constitute first
+  -- play; the launcher only delegates readiness, latches failure, and
+  -- fires the transfer. No milestone, map, or loader policy lives here.
+  local preparation = assert(self.preparation, "first-play preparation requires its demand object")
+  local ok, ready, failure = pcall(preparation.poll, preparation)
+  if not ok then
+    self.error = ready
+    return
+  end
+  if failure ~= nil then
+    self.error = failure
+    return
+  end
+  if ready then
+    self:_fire()
+  end
+end
+
 function CachePreparationState:_pollQuiescence()
   local service = assert(self.service, "quiescence preparation requires the process cache service")
   local barrier = assert(self.barrier, "quiescence preparation requires its exact barrier token")
@@ -130,6 +163,8 @@ function CachePreparationState:update(_)
   end
   if self.kind == "bootstrap" then
     self:_pollBootstrap()
+  elseif self.kind == "first-play" then
+    self:_pollFirstPlay()
   else
     self:_pollQuiescence()
   end
@@ -146,7 +181,19 @@ function CachePreparationState:draw()
     return
   end
   lg.setColor(1, 1, 1)
-  if self.kind == "bootstrap" then
+  if self.kind == "first-play" then
+    lg.print("Preparing imported ROM for first play...", 24, 24)
+    local host = assert(self.provisioner, "first-play preparation requires the selected session host")
+    local statusOk, status = pcall(host.status)
+    if statusOk and type(status) == "table" then
+      lg.setColor(0.7, 0.7, 0.75)
+      lg.print(
+        string.format("ready %d  queued %d  running %d", status.ready or 0, status.queued or 0, status.running or 0),
+        24,
+        48
+      )
+    end
+  elseif self.kind == "bootstrap" then
     lg.print("Preparing derived cache...", 24, 24)
     local host = assert(self.provisioner, "bootstrap preparation requires the selected session host")
     local statusOk, status = pcall(host.status)
@@ -186,6 +233,13 @@ end
 
 function CachePreparationState:dispose()
   self.dead = true
+  -- The opaque first-play object is released exactly once; selection
+  -- retirement stays authoritative for the provisioner lifetime.
+  local preparation = self.preparation
+  self.preparation = nil
+  if preparation ~= nil and type(preparation.dispose) == "function" then
+    preparation:dispose()
+  end
 end
 
 return CachePreparationState
