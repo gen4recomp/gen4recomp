@@ -1135,7 +1135,7 @@ function FieldPlayer:presentationStateInto(out)
     local action = scripted.action
     locomotionActive = action == "walk" or action == "walk_in_place" or action == "jump"
   else
-    locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
+    locomotionActive = self.motion == "walking" or self.motion == "jumping"
   end
   out.locomotionActive = locomotionActive
   out.gesturePose = self._gesturePose

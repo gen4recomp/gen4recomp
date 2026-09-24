@@ -2106,24 +2106,45 @@ function T.held_direction_walks_only_after_turn_completion_reenters_idle_arbitra
     surfaceId = 0,
     facing = "east",
   })
-  local session = FieldSession.new(baseOptions({ currentMap = map, player = player }))
+  local visual = FieldPlayerVisual.new({ player = player, spriteId = 0 })
+  local session = FieldSession.new(baseOptions({ currentMap = map, player = player, playerVisual = visual }))
+  local startX, startY, startZ = player.worldX, player.worldY, player.worldZ
 
   session:updateFixed({ heldDirection = "north", pressedDirection = "north" })
   Assert.equal(player.motion, "turning")
   Assert.equal(player.fieldZ, 13)
+  Assert.equal(player.facing, "north")
+  Assert.equal(visual.pose, "idle")
+  Assert.equal(visual.poseTick, 0)
 
   session:updateFixed({ heldDirection = "north" })
   Assert.equal(player.motion, "turning")
+  Assert.equal(visual.pose, "idle")
+  Assert.equal(visual.poseTick, 0)
   session:updateFixed({ heldDirection = "north" })
   Assert.equal(player.motion, "turning")
+  Assert.equal(visual.pose, "idle")
+  Assert.equal(visual.poseTick, 0)
   session:updateFixed({ heldDirection = "north" })
   Assert.equal(player.motion, "idle")
   Assert.equal(player.fieldZ, 13)
+  Assert.equal(player.worldX, startX)
+  Assert.equal(player.worldY, startY)
+  Assert.equal(player.worldZ, startZ)
+  Assert.equal(visual.pose, "idle")
+  Assert.equal(visual.poseTick, 0)
 
   session:updateFixed({ heldDirection = "north" })
   Assert.equal(player.motion, "walking")
   Assert.equal(player.fieldZ, 13)
   Assert.equal(player.facing, "north")
+  Assert.equal(visual.pose, "walk", "the pose begins when translation starts")
+  Assert.equal(visual.poseTick, 1)
+
+  session:updateFixed({ heldDirection = "north" })
+  Assert.equal(player.motion, "walking")
+  Assert.equal(visual.pose, "walk")
+  Assert.equal(visual.poseTick, 2)
 end
 
 -- A locked door transition reports whether the choreography moved the player

@@ -154,7 +154,7 @@ function T.stands_still_until_the_player_walks()
   Assert.equal(presentation.poseTick, 0, "a settled player holds its facing's first frame")
 end
 
-function T.a_stationary_turn_uses_the_walk_pose_without_displacing_the_player()
+function T.a_stationary_turn_stays_idle_until_translation_begins()
   local subject = FieldPlayer.new({
     currentMap = runtimeMap(),
     fieldX = 0,
@@ -165,43 +165,40 @@ function T.a_stationary_turn_uses_the_walk_pose_without_displacing_the_player()
   local presentation = visual(subject)
   local start = { x = subject.worldX, y = subject.worldY, z = subject.worldZ }
 
-  local firstTurn = subject:updateFixed({ heldDirection = "north", pressedDirection = "north" })
-  presentation:updateFixed(true)
-  Assert.isFalse(firstTurn)
+  local function tick(input)
+    local locomotionAtTickStart = subject:presentationState().locomotionActive
+    local moved = subject:updateFixed(input)
+    presentation:updateFixed(locomotionAtTickStart)
+    return moved
+  end
+
+  Assert.isFalse(tick({ heldDirection = "north", pressedDirection = "north" }))
   Assert.equal(subject.facing, "north")
   Assert.equal(subject.motion, "turning")
-  Assert.equal(presentation.pose, "walk")
-  Assert.equal(presentation.poseTick, 1)
+  Assert.isFalse(subject:presentationState().locomotionActive)
+  Assert.equal(presentation.pose, "idle")
+  Assert.equal(presentation.poseTick, 0)
   Assert.equal(presentation.spriteId, 0)
 
-  local secondTurn = subject:updateFixed({})
-  presentation:updateFixed(true)
-  Assert.isFalse(secondTurn)
-  Assert.equal(subject.motion, "turning")
-  Assert.equal(presentation.pose, "walk")
-  Assert.equal(presentation.poseTick, 2)
-
-  local thirdTurn = subject:updateFixed({})
-  presentation:updateFixed(true)
-  Assert.isFalse(thirdTurn)
-  Assert.equal(subject.motion, "turning")
-  Assert.equal(presentation.pose, "walk")
-  Assert.equal(presentation.poseTick, 3)
-
-  local fourthTurn = subject:updateFixed({})
-  presentation:updateFixed(true)
-  Assert.isFalse(fourthTurn)
+  for _ = 1, 3 do
+    Assert.isFalse(tick({}))
+    Assert.equal(presentation.pose, "idle")
+    Assert.equal(presentation.poseTick, 0)
+  end
   Assert.equal(subject.motion, "idle")
-  Assert.equal(presentation.pose, "walk")
-  Assert.equal(presentation.poseTick, 4)
   Assert.equal(subject.worldX, start.x)
   Assert.equal(subject.worldY, start.y)
   Assert.equal(subject.worldZ, start.z)
 
-  subject:updateFixed({})
-  presentation:updateFixed(false)
-  Assert.equal(presentation.pose, "idle")
-  Assert.equal(presentation.poseTick, 0)
+  Assert.isFalse(tick({ heldDirection = "north" }))
+  Assert.equal(subject.motion, "walking")
+  Assert.equal(presentation.pose, "walk", "the pose begins when translation starts")
+  Assert.equal(presentation.poseTick, 1)
+
+  Assert.isFalse(tick({ heldDirection = "north" }))
+  Assert.equal(subject.motion, "walking")
+  Assert.equal(presentation.pose, "walk")
+  Assert.equal(presentation.poseTick, 2)
 end
 
 function T.the_draw_record_interpolates_the_shared_render_position()
@@ -445,7 +442,7 @@ function T.presentation_snapshot_distinguishes_locomotion_from_stationary_script
   subject.motion = "walking"
   Assert.isTrue(subject:presentationState().locomotionActive, "manual walking is locomoting")
   subject.motion = "turning"
-  Assert.isTrue(subject:presentationState().locomotionActive, "manual turning is locomoting")
+  Assert.isFalse(subject:presentationState().locomotionActive, "manual turning is not locomoting")
   subject.motion = "jumping"
   Assert.isTrue(subject:presentationState().locomotionActive, "manual jumping is locomoting")
   subject.motion = "transition"
