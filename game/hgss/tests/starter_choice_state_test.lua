@@ -398,6 +398,7 @@ local function taskCtx(service, species, host)
       mons = service,
       starterProvider = providerFor(species),
       starterChoice = host,
+      starterBalls = { placeStarterBalls = function() end },
     },
     input = { uiEvents = {} },
     instance = { scriptId = "starter-publication-fixture" },
@@ -642,6 +643,9 @@ function T.transitions_follow_source_semantic_boundaries()
   Assert.equal(turntable.selectionStepDegrees, 120, "rotation spans one third of the ring")
   Assert.near(turntable.rotationDegreesPerTick, 11.25, 1e-9, "rotation advances at the normalized source rate")
   local expectedRotate = 11
+  local function fieldTicksFor(sourceFrames)
+    return math.ceil(sourceFrames / 2)
+  end
   local host = openTrio(StarterChoiceState, catalog, service, cacheFs)
 
   moveHost(host, "right")
@@ -651,7 +655,7 @@ function T.transitions_follow_source_semantic_boundaries()
     rotated = rotated + 1
     Assert.isTrue(rotated <= expectedRotate, "rotation settles within one source slot step")
   end
-  Assert.equal(rotated, expectedRotate, "rotation lasts exactly the source slot step, not the camera window")
+  Assert.equal(rotated, fieldTicksFor(expectedRotate), "rotation consumes two ordered source frames per field tick")
   Assert.equal(statusSelection(hostStatus(host)), 1, "a settled right step advances one ball")
 
   host:confirm()
@@ -672,9 +676,9 @@ function T.transitions_follow_source_semantic_boundaries()
   while host._controller:snapshot().selectionState ~= "inspect" do
     host:update()
     backedOut = backedOut + 1
-    Assert.isTrue(backedOut <= timing.cameraTicks, "back-out settles within the source return steps")
+    Assert.isTrue(backedOut <= fieldTicksFor(timing.cameraTicks), "back-out settles within the source return steps")
   end
-  Assert.equal(backedOut, timing.cameraTicks, "back-out lasts exactly the source return steps")
+  Assert.equal(backedOut, fieldTicksFor(timing.cameraTicks), "back-out lasts exactly the source return steps")
   Assert.equal(statusSelection(hostStatus(host)), 1, "backing out preserves the inspected ball")
 
   host:confirm()
@@ -691,19 +695,73 @@ function T.transitions_follow_source_semantic_boundaries()
     host:update()
     locked = locked + 1
     Assert.isTrue(
-      locked <= timing.infoFadeTicks + timing.machineFadeTicks,
+      locked <= fieldTicksFor(timing.infoFadeTicks + timing.machineFadeTicks),
       "the lock settles within the sequential fade windows"
     )
   end
   Assert.equal(
     locked,
-    timing.infoFadeTicks + timing.machineFadeTicks,
+    fieldTicksFor(timing.infoFadeTicks + timing.machineFadeTicks),
     "the lock lasts exactly the info fade then the machine fade"
   )
   local transitioned = hostStatus(host)
   Assert.isTrue(transitioned.done, "the settled lock reports the second candidate")
   Assert.equal(transitioned.index, 1, "the settled lock names the second candidate")
   Assert.isTrue(type(transitioned.presentation) == "table", "the settled lock publishes its presentation plan")
+  host:close()
+  host:dispose()
+end
+
+-- The concrete state is the 30 Hz field-to-60 Hz application bridge: its
+-- camera and ball-arc observations must settle after four field updates,
+-- while the presentation still owns the eight source-frame clocks.
+function T.zoom_uses_two_ordered_source_frames_per_field_update()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local host = openTrio(StarterChoiceState, catalog, service, readyCacheFs())
+
+  host:confirm()
+  host:confirm()
+  for tick = 1, 3 do
+    host:update()
+    Assert.equal(host._controller:snapshot().transition, "zoomIn", "the zoom is active at field tick " .. tick)
+  end
+  host:update()
+  Assert.equal(
+    host._controller:snapshot().transition,
+    "waitZoom",
+    "eight source camera and arc frames settle on the fourth field tick"
+  )
+
+  host:close()
+  host:dispose()
+end
+
+-- The source wobble gate remains frame 80, but the real state reaches it in
+-- forty field updates and exposes confirmation immediately on that update.
+function T.small_wobble_wait_uses_the_source_frame_threshold_without_extra_latency()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local cacheFs = readyCacheFs()
+  local manifest = assert(cacheFs:loadLua(assert(require(CACHE_MODULE)).manifestPath()))
+  Assert.equal(manifest.scene.timing.smallWobbleFrame, 80, "the generated source threshold remains frame 80")
+  local host = openTrio(StarterChoiceState, catalog, service, cacheFs)
+
+  host:confirm()
+  host:confirm()
+  for tick = 1, 39 do
+    host:update()
+    Assert.isFalse(host._controller:snapshot().selectionState == "confirm", "wobble is not ready at tick " .. tick)
+  end
+  host:update()
+  Assert.equal(
+    host._controller:snapshot().selectionState,
+    "confirm",
+    "the small-wobble gate settles on source frame 80 without an added field wait"
+  )
+
   host:close()
   host:dispose()
 end
@@ -814,9 +872,9 @@ function T.final_lock_publishes_result_only_after_sequential_fade_ticks()
   local machineTicks = assert(timing.machineFadeTicks, "the manifest carries the machine fade boundary")
   local host = openTrio(StarterChoiceState, catalog, service, cacheFs)
 
-  -- The host is the only stepper here: it already advances the controller
-  -- transition clocks once per fixed tick, so stepping the controller again
-  -- would double-advance transitions.
+  -- The host is the only stepper here: it advances two source transition
+  -- clocks per fixed field tick, so stepping the controller again would
+  -- double-advance transitions.
   local function stepUntil(predicate, bound)
     for _ = 1, bound do
       host:update()
@@ -847,11 +905,14 @@ function T.final_lock_publishes_result_only_after_sequential_fade_ticks()
   while not hostStatus(host).done do
     host:update()
     exitTicks = exitTicks + 1
-    Assert.isTrue(exitTicks <= infoTicks + machineTicks, "the lock reports within the sequential fade windows")
+    Assert.isTrue(
+      exitTicks <= math.ceil((infoTicks + machineTicks) / 2),
+      "the lock reports within the sequential fade windows"
+    )
   end
   Assert.equal(
     exitTicks,
-    infoTicks + machineTicks,
+    math.ceil((infoTicks + machineTicks) / 2),
     "the result publishes only after the info fade and the machine fade complete in sequence"
   )
   local faded = hostStatus(host)

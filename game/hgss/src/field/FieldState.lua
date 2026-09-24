@@ -465,6 +465,11 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       cursorPlacement = manifestPlacement,
     })
     resources.dialogueRenderer:draw(self.runtime.dialogue, presentation)
+    local yesNo = self.runtime.scripts.dialogueHost:yesNoPresentation()
+    if yesNo then
+      local yesNoLayout = resources.yesNoRenderer:layout(yesNo, self.runtime.screenTopology, presentation.outerRect)
+      resources.yesNoRenderer:draw(yesNo, yesNoLayout)
+    end
   end
   if signpostModal then
     local signpostScale = PixelScale.fitPreferred(bounds, 256, 192, assert(fieldScale))

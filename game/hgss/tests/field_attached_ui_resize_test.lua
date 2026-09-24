@@ -236,7 +236,7 @@ end
 -- supplies real bounds plus the resolved field pixel scale as a cap, and the
 -- renderer draws exactly the resulting presentation. The signpost keeps its
 -- existing exact-scale contract.
-local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth, viewportHeight)
+local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth, viewportHeight, yesNoStatus)
   viewportWidth = viewportWidth or 1280
   viewportHeight = viewportHeight or 600
   local viewport = FieldViewport.new(viewportWidth, viewportHeight, { mode = "expanded" })
@@ -277,6 +277,19 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
           return true
         end,
       },
+      scripts = {
+        dialogueHost = {
+          yesNoPresentation = function()
+            return yesNoStatus
+          end,
+        },
+      },
+      screenTopology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = viewportWidth, height = viewportHeight },
+        touch = false,
+        role = "world",
+      }),
       signpost = {
         isModal = function()
           return true
@@ -336,6 +349,7 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
     return {}
   end
   local dialogueCalls = {}
+  local yesNoLayouts = {}
   state.presentationResources.dialogueRenderer = {
     draw = function(_, a, b, c, d)
       dialogueCalls[#dialogueCalls + 1] = { controller = a, second = b, third = c, fourth = d }
@@ -343,6 +357,13 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
   } --[[@as any]]
   local signpostScales = {}
   local presentationResources = state.presentationResources --[[@as any]]
+  presentationResources.yesNoRenderer = {
+    layout = function(_, status, topology, dialogueBox)
+      yesNoLayouts[#yesNoLayouts + 1] = { status = status, topology = topology, dialogueBox = dialogueBox }
+      return { content = { x = 0, y = 0, width = 1, height = 1 } }
+    end,
+    draw = function() end,
+  }
   presentationResources.signpostRenderer = {
     draw = function(_, _, _, alphaOrScale, maybeScale)
       if type(maybeScale) == "number" then
@@ -367,7 +388,7 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
   FieldDrawState.protectedDraw = savedProtected
   love.graphics.getDimensions = oldGetDimensions
   Assert.isTrue(ok, "FieldState draw should not throw: " .. tostring(err))
-  return fieldScale, dialogueCalls, signpostScales
+  return fieldScale, dialogueCalls, signpostScales, yesNoLayouts
 end
 
 local function assertOuterRectInsideBounds(outerRect, bounds)
@@ -499,6 +520,26 @@ function T.undersized_dialogue_on_both_axes_keeps_one_x_and_real_bounds()
   Assert.equal(presentation.scale, 1)
   Assert.deepEqual(presentation.bounds, bounds)
   Assert.deepEqual(presentation.outerRect, { x = 7, y = 8, width = 256, height = 48 })
+end
+
+function T.field_yes_no_layout_receives_the_resolved_dialogue_outer_rect()
+  local _, dialogueCalls, _, yesNoLayouts = fieldStateWithCapturedUi(
+    { x = 20, y = 30, width = 500, height = 300 },
+    1,
+    640,
+    480,
+    { active = true, selectedIndex = 0, yesText = "YES", noText = "NO", frameIndex = 1 }
+  )
+  Assert.equal(#yesNoLayouts, 1, "active field choice is laid out once")
+  Assert.deepEqual(
+    yesNoLayouts[1].dialogueBox,
+    dialogueCalls[1].second.outerRect,
+    "single-display choice placement receives the exact rendered dialogue rectangle"
+  )
+  Assert.isFalse(
+    yesNoLayouts[1].dialogueBox == dialogueCalls[1].second.bounds,
+    "the choice does not receive generic field bounds"
+  )
 end
 
 return { tests = T }

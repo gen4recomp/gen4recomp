@@ -4402,7 +4402,10 @@ function T.presentation_host_depth_is_cleared_between_frames(scope)
   Assert.isTrue(r > g and r > b, "the next frame can draw through the prior frame's host depth")
 end
 
-function T.presentation_sprites_use_native_resolution_fog_and_no_edge_pass(scope)
+-- Registration changes only the anchor. The presentation layer
+-- remains host-resolution, keeps its fog/depth composition path, and follows
+-- the active viewport dimensions when targets are resized.
+function T.presentation_sprites_retain_resolution_and_composition(scope)
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
   local sprite = depthOpaqueQuad(scope, -0.5, 180, 180, 180, 6, true)
   sprite.billboardProjection = true
@@ -4429,9 +4432,28 @@ function T.presentation_sprites_use_native_resolution_fog_and_no_edge_pass(scope
   love.graphics.setCanvas()
 
   Assert.equal(renderer.colorW, 512, "world target remains independent of presentation sprite resolution")
+  Assert.equal(renderer._spriteW, 640, "presentation sprite target remains at physical viewport resolution")
+  Assert.equal(renderer._spriteH, 480, "presentation sprite target keeps physical viewport height")
   local r, g, b = color:newImageData():getPixel(320, 240)
   Assert.isTrue(r < 1 and g < 1 and b < 1, "sprite color is fogged at its own depth")
   Assert.isTrue(math.abs(r - g) < 1 / 255 and math.abs(g - b) < 1 / 255, "sprite has no edge-color outline")
+
+  local resizedViewport = FieldViewport.new(1280, 720, { mode = "strict" })
+  local resizedTarget = scope:own(love.graphics.newCanvas(1280, 720))
+  love.graphics.setCanvas(resizedTarget)
+  love.graphics.clear(0, 0, 0, 1)
+  render(renderer, emptyRuntime(), perspectiveCamera(), {}, { sprite }, resizedViewport)
+  love.graphics.setCanvas()
+  Assert.equal(
+    renderer._spriteW,
+    math.ceil(resizedViewport.worldViewport.width),
+    "resize publishes the active sprite width"
+  )
+  Assert.equal(
+    renderer._spriteH,
+    math.ceil(resizedViewport.worldViewport.height),
+    "resize publishes the active sprite height"
+  )
 end
 
 local function presentationQuadMesh(scope, z)
@@ -4477,14 +4499,16 @@ local function presentationSprite(_, mesh, image)
   }
 end
 
-local function registrationCamera(width, height)
+local function registrationCamera(width, height, cameraX, cameraY)
   local far = 400
   local projection = Matrix4.perspective(math.rad(60), width / height, 0.1, far)
+  cameraX = cameraX or 0
+  cameraY = cameraY or 0
   return {
     distance = 26,
     far = far,
     view = function()
-      return IDENTITY
+      return Matrix4.translate(-cameraX, -cameraY, 0)
     end,
     projection = function()
       return projection
@@ -4614,20 +4638,22 @@ local function renderRegistration(scope, renderer, width, height, center, viewpo
   return camera, actualX, actualY
 end
 
-local function worldLandmark(scope, image)
+local function worldLandmark(scope, image, center)
+  center = center or { 0.24, 0, -3 }
+  local centerX, centerY, centerZ = center[1], center[2], center[3]
   local mesh = scope:own(syntheticMesh({
-    { 0.12, -0.12, -3, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
-    { 0.36, -0.12, -3, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
-    { 0.36, 0.12, -3, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
-    { 0.12, -0.12, -3, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
-    { 0.36, 0.12, -3, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
-    { 0.12, 0.12, -3, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { centerX - 0.12, centerY - 0.12, centerZ, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { centerX + 0.12, centerY - 0.12, centerZ, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { centerX + 0.12, centerY + 0.12, centerZ, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { centerX - 0.12, centerY - 0.12, centerZ, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { centerX + 0.12, centerY + 0.12, centerZ, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { centerX - 0.12, centerY + 0.12, centerZ, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
   }))
   local item = presentationSprite(scope, mesh, image)
   item.billboardProjection = false
   item.billboardCenter = nil
   item.billboardScale = nil
-  item.center = { 0.24, 0, -3 }
+  item.center = { centerX, centerY, centerZ }
   return item
 end
 
@@ -4645,6 +4671,69 @@ local function colorCenter(image, color)
   end
   Assert.isTrue(count >= 4, color .. " diagnostic remains visible")
   return sumX / count, sumY / count
+end
+
+-- The stationary actor and a nearby world landmark must share the
+-- world's registration phase while the camera moves through sub-raster
+-- positions. The second case is deliberately off-axis in both dimensions;
+-- it is where the former presentation-only snap grid was most visible.
+function T.off_axis_stationary_actor_stays_registered_during_camera_sweep(scope)
+  local width, height = 640, 480
+  local viewport = FieldViewport.new(width, height, { mode = "expanded" })
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local redImage = solidAlphaImage(scope, 255, 0, 0, 255)
+  local greenImage = solidAlphaImage(scope, 0, 255, 0, 255)
+  local sweeps = {
+    { label = "near the optical center", actor = { 0.10, 0.08, -3 } },
+    { label = "materially off-axis", actor = { 0.62, 0.48, -3 } },
+  }
+
+  for _, case in ipairs(sweeps) do
+    local relativePositions = {}
+    for step = 0, 5 do
+      local cameraX, cameraY = step * 0.04, step * 0.033
+      local target, color = presentationTarget(scope, width, height)
+      local landmark = worldLandmark(scope, greenImage, case.actor)
+      local actor = presentationSprite(scope, presentationQuadMesh(scope, 0), redImage)
+      actor.billboardCenter = case.actor
+      actor.billboardScale = { 0.06, 0.06, 1 }
+      love.graphics.setCanvas(target)
+      love.graphics.clear(0, 0, 0, 1)
+      render(
+        renderer,
+        emptyRuntime(),
+        registrationCamera(width, height, cameraX, cameraY),
+        { { landmark } },
+        {},
+        viewport
+      )
+      love.graphics.setCanvas()
+      local worldImage = color:newImageData()
+      local greenX, greenY = colorCenter(worldImage, "green")
+      love.graphics.setCanvas(target)
+      love.graphics.clear(0, 0, 0, 1)
+      render(renderer, emptyRuntime(), registrationCamera(width, height, cameraX, cameraY), {}, { actor }, viewport)
+      love.graphics.setCanvas()
+
+      local image = color:newImageData()
+      local redX, redY = colorCenter(image, "red")
+      relativePositions[#relativePositions + 1] = { x = redX - greenX, y = redY - greenY }
+    end
+
+    local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
+    for _, position in ipairs(relativePositions) do
+      minX, maxX = math.min(minX, position.x), math.max(maxX, position.x)
+      minY, maxY = math.min(minY, position.y), math.max(maxY, position.y)
+    end
+    Assert.isTrue(
+      maxX - minX <= 1.5,
+      case.label .. " actor/world X registration span was " .. tostring(maxX - minX) .. " pixels"
+    )
+    Assert.isTrue(
+      maxY - minY <= 1.5,
+      case.label .. " actor/world Y registration span was " .. tostring(maxY - minY) .. " pixels"
+    )
+  end
 end
 
 function T.world_landmark_and_presentation_sprite_keep_relative_registration_on_round_trip(scope)
@@ -4747,7 +4836,7 @@ function T.presentation_sprites_stay_inside_a_wide_strict_world_viewport(scope)
   Assert.isTrue(bar[1] < 0.05 and bar[2] < 0.05 and bar[3] < 0.05, "pillarbox bars remain untouched")
 end
 
-function T.presentation_sprites_stay_inside_a_narrow_expanded_viewport_fallback(scope)
+function T.presentation_sprites_stay_inside_a_portrait_expanded_world_viewport(scope)
   local renderer = scope:own(GxRenderer.new())
   local target, color = presentationTarget(scope, 600, 720)
   local image = solidAlphaImage(scope, 0, 255, 0, 255)
@@ -4761,9 +4850,7 @@ function T.presentation_sprites_stay_inside_a_narrow_expanded_viewport_fallback(
 
   local pixels = color:newImageData()
   local center = { pixels:getPixel(300, 360) }
-  local bar = { pixels:getPixel(300, 32) }
-  Assert.isTrue(center[2] > 0.5, "the centered actor remains visible in the fitted world")
-  Assert.isTrue(bar[1] < 0.05 and bar[2] < 0.05 and bar[3] < 0.05, "top/bottom bars remain untouched")
+  Assert.isTrue(center[2] > 0.5, "the centered actor remains visible in the portrait world")
 end
 
 function T.presentation_sprite_fog_uses_the_world_endpoint_density_rules(scope)
@@ -5122,7 +5209,7 @@ function T.strict_fractional_viewport_allocation_matches_the_visible_projection_
   )
 end
 
-function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
+function T.billboard_sweep_changes_only_at_world_raster_boundaries(scope)
   local width, height, presentationPixelScale = 640, 480, 4
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
   local target, color = presentationTarget(scope, width, height)
@@ -5149,19 +5236,23 @@ function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
   end
 
   local initial = renderAt(0)
-  local subLogical = renderAt(0.004)
-  local nextLogical = renderAt(0.014)
-  Assert.equal(subLogical.left, initial.left, "sub-logical interpolation must not change the billboard phase")
-  Assert.equal(subLogical.top, initial.top, "sub-logical interpolation must not change the vertical phase")
-  Assert.equal(
-    nextLogical.left - initial.left,
-    presentationPixelScale,
-    "crossing one logical pixel advances the host billboard by one integer block"
+  local subRaster = renderAt(0.001)
+  local nextRaster = renderAt(0.004)
+  Assert.equal(subRaster.left, initial.left, "sub-raster interpolation must not change the billboard phase")
+  Assert.equal(subRaster.top, initial.top, "sub-raster interpolation must not change the vertical phase")
+  Assert.near(
+    (nextRaster.left + nextRaster.right + 1) / 2 - (initial.left + initial.right + 1) / 2,
+    640 / GxRenderer.worldRasterDimensions(width, height, 2),
+    0.75,
+    "crossing one world-raster cell advances the registered anchor"
   )
 end
 
-local function snappedLogicalCoordinate(ndc, visibleExtent)
-  return math.floor((ndc * 0.5 + 0.5) * visibleExtent + 0.5)
+local function registeredPhysicalCoordinate(ndc, displayExtent, rasterExtent)
+  local rasterCoordinate = math.floor((ndc * 0.5 + 0.5) * rasterExtent)
+  -- ImageData centers the diagnostic footprint on the host pixel center that
+  -- contains the registered world-raster center.
+  return (rasterCoordinate + 0.5) / rasterExtent * displayExtent - 0.5
 end
 
 local function renderActorPattern(scope, renderer, width, height, presentationPixelScale, center)
@@ -5209,12 +5300,11 @@ function T.actor_billboard_keeps_its_source_aspect_on_a_wide_host(scope)
   Assert.near(wideW / wideH, 1, 0.05, "the wide host keeps the actor's square source aspect")
 end
 
-local function expectedIdentityBillboardCenter(width, height, presentationPixelScale, center)
-  local visibleW = width / presentationPixelScale
-  local visibleH = height / presentationPixelScale
+local function expectedIdentityBillboardCenter(width, height, center)
+  local rasterW, rasterH = GxRenderer.worldRasterDimensions(width, height, 2)
   return {
-    x = snappedLogicalCoordinate(center[1], visibleW) * presentationPixelScale,
-    y = snappedLogicalCoordinate(-center[2], visibleH) * presentationPixelScale,
+    x = registeredPhysicalCoordinate(center[1], width, rasterW),
+    y = registeredPhysicalCoordinate(-center[2], height, rasterH),
   }
 end
 
@@ -5278,7 +5368,7 @@ function T.non_divisible_billboard_matches_the_visible_world_projection(scope)
     { { landmark } }
   )
   local actual = redBounds(image)
-  local expected = expectedIdentityBillboardCenter(width, height, presentationPixelScale, center)
+  local expected = expectedIdentityBillboardCenter(width, height, center)
   local landmarkX, landmarkY = colorCenter(image, "green")
 
   Assert.near(
@@ -5333,13 +5423,13 @@ function T.non_divisible_billboard_surplus_stays_at_the_right_and_bottom(scope)
       { 0.035, 0.035, 1 }
     )
     local actualX, actualY = presentationCenter(image, case.width, case.height)
-    local expected = expectedIdentityBillboardCenter(case.width, case.height, presentationPixelScale, case.center)
+    local expected = expectedIdentityBillboardCenter(case.width, case.height, case.center)
     Assert.near(actualX, expected.x, 0.6, case.label .. " keeps the left anchor")
     Assert.near(actualY, expected.y, 0.6, case.label .. " keeps the top anchor")
   end
 end
 
-function T.non_divisible_billboard_snapping_has_the_same_x_and_y_phase(scope)
+function T.non_divisible_billboard_registration_has_the_same_world_raster_phase(scope)
   local width, height, presentationPixelScale = 641, 479, 3
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
   local target, color = presentationTarget(scope, width, height)
@@ -5367,18 +5457,24 @@ function T.non_divisible_billboard_snapping_has_the_same_x_and_y_phase(scope)
   end
 
   local initialX, initialY = renderAt(-0.006, 0.004)
-  local subLogicalX, _ = renderAt(-0.004, 0.004)
-  local nextLogicalX, _ = renderAt(0, 0.004)
-  Assert.equal(subLogicalX, initialX, "sub-logical X motion does not change the snapped phase")
-  Assert.equal(nextLogicalX - initialX, presentationPixelScale, "one logical X cell moves one physical block")
+  local subRasterX, _ = renderAt(-0.005, 0.004)
+  local nextRasterX, _ = renderAt(0.002, 0.004)
+  Assert.equal(subRasterX, initialX, "sub-raster X motion does not change the registered phase")
+  Assert.near(
+    nextRasterX - initialX,
+    width / GxRenderer.worldRasterDimensions(width, height, 2),
+    1,
+    "one world-raster X cell moves the registered anchor"
+  )
 
-  local _, subLogicalYPosition = renderAt(-0.006, 0)
-  local _, nextLogicalYPosition = renderAt(-0.006, -0.01)
-  Assert.equal(subLogicalYPosition, initialY, "sub-logical Y motion does not change the snapped phase")
-  Assert.equal(
-    nextLogicalYPosition - initialY,
-    presentationPixelScale,
-    "one logical Y cell moves one physical block in the rendered orientation"
+  local _, subRasterYPosition = renderAt(-0.006, 0.001)
+  local _, nextRasterYPosition = renderAt(-0.006, -0.004)
+  Assert.equal(subRasterYPosition, initialY, "sub-raster Y motion does not change the registered phase")
+  Assert.near(
+    nextRasterYPosition - initialY,
+    height / GxRenderer.worldRasterDimensions(width, height, 2),
+    1,
+    "one world-raster Y cell moves the registered anchor"
   )
 end
 

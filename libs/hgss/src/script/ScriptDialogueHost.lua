@@ -21,6 +21,7 @@ local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProv
 ---@field private _mons HgssMonService|nil the live HGSS mon service for party/mon text
 ---@field private _items ItemCatalog|nil the shared item catalog for item/pocket/TM/berry text
 ---@field private _frameIndex integer|nil player-selected user-frame index, captured at open
+---@field private _yesNoController table<string, unknown> semantic field choice owner
 ---@field private _pendingNode table<string, unknown>|nil
 local ScriptDialogueHost = {}
 ScriptDialogueHost.__index = ScriptDialogueHost
@@ -279,12 +280,16 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
   )
 end
 
----@param opts table<string, unknown> { controller, provider, layout, fontDef, player, world, mons?, items?, frameIndex? }
+---@param opts table<string, unknown> { controller, yesNoController, provider, layout, fontDef, player, world, mons?, items?, frameIndex? }
 ---@return ScriptDialogueHost
 function ScriptDialogueHost.new(opts)
   assert(
     type(opts) == "table" and opts.controller and opts.provider,
     "script dialogue host requires a controller and message provider"
+  )
+  assert(
+    opts.yesNoController and type(opts.yesNoController.open) == "function",
+    "script dialogue host requires a yes/no controller"
   )
   assert(type(opts.layout) == "function", "script dialogue host requires the dialogue layout")
   assert(
@@ -307,11 +312,41 @@ function ScriptDialogueHost.new(opts)
     _mons = opts.mons,
     _items = opts.items,
     _frameIndex = frameIndex,
+    _yesNoController = opts.yesNoController,
   }, ScriptDialogueHost)
 end
 
 function ScriptDialogueHost:isOpen()
   return self._controller:isModal()
+end
+
+function ScriptDialogueHost:askYesNo(message, bindings)
+  assert(message == nil or type(message) == "string" or type(message) == "table", "yes/no message is invalid")
+  assert(bindings == nil or type(bindings) == "table", "yes/no bindings are invalid")
+  local yes = self:resolveMessage({ message = "external", bank = 191, id = 42 }, {}, {})
+  local no = self:resolveMessage({ message = "external", bank = 191, id = 43 }, {}, {})
+  self._yesNoController:open({
+    yesText = yes.text,
+    noText = no.text,
+    frameIndex = self._frameIndex,
+  })
+end
+
+function ScriptDialogueHost:handleYesNoInput(input)
+  self._yesNoController:handleInput(input or {})
+end
+
+function ScriptDialogueHost:yesNoPresentation()
+  local status = self._yesNoController:status()
+  return status.active and status or nil
+end
+
+function ScriptDialogueHost:takeYesNoResult()
+  return self._yesNoController:takeResult()
+end
+
+function ScriptDialogueHost:closeYesNo()
+  self._yesNoController:close()
 end
 
 -- Resolve a message reference to a controller-ready formatted message.

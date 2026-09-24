@@ -1,6 +1,6 @@
 -- FieldViewport computes pure presentation rectangles for canonical 4:3 field
--- rendering. Expanded mode preserves height and reveals more world horizontally;
--- strict mode centers a 4:3 view, and narrow hosts fall back to strict fitting.
+-- rendering. Expanded mode fills the host and centers the canonical frame;
+-- strict mode centers a 4:3 view.
 
 local FieldViewport = {}
 FieldViewport.__index = FieldViewport
@@ -43,17 +43,26 @@ function FieldViewport:resize(width, height)
   self.width = width
   self.height = height
   local strict = strictRectangle(self.x, self.y, width, height, self.canonicalAspect)
-  if self.mode == "strict" or width / height < self.canonicalAspect then
+  if self.mode == "strict" then
     self.worldViewport = strict
     self.referenceFrame = copyRectangle(strict)
     return
   end
   self.worldViewport = { x = self.x, y = self.y, width = width, height = height }
+  if width / height >= self.canonicalAspect then
+    self.referenceFrame = {
+      x = self.x + (width - height * self.canonicalAspect) / 2,
+      y = self.y,
+      width = height * self.canonicalAspect,
+      height = height,
+    }
+    return
+  end
   self.referenceFrame = {
-    x = self.x + (width - height * self.canonicalAspect) / 2,
-    y = self.y,
-    width = height * self.canonicalAspect,
-    height = height,
+    x = self.x,
+    y = self.y + (height - width / self.canonicalAspect) / 2,
+    width = width,
+    height = width / self.canonicalAspect,
   }
 end
 

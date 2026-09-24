@@ -10,6 +10,7 @@ local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparati
 local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+local FieldYesNoRenderer = require("libs.hgss.src.ui.FieldYesNoRenderer")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local FieldMenuRenderer = require("libs.hgss.src.ui.FieldMenuRenderer")
 local FieldSignpostRenderer = require("libs.hgss.src.ui.FieldSignpostRenderer")
@@ -50,6 +51,7 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 ---@field windowRenderer FieldWindowRenderer? the one shared frame-strip atlas owner lent to dialogue rendering
 ---@field applicationFrameIndex integer? the snapshotted player-owned frame choice for application borders
 ---@field dialogueRenderer FieldDialogueRenderer?
+---@field yesNoRenderer FieldYesNoRenderer
 ---@field menuRenderer FieldMenuRenderer
 ---@field signpostRenderer FieldSignpostRenderer?
 ---@field startMenuRenderer StartMenuRenderer?
@@ -209,6 +211,7 @@ function FieldPresentationResources.new(runtime)
       text = textRenderer,
       windowRenderer = self.windowRenderer,
     })
+    self.yesNoRenderer = FieldYesNoRenderer.new({ text = textRenderer, window = self.windowRenderer })
     self.menuRenderer = FieldMenuRenderer.new()
     self.signpostRenderer = FieldSignpostRenderer.new({
       cacheFs = runtime.cacheFs,
@@ -349,6 +352,7 @@ function FieldPresentationResources:dispose()
     self.dialogueRenderer:release()
     self.dialogueRenderer = nil
   end
+  self.yesNoRenderer = nil
   -- Borrowers release before their owner: dialogue rendering never owned
   -- the shared atlas, so the owner releases exactly once here.
   if self.windowRenderer then

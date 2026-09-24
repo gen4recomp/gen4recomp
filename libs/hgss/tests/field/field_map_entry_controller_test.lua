@@ -22,6 +22,9 @@ local function controllerFixture(overrides)
       startLifecycle = function()
         return true
       end,
+      isLifecycleSettled = function()
+        return true
+      end,
     },
     enterMapActors = function() end,
     autoAcknowledgePresentation = false,
@@ -41,6 +44,9 @@ function T.tests.full_entry_advances_each_owned_phase_once()
       end,
       startLifecycle = function(_, lifecycle, tick)
         order[#order + 1] = lifecycle .. ":" .. tick
+        return true
+      end,
+      isLifecycleSettled = function()
         return true
       end,
     },
@@ -97,6 +103,58 @@ function T.tests.blocked_or_failed_progression_keeps_the_current_phase()
     controller:advance(2)
   end)
   Assert.equal(controller:currentStage(), "transition")
+end
+
+function T.tests.full_entry_waits_for_lifecycle_owned_work_after_foreground_finishes()
+  local settled = false
+  local controller = controllerFixture({
+    initController = {
+      hasLifecycle = function(_, lifecycle)
+        return lifecycle == "on_load"
+      end,
+      startLifecycle = function()
+        return true
+      end,
+      isLifecycleSettled = function()
+        return settled
+      end,
+    },
+  })
+
+  controller:begin("full")
+  controller:advance(1)
+  controller:advance(2)
+  controller:advance(3)
+  controller:advance(4)
+  Assert.equal(controller:currentStage(), "load_running")
+  Assert.isFalse(controller:destinationWorldPresentable())
+
+  settled = true
+  Assert.isTrue(controller:advance(5))
+  Assert.equal(controller:currentStage(), "await_presentation")
+  Assert.isTrue(controller:destinationWorldPresentable())
+end
+
+function T.tests.running_load_requires_a_lifecycle_settlement_query()
+  local controller = controllerFixture({
+    initController = {
+      hasLifecycle = function(_, lifecycle)
+        return lifecycle == "on_load"
+      end,
+      startLifecycle = function()
+        return true
+      end,
+    },
+  })
+
+  controller:begin("full")
+  controller:advance(1)
+  controller:advance(2)
+  controller:advance(3)
+  Assert.equal(controller:currentStage(), "load_running")
+  Assert.throws(function()
+    controller:advance(4)
+  end, "missing lifecycle settlement must fail instead of publishing readiness")
 end
 
 return T

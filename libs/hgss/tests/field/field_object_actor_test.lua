@@ -6,6 +6,7 @@ local Errors = require("libs.errors.src.Errors")
 local FieldObjectActor = require("libs.hgss.src.actors.FieldObjectActor")
 local FieldActorStore = require("libs.hgss.src.actors.FieldActorStore")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
+local FieldActorPose = require("libs.hgss.src.presentation.FieldActorPose")
 
 local T = {}
 
@@ -63,6 +64,25 @@ local function actor(overrides, optsOverrides)
     rawset(opts, key, value)
   end
   return FieldObjectActor.new(opts)
+end
+
+local function animatedBobVisual()
+  local visual = FieldActorFixture.visual(99, { frameCount = 8 })
+  visual.idlePresentation = { mode = "animated", cadence = 1 }
+  for _, direction in ipairs({ "north", "south", "west", "east" }) do
+    local frames = {}
+    for tick = 0, 19 do
+      local shifted = (tick >= 5 and tick <= 9) or (tick >= 15 and tick <= 19)
+      frames[#frames + 1] = {
+        frameIndex = (tick % 5) + 1,
+        ticks = 1,
+        displayOffsetY = shifted and -0.125 or 0,
+      }
+    end
+    visual.directions[direction].idle = { frames = frames, loop = true, durationTicks = 20 }
+    visual.directions[direction].walk = { frames = frames, loop = true, durationTicks = 20 }
+  end
+  return visual
 end
 
 function T.actor_id_is_map_and_object_identity()
@@ -136,6 +156,60 @@ function T.idle_mode_decides_whether_repeated_idle_ticks_advance_presentation()
   Assert.equal(still.facing, "north")
   Assert.equal(still.pose, "idle")
   Assert.equal(still:getPoseTick(), 0, "a facing change in idle selects the next stationary frame without playback")
+end
+
+function T.animated_locomotion_keeps_bob_phase_through_commit_and_settle()
+  local visual = animatedBobVisual()
+  local animated = actor({}, { visual = visual, idlePresentation = visual.idlePresentation })
+  for _ = 1, 5 do
+    animated:advancePresentationTick()
+  end
+  Assert.equal(animated:getPoseTick(), 5, "animated idle reaches the shifted bob phase")
+
+  animated:beginAction({
+    action = "walk",
+    direction = "east",
+    distance = "near",
+    speed = "normal",
+    start = { fieldX = 6, fieldZ = 5, worldX = 6.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    dest = { fieldX = 7, fieldZ = 5, worldX = 7.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    durationTicks = 8,
+  }, "script")
+  animated:advanceAction(1, 8)
+  Assert.equal(animated.pose, "walk", "locomotion selects the walking pose")
+  Assert.equal(animated:getPoseTick(), 6, "walking advances from the idle phase")
+  Assert.equal(FieldActorPose.sampleAt(visual.directions.east.walk, animated:getPoseTick()).displayOffsetY, -0.125)
+
+  animated:commitAction()
+  animated:settlePresentation()
+  Assert.equal(animated:getPoseTick(), 6, "animated settle preserves the locomotion phase")
+  Assert.equal(FieldActorPose.sampleAt(visual.directions.east.idle, animated:getPoseTick()).displayOffsetY, -0.125)
+
+  local ordinary = actor()
+  ordinary:beginAction({
+    action = "walk",
+    direction = "east",
+    distance = "near",
+    speed = "normal",
+    start = { fieldX = 6, fieldZ = 5, worldX = 6.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    dest = { fieldX = 7, fieldZ = 5, worldX = 7.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    durationTicks = 8,
+  }, "script")
+  ordinary:advanceAction(1, 8)
+  ordinary:commitAction()
+  ordinary:settlePresentation()
+  Assert.equal(ordinary:getPoseTick(), 0, "static settle keeps the existing baseline reset")
+end
+
+function T.animated_pose_clock_freezes_and_resumes_while_paused()
+  local visual = animatedBobVisual()
+  local animated = actor({}, { visual = visual, idlePresentation = visual.idlePresentation })
+  animated:setAnimationPaused(true)
+  animated:advancePresentationTick()
+  Assert.equal(animated:getPoseTick(), 0, "paused animated actor holds its pose phase")
+  animated:setAnimationPaused(false)
+  animated:advancePresentationTick()
+  Assert.equal(animated:getPoseTick(), 1, "resumed animated actor advances from the held phase")
 end
 
 function T.facing_override_applies_and_restores()

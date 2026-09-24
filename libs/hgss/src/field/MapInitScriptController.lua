@@ -6,6 +6,7 @@
 ---@field world table<string, unknown>
 ---@field scriptClient table<string, unknown>
 ---@field mapId integer|nil
+---@field activeLifecycle string|nil
 local MapInitScriptController = {}
 MapInitScriptController.__index = MapInitScriptController
 
@@ -71,10 +72,13 @@ function MapInitScriptController.new(opts)
   assert(opts.world and opts.world.getVar, "map init world required")
   assert(opts.scriptClient and opts.scriptClient.startInitScript, "map init client required")
   validateRules(opts.rules, opts.mapId)
-  return setmetatable(
-    { rules = opts.rules, world = opts.world, scriptClient = opts.scriptClient, mapId = opts.mapId },
-    MapInitScriptController
-  )
+  return setmetatable({
+    rules = opts.rules,
+    world = opts.world,
+    scriptClient = opts.scriptClient,
+    mapId = opts.mapId,
+    activeLifecycle = nil,
+  }, MapInitScriptController)
 end
 
 function MapInitScriptController:setRules(rules, mapId)
@@ -103,8 +107,24 @@ function MapInitScriptController:startLifecycle(lifecycle, tick)
   assert(EVENT_TYPES[lifecycle], "unknown map lifecycle: " .. tostring(lifecycle))
   for _, group in ipairs(self.rules) do
     if group.type == lifecycle then
-      return self.scriptClient:startInitScript(group.scriptId, tick) == true
+      local started = self.scriptClient:startInitScript(group.scriptId, tick) == true
+      if started then
+        self.activeLifecycle = lifecycle
+      end
+      return started
     end
+  end
+  return false
+end
+
+---@return boolean
+function MapInitScriptController:isLifecycleSettled()
+  if self.activeLifecycle == nil then
+    return true
+  end
+  if self.scriptClient:isInitLifecycleSettled() then
+    self.activeLifecycle = nil
+    return true
   end
   return false
 end

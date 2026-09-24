@@ -302,8 +302,15 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
   local runtime = setmetatable({
     session = {
       accumulator = 0,
+      currentMap = { mapId = 61 },
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
       updateFixed = function() end,
     },
+    actors = { currentMapId = 61 },
     transition = {
       phase = "idle",
       error = nil,
@@ -338,6 +345,45 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
   return runtime
 end
 
+local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive, calls)
+  return setmetatable({
+    session = {
+      accumulator = 0,
+      currentMap = { mapId = logicalMapId },
+      mapEntryController = {
+        isActive = function()
+          return entryActive
+        end,
+      },
+      updateFixed = function() end,
+    },
+    actors = { currentMapId = actorMapId },
+    followingMon = {
+      update = function()
+        calls.count = calls.count + 1
+      end,
+    },
+    transition = {
+      phase = "idle",
+      error = nil,
+      updateSourceFrame = function() end,
+      consumeCompleted = function() end,
+    },
+    screenFade = {
+      fadeDone = function()
+        return true
+      end,
+      updateSourceFrame = function() end,
+    },
+    scripts = {},
+    applicationHost = {
+      error = function()
+        return nil
+      end,
+    },
+  }, FieldRuntime)
+end
+
 function T.tests.follower_update_carries_no_presentation_policy()
   local openOptions = { calls = 0 }
   runtimeWithFollowerPresentation(openOptions, false):update(FieldSession.FIXED_DT)
@@ -353,6 +399,73 @@ function T.tests.follower_update_carries_no_presentation_policy()
   runtimeWithFollowerPresentation(missingOptions, nil):update(FieldSession.FIXED_DT)
   Assert.equal(missingOptions.calls, 1, "a missing dialogue controller still ticks the follower once")
   Assert.isNil(missingOptions.last, "a missing dialogue controller adds no presentation option")
+end
+
+function T.tests.follower_update_requires_actor_manager()
+  local calls = { count = 0 }
+  local runtime = runtimeForFollowerCoherence(61, 61, false, calls)
+  runtime.actors = nil
+
+  local ok, err = pcall(function()
+    runtime:update(FieldSession.FIXED_DT)
+  end)
+
+  Assert.isFalse(ok, "follower reconciliation requires an actor manager")
+  Assert.isTrue(tostring(err):find("field actor manager is required", 1, true) ~= nil)
+  Assert.equal(calls.count, 0, "follower reconciliation does not run without its actor manager")
+end
+
+function T.tests.follower_update_waits_for_actor_publication_during_map_entry()
+  local calls = { count = 0 }
+  local runtime = runtimeForFollowerCoherence(61, 60, true, calls)
+
+  runtime:update(FieldSession.FIXED_DT)
+
+  Assert.equal(calls.count, 0, "follower reconciliation waits for destination actor publication")
+end
+
+function T.tests.follower_update_waits_when_actor_map_is_not_published()
+  local calls = { count = 0 }
+  local runtime = runtimeForFollowerCoherence(61, nil, true, calls)
+
+  runtime:update(FieldSession.FIXED_DT)
+
+  Assert.equal(calls.count, 0, "follower reconciliation waits for actor map publication")
+end
+
+function T.tests.follower_update_rejects_unknown_actor_identity_after_map_entry()
+  local calls = { count = 0 }
+  local runtime = runtimeForFollowerCoherence(61, nil, false, calls)
+
+  local ok, err = pcall(function()
+    runtime:update(FieldSession.FIXED_DT)
+  end)
+
+  Assert.isFalse(ok, "stable unknown actor identity must fail loudly")
+  Assert.isTrue(tostring(err):find("field actor map identity is required", 1, true) ~= nil)
+  Assert.equal(calls.count, 0, "follower reconciliation does not run with unknown ownership")
+end
+
+function T.tests.follower_update_resumes_when_map_ownership_matches()
+  local calls = { count = 0 }
+  local runtime = runtimeForFollowerCoherence(61, 61, true, calls)
+
+  runtime:update(FieldSession.FIXED_DT)
+
+  Assert.equal(calls.count, 1, "follower reconciliation resumes for coherent ownership")
+end
+
+function T.tests.follower_update_rejects_stable_map_ownership_drift()
+  local calls = { count = 0 }
+  local runtime = runtimeForFollowerCoherence(61, 60, false, calls)
+
+  local ok, err = pcall(function()
+    runtime:update(FieldSession.FIXED_DT)
+  end)
+
+  Assert.isFalse(ok, "stable ownership drift must fail loudly")
+  Assert.isTrue(tostring(err):find("field actor map ownership drifted outside map entry", 1, true) ~= nil)
+  Assert.equal(calls.count, 0, "follower reconciliation does not run after ownership drift")
 end
 
 return T

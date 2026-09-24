@@ -20,7 +20,7 @@ local function fakeGraphicsFromSupport()
     imageSizes = {
       { 16, 16 },
       { 16, 16 },
-      { 96, 32 },
+      { 96, 128 },
       { 144, 16 },
       { 144, 8 },
       { 192, 32 },

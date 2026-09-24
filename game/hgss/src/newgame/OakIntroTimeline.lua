@@ -35,7 +35,6 @@ local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 ---@field _oakBgScrollX number
 ---@field _genderCompositionProgress number
 ---@field _nameCompositionProgress number
----@field _nameCompositionTimer integer
 ---@field _focusTimer integer
 ---@field _focusBlinkDelta number
 ---@field _disposed boolean
@@ -54,7 +53,6 @@ local NAME_LAUNCH_WAIT = 40
 local FINAL_FULL_ART_HOLD = 30
 local FINAL_FADE_FRAMES = 1
 local OAK_BG_SCROLL_END_X = -52
-local NAME_COMPOSITION_FRAMES = 26
 local REVEAL_ANIMATION_UNITS_PER_SOURCE_FRAME = 2
 
 local function requireMessage(messages, key)
@@ -118,7 +116,6 @@ function OakIntroTimeline.new(options)
     _oakBgScrollX = 0,
     _genderCompositionProgress = 0,
     _nameCompositionProgress = 0,
-    _nameCompositionTimer = 0,
     _focusTimer = 0,
     _focusBlinkDelta = 0,
     _events = {},
@@ -290,11 +287,12 @@ function OakIntroTimeline:beginGenderSelection()
   self._focusBlinkDelta = 0
 end
 
-function OakIntroTimeline:beginNameComposition()
-  self._phase = "name_composition_transition"
-  self._nameCompositionTimer = NAME_COMPOSITION_FRAMES
-  self._nameCompositionProgress = 0
+function OakIntroTimeline:beginNameComposition(gender)
+  assert(gender == 0 or gender == 1, "Oak name composition gender is invalid")
+  self._phase = "name_confirm"
+  self._nameCompositionProgress = 1
   self:_setVisual("oak")
+  self:_setMessage(gender == 0 and "profile.name_confirm.male" or "profile.name_confirm.female")
 end
 
 function OakIntroTimeline:beginNameLaunch()
@@ -391,24 +389,6 @@ function OakIntroTimeline:press(action, profile)
     return false
   end
   return true
-end
-
----@param self OakIntroTimeline
----@param gender integer
----@return boolean
-local function stepComposition(self, gender)
-  if self._phase == "name_composition_transition" then
-    self._nameCompositionTimer = self._nameCompositionTimer - 1
-    self._nameCompositionProgress = (NAME_COMPOSITION_FRAMES - self._nameCompositionTimer) / NAME_COMPOSITION_FRAMES
-    if self._nameCompositionTimer == 0 then
-      self._nameCompositionProgress = 1
-      self._phase = "name_confirm"
-      self:_setVisual("oak")
-      self:_setMessage(gender == 0 and "profile.name_confirm.male" or "profile.name_confirm.female")
-    end
-    return true
-  end
-  return false
 end
 
 ---@param self OakIntroTimeline
@@ -588,14 +568,10 @@ function OakIntroTimeline:tick(frames, gender)
     end
     self._sourceFrames = self._sourceFrames + 1
     self._audio:updateSoundFrame()
-    if stepComposition(self, gender) then
-      goto continue
-    end
     local handled, startedCry = stepPresentation(self)
     if not handled then
       stepOpening(self, gender, startedCry)
     end
-    ::continue::
   end
 end
 

@@ -76,7 +76,7 @@ end
 -- atlas, the 96x32 focus strip, then the 256x256 card front.
 local function renderedGraphics(opts)
   opts = opts or {}
-  local sizes = { { 512, 32 }, { 16, 16 }, { 96, 32 }, { 256, 256 } }
+  local sizes = { { 512, 32 }, { 16, 16 }, { 96, 128 }, { 256, 256 } }
   if opts.imageSizes then
     for index, size in ipairs(opts.imageSizes) do
       sizes[index] = size

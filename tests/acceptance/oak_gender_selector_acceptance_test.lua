@@ -133,6 +133,11 @@ local function driveToNameEdit(state)
   advanceUntilPhase(state, "name_edit")
 end
 
+local function submitName(state)
+  state:textinput("GOLD")
+  state:gamepadpressed(nil, "start")
+end
+
 local function clickGenderCard(state, gender)
   local view = state:view()
   local surface = assert(view.pixelSurface)
@@ -242,6 +247,44 @@ T.tests.production_oak_selector_back_confirmation_and_name_flows_return_to_a_val
     state:keypressed("return")
     Assert.equal(state:view().phase, "gender_confirm")
     Assert.equal(state:view().messageKey, "profile.gender_confirm.male")
+  end)
+end
+
+T.tests.production_oak_name_confirmation_stays_inside_the_safe_frame = function()
+  for _, size in ipairs({ { 640, 480 }, { 390, 844 } }) do
+    withComposed(AcceptanceHarness.defaultVersion(), size[1], size[2], function(state)
+      driveToNameEdit(state)
+      submitName(state)
+      finishDialogue(state)
+
+      local view = state:view()
+      local layout = assert(view.layout)
+      local safeFrame = assert(layout.safeFrame)
+      local buttons = assert(layout.confirmationButtons)
+      Assert.equal(layout.scene.x, 0, "Oak art must retain the full viewport origin")
+      Assert.equal(layout.scene.width, layout.viewport.width, "Oak art must retain the full viewport width")
+      for _, choice in pairs(buttons) do
+        Assert.isTrue(inside(choice.rect, safeFrame), "name confirmation must stay inside the safe frame")
+      end
+    end)
+  end
+end
+
+T.tests.production_oak_name_confirmation_is_final_on_the_first_post_submit_frame = function()
+  withComposed(AcceptanceHarness.defaultVersion(), 640, 480, function(state)
+    driveToNameEdit(state)
+    submitName(state)
+
+    local first = state:view()
+    Assert.equal(first.phase, "name_confirm", "name submission must enter confirmation immediately")
+    Assert.equal(first.messageKey, "profile.name_confirm.male")
+    Assert.equal(first.nameCompositionProgress, 1)
+    local firstSubject = assert(first.layout.subject)
+
+    state:tick(26)
+    local settled = state:view()
+    Assert.equal(settled.phase, "name_confirm")
+    Assert.deepEqual(firstSubject, settled.layout.subject, "Oak must not slide after name submission")
   end)
 end
 

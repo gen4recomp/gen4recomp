@@ -96,6 +96,7 @@ local function ctxFor(service, species, host)
       mons = service,
       starterProvider = providerFor(species),
       starterChoice = host,
+      starterBalls = { placeStarterBalls = function() end },
     },
     input = { uiEvents = {} },
     instance = { scriptId = "starter-generation-fixture" },

@@ -1,6 +1,6 @@
 -- Compiles the HGSS field fonts (font IDs 0 and 4) into private glyph atlas PNGs, a
--- semantic glyph mask atlas PNG, a focus-indicator PNG, and the
--- g4-field-font-v3 definition. The mask atlas repeats the composited atlas's
+-- semantic glyph mask atlas PNG, a focus-indicator mask PNG, and the
+-- g4-field-font-v4 definition. The mask atlas repeats the composited atlas's
 -- base-band glyph geometry once, encoding each glyph pixel's raw 0..3 class
 -- categorically (0 transparent, 1 red foreground, 2 green shadow, 3 blue
 -- background) instead of a baked color, so a palette-driven draw path can
@@ -32,6 +32,7 @@ local GLYPH_SIZE = 16
 local FOCUS_FRAME_WIDTH = FieldFontCache.FOCUS_FRAME_WIDTH
 local FOCUS_FRAME_HEIGHT = FieldFontCache.FOCUS_FRAME_HEIGHT
 local FOCUS_TILES_PER_FRAME = math.floor(FOCUS_FRAME_WIDTH / 8) * math.floor(FOCUS_FRAME_HEIGHT / 8)
+local FOCUS_PALETTE_SLOTS = { 11, 12, 13, 14 }
 
 -- Categorical (never colorimetric) encoding of one raw glyph pixel value for
 -- the semantic mask atlas: 0 transparent, 1 foreground (red marker), 2 shadow
@@ -236,11 +237,10 @@ local function buildGlyphAtlases(font, palette)
 end
 
 ---@param focusChars { depth: integer, tiles: string }
----@param palette { r: integer, g: integer, b: integer }[]
 ---@param fontId integer
 ---@return table<string, unknown> indicators
 ---@return string imageBytes
-local function buildFocusIndicators(focusChars, palette, fontId)
+local function buildFocusIndicators(focusChars, fontId)
   local function focusPixel(field, x, y)
     local intraX = x % FOCUS_FRAME_WIDTH
     local tileIndex = field * FOCUS_TILES_PER_FRAME
@@ -256,26 +256,38 @@ local function buildFocusIndicators(focusChars, palette, fontId)
     return math.floor(byte / 16)
   end
 
-  local focusImageWidth = FOCUS_FRAME_WIDTH * FieldMessageText.FOCUS_INDICATOR_COUNT
+  local focusImageWidth = FOCUS_FRAME_WIDTH * #FOCUS_PALETTE_SLOTS
+  local focusImageHeight = FOCUS_FRAME_HEIGHT * FieldMessageText.FOCUS_INDICATOR_COUNT
   local focusRgba = {}
-  for i = 1, focusImageWidth * FOCUS_FRAME_HEIGHT * 4 do
+  for i = 1, focusImageWidth * focusImageHeight * 4 do
     focusRgba[i] = 0
   end
   for field = 0, FieldMessageText.FOCUS_INDICATOR_COUNT - 1 do
     for y = 0, FOCUS_FRAME_HEIGHT - 1 do
       for x = 0, FOCUS_FRAME_WIDTH - 1 do
         local value = focusPixel(field, x, y)
-        local r, g, b, a = 0, 0, 0, 0
-        if value ~= 0 and value ~= FieldFontDecoder.BG_PALETTE_INDEX then
-          local color = palette[value + 1]
-          assert(color ~= nil, "focus indicator needs palette slot " .. value)
-          r, g, b, a = color.r, color.g, color.b, 255
+        local slotIndex
+        for index, slot in ipairs(FOCUS_PALETTE_SLOTS) do
+          if value == slot then
+            slotIndex = index - 1
+            break
+          end
         end
-        local offset = ((field * FOCUS_FRAME_WIDTH + x) + y * focusImageWidth) * 4
-        focusRgba[offset + 1] = r
-        focusRgba[offset + 2] = g
-        focusRgba[offset + 3] = b
-        focusRgba[offset + 4] = a
+        if value ~= 0 and slotIndex == nil then
+          Errors.raise("FONT_FORMAT_INVALID", "focus indicator contains unsupported palette slot " .. value, {
+            field = field,
+            value = value,
+          })
+        end
+        if slotIndex ~= nil then
+          local imageX = slotIndex * FOCUS_FRAME_WIDTH + x
+          local imageY = field * FOCUS_FRAME_HEIGHT + y
+          local offset = (imageY * focusImageWidth + imageX) * 4
+          focusRgba[offset + 1] = 255
+          focusRgba[offset + 2] = 255
+          focusRgba[offset + 3] = 255
+          focusRgba[offset + 4] = 255
+        end
       end
     end
   end
@@ -284,17 +296,22 @@ local function buildFocusIndicators(focusChars, palette, fontId)
     count = FieldMessageText.FOCUS_INDICATOR_COUNT,
     width = FOCUS_FRAME_WIDTH,
     height = FOCUS_FRAME_HEIGHT,
+    sourcePaletteSlots = FOCUS_PALETTE_SLOTS,
     frames = {},
   }
   for field = 0, FieldMessageText.FOCUS_INDICATOR_COUNT - 1 do
-    indicators.frames[field] = {
-      x = field * FOCUS_FRAME_WIDTH,
-      y = 0,
-      width = FOCUS_FRAME_WIDTH,
-      height = FOCUS_FRAME_HEIGHT,
-    }
+    local layers = {}
+    for index, slot in ipairs(FOCUS_PALETTE_SLOTS) do
+      layers[slot] = {
+        x = (index - 1) * FOCUS_FRAME_WIDTH,
+        y = field * FOCUS_FRAME_HEIGHT,
+        width = FOCUS_FRAME_WIDTH,
+        height = FOCUS_FRAME_HEIGHT,
+      }
+    end
+    indicators.frames[field] = { layers = layers }
   end
-  return indicators, PngWriter.encode(focusImageWidth, FOCUS_FRAME_HEIGHT, concatRgba(focusRgba))
+  return indicators, PngWriter.encode(focusImageWidth, focusImageHeight, concatRgba(focusRgba))
 end
 
 ---@param font table<string, unknown>
@@ -354,7 +371,7 @@ local function compileFont(source, fontId, glyphMemberId, sha1hex)
   local data = decodeFontSource(source, glyphMemberId, sha1hex)
   local font, palette = data.font, data.palette
   local atlasBytes, maskAtlasBytes, width, baseHeight = buildGlyphAtlases(font, palette.colors)
-  local focusIndicators, focusIndicatorsBytes = buildFocusIndicators(data.focusChars, palette.colors, fontId)
+  local focusIndicators, focusIndicatorsBytes = buildFocusIndicators(data.focusChars, fontId)
 
   local perRow = manifest.atlasGlyphsPerRow
   local glyphs = buildGlyphDefinitions(font, perRow)
@@ -470,7 +487,7 @@ function FieldFontCompiler.compile(romFs, sha1hex, hashLua)
   error(result)
 end
 
--- The compiled font class: the g4-field-font-v3 definition, the glyph atlas
+-- The compiled font class: the g4-field-font-v4 definition, the glyph atlas
 -- PNG, the semantic glyph mask atlas PNG, the focus-indicator PNG, and the
 -- cache marker derived from every source dependency.
 
@@ -479,7 +496,7 @@ end
 ---@field fonts table<integer, { fontId: integer, font: FieldFontDef, atlas: string, maskAtlas: string, focusIndicators: string }>
 ---@field dependencies table<string, unknown>
 
--- The g4-field-font-v3 runtime definition consumed by the dialogue layout and
+-- The g4-field-font-v4 runtime definition consumed by the dialogue layout and
 -- renderer: geometry, per-code glyph quads/advances, the stacked color-band
 -- metadata, the semantic glyph mask atlas path, the focus-indicator frame
 -- rects, the text-to-code charmap, the 16-color palette, and source
@@ -497,7 +514,7 @@ end
 ---@field maskAtlasPath string
 ---@field atlas { width: integer, height: integer, baseHeight: integer, glyphsPerRow: integer, glyphWidth: integer, glyphHeight: integer }
 ---@field colorVariants { count: integer, strideY: integer }
----@field focusIndicators { imagePath: string, count: integer, width: integer, height: integer, frames: table<integer, { x: integer, y: integer, width: integer, height: integer }> }
+---@field focusIndicators { imagePath: string, count: integer, width: integer, height: integer, sourcePaletteSlots: integer[], frames: table<integer, { layers: table<integer, { x: integer, y: integer, width: integer, height: integer }> }> }
 ---@field glyphs table<integer, { x: integer, y: integer, w: integer, h: integer, advance: integer, bearingX: integer, bearingY: integer }>
 ---@field charmap table<string, integer>
 ---@field palette { r: integer, g: integer, b: integer }[]

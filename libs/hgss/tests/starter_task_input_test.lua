@@ -149,8 +149,13 @@ local function screenFake()
   return screen
 end
 
-local function ctxFor(service, host, events, screen)
-  local services = { mons = service, starterProvider = providerFor(TRIO), starterChoice = host }
+local function ctxFor(service, host, events, screen, starterBalls)
+  local services = {
+    mons = service,
+    starterProvider = providerFor(TRIO),
+    starterChoice = host,
+    starterBalls = starterBalls or { placeStarterBalls = function() end },
+  }
   if screen ~= nil then
     services.screen = screen
   end
@@ -161,8 +166,8 @@ local function ctxFor(service, host, events, screen)
   }
 end
 
-local function generate(task, service, host, screen)
-  local ctx = ctxFor(service, host, {}, screen)
+local function generate(task, service, host, screen, starterBalls)
+  local ctx = ctxFor(service, host, {}, screen, starterBalls)
   local state = task.create({ node = { op = "choose_starter" } }, ctx)
   for _ = 1, 6 do
     local outcome = task.poll(state, ctx)
@@ -186,6 +191,35 @@ local function settle(host, bound)
       return
     end
   end
+end
+
+function T.publication_refreshes_starter_balls_after_party_insertion()
+  local task = requireTask()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x12345678)
+  local host = servingHost()
+  local refreshes = 0
+  local partyCountAtRefresh
+  local starterBalls = {
+    placeStarterBalls = function()
+      refreshes = refreshes + 1
+      partyCountAtRefresh = service:partyCount()
+    end,
+  }
+  local state = generate(task, service, host, nil, starterBalls)
+
+  host:focus(0)
+  host:confirm()
+  settle(host)
+  host:confirm()
+  settle(host)
+  host:confirm()
+  settle(host)
+  local published = task.poll(state, ctxFor(service, host, {}, nil, starterBalls))
+
+  Assert.isTrue(published.complete, "publication completes without an additional map lifecycle")
+  Assert.equal(refreshes, 1, "starter balls refresh once during publication")
+  Assert.equal(partyCountAtRefresh, 1, "starter balls refresh after the mon enters the party")
 end
 
 function T.navigation_rotates_one_step_and_settles_without_rerolling()

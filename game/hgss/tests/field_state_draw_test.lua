@@ -1061,6 +1061,9 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
         startLifecycle = function()
           return true
         end,
+        isLifecycleSettled = function()
+          return true
+        end,
       },
       menuHost = {
         isModal = function()
@@ -1190,13 +1193,14 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
   session.mapEntryController:advance(1)
   session.mapEntryController:advance(2)
   session.mapEntryController:advance(3)
+  session.mapEntryController:advance(4)
   state:draw()
   Assert.equal(draws, 1)
   Assert.equal(session.mapEntryStage, "resume")
-  session.mapEntryController:advance(4)
-  state:draw()
   session.mapEntryController:advance(5)
+  state:draw()
   session.mapEntryController:advance(6)
+  session.mapEntryController:advance(7)
   state:draw()
   Assert.equal(draws, 3)
 
@@ -1210,6 +1214,7 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
   failedSession.mapEntryController:advance(1)
   failedSession.mapEntryController:advance(2)
   failedSession.mapEntryController:advance(3)
+  failedSession.mapEntryController:advance(4)
   Assert.throws(function()
     failedState:draw()
   end)

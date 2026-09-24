@@ -11,7 +11,7 @@ local T = {}
 
 local function fakeGraphics()
   return require("tests.support.FakeGraphics").new({
-    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 8 }, { 48, 32 } },
+    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 128 }, { 144, 8 }, { 48, 32 } },
   })
 end
 

@@ -35,6 +35,11 @@ local function validManifest()
     return palette
   end
 
+  local dialogueFramePalettes = {}
+  for frame = 0, 19 do
+    dialogueFramePalettes[frame] = validPalette()
+  end
+
   local built = {
     schema = FieldUiAssetCache.SCHEMA,
     reference = { width = 256, height = 192 },
@@ -101,6 +106,7 @@ local function validManifest()
     dialogueFrames = {
       count = 20,
       frameTiles = frameTiles,
+      palettes = dialogueFramePalettes,
       continueCursor = {
         asset = "hgss.dialogue_continue_cursor",
         cycle = { 0, 1, 2, 1 },
@@ -321,6 +327,33 @@ function T.missing_sections_are_rejected()
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
     m.startMenu = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+end
+
+local function dialoguePalettes()
+  local palettes = {}
+  for frame = 0, 19 do
+    palettes[frame] = {}
+    for slot = 0, 15 do
+      palettes[frame][slot] = { r = slot * 16, g = slot * 16, b = slot * 16 }
+    end
+  end
+  return palettes
+end
+
+function T.dialogue_frame_palettes_are_required_and_strict()
+  reject(function(m)
+    m.dialogueFrames.palettes = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+
+  reject(function(m)
+    m.dialogueFrames.palettes = dialoguePalettes()
+    m.dialogueFrames.palettes[0][11] = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+
+  reject(function(m)
+    m.dialogueFrames.palettes = dialoguePalettes()
+    m.dialogueFrames.palettes[0][11].r = 256
   end, "FIELD_UI_MANIFEST_INVALID")
 end
 

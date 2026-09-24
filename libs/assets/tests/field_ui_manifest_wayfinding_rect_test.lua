@@ -87,6 +87,13 @@ local function baseManifest()
     dialogueFrames = {
       count = 20,
       frameTiles = frameTiles,
+      palettes = (function()
+        local palettes = {}
+        for frame = 0, 19 do
+          palettes[frame] = validPalette()
+        end
+        return palettes
+      end)(),
       continueCursor = {
         asset = "hgss.dialogue_continue_cursor",
         cycle = { 0, 1, 2, 1 },
@@ -201,13 +208,13 @@ end
 
 function T.final_surface_48x32_is_accepted_under_the_current_schema()
   local manifest = baseManifest()
-  -- The expected final contract is 48x32 per wayfinding entry, schema v10.
+  -- The expected final contract is 48x32 per wayfinding entry.
   manifest.schema = DerivedAssetContract.fieldUi.schema
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 48, height = 32 }
   local ok, err = FieldUiAssetCache.validateManifest(manifest)
-  Assert.isTrue(ok, "48x32 final surface with v9 schema should be accepted")
+  Assert.isTrue(ok, "48x32 final surface under the current schema should be accepted")
   Assert.isNil(err)
 end
 

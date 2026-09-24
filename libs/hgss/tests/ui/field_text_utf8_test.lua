@@ -32,7 +32,7 @@ end
 -- semantic glyph mask atlas, and the 96x32 focus-indicator strip, in the
 -- order the renderer acquires them.
 local function fakeGraphics()
-  return require("tests.support.FakeGraphics").new({ imageSizes = { { 512, 32 }, { 16, 16 }, { 96, 32 } } })
+  return require("tests.support.FakeGraphics").new({ imageSizes = { { 512, 32 }, { 16, 16 }, { 96, 128 } } })
 end
 
 local function renderer()

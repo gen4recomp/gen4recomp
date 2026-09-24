@@ -12,6 +12,8 @@
 ---@field private _bindings table<string, unknown>
 ---@field private _compose fun(scriptId: string): table<string, unknown>|nil
 ---@field private _scheduler Scheduler
+---@field private _initLifecycleActive boolean
+---@field private _initLifecycleInstanceId string|nil
 local ScriptInteractionClient = {}
 ScriptInteractionClient.__index = ScriptInteractionClient
 local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
@@ -38,6 +40,8 @@ function ScriptInteractionClient.new(opts)
     _compose = opts.compose,
     _scheduler = opts.scheduler,
     _scriptBankId = opts.scriptBankId,
+    _initLifecycleActive = false,
+    _initLifecycleInstanceId = nil,
   }, ScriptInteractionClient)
 end
 
@@ -59,7 +63,27 @@ function ScriptInteractionClient:startInitScript(target, tick)
   end
   -- Map initialization never implicitly owns player input; only an explicit
   -- source lock opcode executed by this script can acquire it.
-  self._scheduler:startInteraction({ type = "map_init", scriptId = scriptId }, composed, tick, false)
+  local instanceId = self._scheduler:startInteraction({ type = "map_init", scriptId = scriptId }, composed, tick, false)
+  assert(instanceId ~= nil, "map-init scheduler start did not create an instance")
+  self._initLifecycleActive = true
+  self._initLifecycleInstanceId = instanceId
+  return true
+end
+
+-- A map-init lifecycle remains active until its own root completes. The entry
+-- controller consumes this boundary after the scheduler has advanced the
+-- current tick; cancellation and failure are not readiness.
+---@return boolean
+function ScriptInteractionClient:isInitLifecycleSettled()
+  if not self._initLifecycleActive then
+    return true
+  end
+  local instanceId = assert(self._initLifecycleInstanceId, "active map-init lifecycle instance missing")
+  if not self._scheduler:isInitLifecycleSettled(instanceId) then
+    return false
+  end
+  self._initLifecycleActive = false
+  self._initLifecycleInstanceId = nil
   return true
 end
 

@@ -315,6 +315,11 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
     end
     Assert.isTrue(chosen.stopped, "the Elm's Lab starter flow must add exactly one mon to the party")
     Assert.equal(partyCount(game), 1, "starter choice adds one mon, never more")
+    Assert.equal(
+      starterBallCount(game),
+      2,
+      "the live lab machine publishes two balls immediately after starter publication without a reload"
+    )
 
     local species = game.runtime.monService:partyMon(0).species
     Assert.isTrue(VANILLA_TRIO[species] == true, "the added mon is one of the three lab candidates")

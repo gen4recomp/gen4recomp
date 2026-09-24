@@ -42,13 +42,17 @@ end
 ---@return string png
 function FieldDialogueFixture.focusIndicatorBytes()
   local rgba = {}
-  for _ = 1, 32 do
-    for x = 1, 96 do
-      local frame = math.floor((x - 1) / 24)
-      rgba[#rgba + 1] = px(80 + frame * 40, 60 + frame * 20, 220 - frame * 40, 255)
+  for y = 0, 127 do
+    for x = 0, 95 do
+      local layer, localX = math.floor(x / 24), x % 24
+      local localY = y % 32
+      local role = (math.floor(localX / 6) + math.floor(localY / 8)) % 4
+      local visible = role == layer and (localX < 8 or localX >= 16 or localY < 8 or localY >= 24)
+      local alpha = visible and 255 or 0
+      rgba[#rgba + 1] = px(255, 255, 255, alpha)
     end
   end
-  return PngWriter.encode(96, 32, table.concat(rgba))
+  return PngWriter.encode(96, 128, table.concat(rgba))
 end
 
 -- 16x16 mask atlas: the same two 8x16 glyph cells as atlasBytes(), encoding
@@ -98,12 +102,18 @@ function FieldDialogueFixture.fontDef()
       count = FieldMessageText.FOCUS_INDICATOR_COUNT,
       width = 24,
       height = 32,
-      frames = {
-        [0] = { x = 0, y = 0, width = 24, height = 32 },
-        [1] = { x = 24, y = 0, width = 24, height = 32 },
-        [2] = { x = 48, y = 0, width = 24, height = 32 },
-        [3] = { x = 72, y = 0, width = 24, height = 32 },
-      },
+      sourcePaletteSlots = { 11, 12, 13, 14 },
+      frames = (function()
+        local frames = {}
+        for field = 0, FieldMessageText.FOCUS_INDICATOR_COUNT - 1 do
+          local layers = {}
+          for index, slot in ipairs({ 11, 12, 13, 14 }) do
+            layers[slot] = { x = (index - 1) * 24, y = field * 32, width = 24, height = 32 }
+          end
+          frames[field] = { layers = layers }
+        end
+        return frames
+      end)(),
     },
     glyphs = {
       [1] = { x = 0, y = 0, w = 8, h = 16, advance = 6, bearingX = 0, bearingY = 0 },

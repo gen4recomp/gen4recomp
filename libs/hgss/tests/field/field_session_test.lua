@@ -841,6 +841,9 @@ function T.map_lifecycle_events_are_queued_and_drained_before_frame_checks()
       order[#order + 1] = lifecycle .. ":" .. tick
       return true
     end,
+    isLifecycleSettled = function()
+      return true
+    end,
     evaluateFrame = function(_, tick)
       order[#order + 1] = "frame:" .. tick
       return true
@@ -907,6 +910,9 @@ function T.destination_presentability_is_monotonic_through_map_entry()
       return lifecycle == "on_transition" or lifecycle == "on_load" or lifecycle == "on_resume"
     end,
     startLifecycle = function()
+      return true
+    end,
+    isLifecycleSettled = function()
       return true
     end,
   }
@@ -2106,6 +2112,10 @@ function T.held_direction_walks_only_after_turn_completion_reenters_idle_arbitra
   Assert.equal(player.motion, "turning")
   Assert.equal(player.fieldZ, 13)
 
+  session:updateFixed({ heldDirection = "north" })
+  Assert.equal(player.motion, "turning")
+  session:updateFixed({ heldDirection = "north" })
+  Assert.equal(player.motion, "turning")
   session:updateFixed({ heldDirection = "north" })
   Assert.equal(player.motion, "idle")
   Assert.equal(player.fieldZ, 13)
@@ -3562,6 +3572,10 @@ function T.final_walk_tick_direction_survives_release_for_one_admission()
   Assert.equal(player.motion, "turning", "the carried completion direction must outrank newer raw movement input")
   Assert.equal(player.facing, "north")
   session:updateFixed({})
+  Assert.equal(player.motion, "turning")
+  session:updateFixed({})
+  Assert.equal(player.motion, "turning")
+  session:updateFixed({})
   Assert.equal(player.motion, "idle")
   session:updateFixed({})
   Assert.equal(player.motion, "idle", "the one-boundary direction must not replay")
@@ -3585,18 +3599,21 @@ function T.turn_completion_uses_the_same_one_boundary_direction()
   session:updateFixed({ heldDirection = "north", pressedDirection = "north" })
   Assert.equal(player.motion, "turning")
   session:updateFixed({ pressedDirection = "west" })
-  Assert.equal(player.motion, "idle", "the turn must complete on its second update")
+  Assert.equal(player.motion, "turning")
+  session:updateFixed({})
+  Assert.equal(player.motion, "turning")
+  session:updateFixed({})
+  Assert.equal(player.motion, "idle", "the turn must complete on its fourth update")
   Assert.equal(player.facing, "north")
 
   session:updateFixed({ heldDirection = "west" })
-  Assert.equal(player.motion, "turning", "turn completion input must remain a fresh command")
+  Assert.equal(player.motion, "idle", "held completion input must resolve the blocked boundary")
   Assert.equal(player.facing, "west")
-  session:updateFixed({})
-  session:updateFixed({})
-  Assert.equal(player.motion, "idle", "turn completion input must not replay")
+  Assert.equal(player.fieldX, 0)
 
   local absentSession, absentPlayer = movementSession({ facing = "south" })
   absentSession:updateFixed({ heldDirection = "north", pressedDirection = "north" })
+  absentSession:updateFixed({})
   absentSession:updateFixed({})
   absentSession:updateFixed({})
   Assert.equal(absentPlayer.motion, "idle", "a direction absent on the turn boundary must not be remembered")

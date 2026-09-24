@@ -90,9 +90,8 @@
 -- gains textColors (the foreground/shadow/background palette slots), so
 -- text rendering no longer has to hardcode the source's fixed 2/10/15 slots.
 --
--- fieldUi schema 4: the manifest drops the per-frame dialogueFrames.palettes
--- records (the palette colors are baked into the compiled frame-strip PNG;
--- no runtime consumer exists).
+-- fieldUi schema 14: dialogueFrames publishes each selected frame's palette
+-- because focus-indicator masks are tinted by their owning window.
 --
 -- fieldUi schema 3: signpost wayfinding becomes a per-(type,map) rect table
 -- (signposts.types[N].wayfinding[map]) and the manifest drops the
@@ -197,14 +196,16 @@ DerivedAssetContract.messages = {
   provenanceSchema = "g4-field-message-provenance-v1",
 }
 
+-- v5/v4: focus indicators use four white alpha masks per frame, keyed by
+-- source palette slots, instead of a precolored single image.
 -- v4: the font class requires font IDs 0 and 4 in one atomic publication;
 -- v3: the font class gains a required semantic glyph mask atlas (categorical
 -- foreground/shadow/background classes, distinct from the composited RGB
 -- atlas) so palette-driven presentation can recolor glyphs against an
 -- arbitrary runtime palette instead of the font's own baked color bands.
 DerivedAssetContract.font = {
-  cacheFormat = "field-font-cache-v4",
-  schema = "g4-field-font-v3",
+  cacheFormat = "field-font-cache-v5",
+  schema = "g4-field-font-v4",
 }
 
 DerivedAssetContract.scripts = {
@@ -252,7 +253,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v13",
+  schema = "g4-field-ui-v14",
 }
 
 DerivedAssetContract.intro = {

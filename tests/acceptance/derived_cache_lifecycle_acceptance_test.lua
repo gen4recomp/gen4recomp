@@ -866,7 +866,11 @@ function T.tests.actual_candidate_pages_are_demand_loaded_and_close_drops_intere
   })
   local ok, err = xpcall(function()
     local chooser = openLabChooser(game)
-    pump(game, 60, nil, true, host)
+    -- No modal action presses while the choice is under observation: presses
+    -- would confirm the retail-timed controller and complete the choice
+    -- before the close below, voiding the drop-interest premise. Demand and
+    -- preparation still advance every tick.
+    pump(game, 60, nil, false, host)
     Assert.isFalse(
       chooser:isPresentationReady(),
       "the chooser holds its input until the actual portrait pages are ready"
@@ -890,7 +894,9 @@ function T.tests.actual_candidate_pages_are_demand_loaded_and_close_drops_intere
     host.pagesPending = true
     local reopened = assert(game.runtime.starterChoice, "the starter choice task stays live while closed")
     reopened:open(0, customizedCandidates())
-    pump(game, 60, nil, true, host)
+    -- Same press-free pumping as above: the reopened choice must stay
+    -- pending so its page demand (not a completed dismissal) is observed.
+    pump(game, 60, nil, false, host)
     Assert.isFalse(reopened:isPresentationReady(), "the reopened chooser waits for its own customized pages")
     local bothPages = distinctPages(host.pageRequests)
     Assert.isTrue(
@@ -911,7 +917,7 @@ function T.tests.actual_candidate_pages_are_demand_loaded_and_close_drops_intere
         end
       end
       return #host.pageRequests > servedFrom
-    end, true, host)
+    end, false, host)
     Assert.isNil(ready.fault, "page loading must resolve without a runtime fault")
     Assert.isTrue(ready.stopped, "the reopened chooser loads its actual pages without a runtime fault")
     -- No renderAttempts assertion here by construction: loading advances

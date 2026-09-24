@@ -238,6 +238,47 @@ function FieldUiAssetCache.validateManifest(manifest)
         return false, err
       end
     end
+    if type(s.palettes) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.palettes must be a table", {})
+    end
+    for frame = 0, s.count - 1 do
+      local palette = s.palettes[frame]
+      if type(palette) ~= "table" then
+        return false,
+          Errors.new(MANIFEST_INVALID, "dialogue frame " .. frame .. " palette must be a table", { frame = frame })
+      end
+      for slot = 0, 15 do
+        local color = palette[slot]
+        if type(color) ~= "table" then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "dialogue frame " .. frame .. " palette slot " .. slot .. " is missing",
+              { frame = frame, slot = slot }
+            )
+        end
+        for _, component in ipairs({ "r", "g", "b" }) do
+          local value = color[component]
+          if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 255 then
+            return false,
+              Errors.new(
+                MANIFEST_INVALID,
+                "dialogue frame " .. frame .. " palette slot " .. slot .. " must have byte RGB",
+                { frame = frame, slot = slot, component = component }
+              )
+          end
+        end
+      end
+      for slot in pairs(palette) do
+        if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 15 then
+          return false,
+            Errors.new(MANIFEST_INVALID, "dialogue frame " .. frame .. " palette has an invalid slot", {
+              frame = frame,
+              slot = slot,
+            })
+        end
+      end
+    end
     -- The single dialogue strip is the only frame authority: the same
     -- row rectangles index the one atlas for ordinary windows and
     -- application decoration alike.
@@ -406,20 +447,15 @@ function FieldUiAssetCache.validateManifest(manifest)
             )
         end
       end
-      -- Every slot 0..15 was checked above; any other key means the table
-      -- carries more than the exact 16-entry palette the schema requires.
-      local paletteKeyCount = 0
-      for _ in pairs(typeEntry.palette) do
-        paletteKeyCount = paletteKeyCount + 1
+      for slot in pairs(typeEntry.palette) do
+        if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 15 then
+          return false,
+            Errors.new(MANIFEST_INVALID, "signpost type " .. key .. " palette keys must be slots 0..15", {
+              type = key,
+              slot = slot,
+            })
+        end
       end
-      if paletteKeyCount ~= 16 then
-        return false,
-          Errors.new(MANIFEST_INVALID, "signpost type " .. key .. " palette must have exactly 16 entries (0..15)", {
-            type = key,
-            count = paletteKeyCount,
-          })
-      end
-
       -- v5: per-type frameTiles (must be exactly 144x8 in the tiles atlas).
       if type(typeEntry.frameTiles) ~= "table" then
         return false,

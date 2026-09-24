@@ -99,7 +99,12 @@ function T.restored_choice_keeps_candidates_cursor_and_generator_state()
   local service = openService(catalog, freshBucket(catalog))
   local host = modalHost()
   local ctx = {
-    services = { mons = service, starterProvider = providerFor(TRIO), starterChoice = host },
+    services = {
+      mons = service,
+      starterProvider = providerFor(TRIO),
+      starterChoice = host,
+      starterBalls = { placeStarterBalls = function() end },
+    },
     input = { uiEvents = {} },
     instance = { scriptId = "starter-save-fixture" },
   }
@@ -124,7 +129,12 @@ function T.restored_choice_keeps_candidates_cursor_and_generator_state()
   local restoredService = openService(catalog, savedBucket)
   local restoredHost = modalHost()
   local restoredCtx = {
-    services = { mons = restoredService, starterProvider = providerFor(TRIO), starterChoice = restoredHost },
+    services = {
+      mons = restoredService,
+      starterProvider = providerFor(TRIO),
+      starterChoice = restoredHost,
+      starterBalls = { placeStarterBalls = function() end },
+    },
     input = { uiEvents = {} },
     instance = { scriptId = "starter-save-fixture" },
   }
@@ -160,7 +170,12 @@ function T.task_state_carries_no_native_byte_buffers()
   local service = openService(catalog, freshBucket(catalog))
   local host = modalHost()
   local ctx = {
-    services = { mons = service, starterProvider = providerFor(TRIO), starterChoice = host },
+    services = {
+      mons = service,
+      starterProvider = providerFor(TRIO),
+      starterChoice = host,
+      starterBalls = { placeStarterBalls = function() end },
+    },
     input = { uiEvents = {} },
     instance = { scriptId = "starter-save-fixture" },
   }

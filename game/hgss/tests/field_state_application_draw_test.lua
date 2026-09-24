@@ -125,6 +125,13 @@ local function drawableState(options)
         return options.dialogueModal == true
       end,
     },
+    scripts = {
+      dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      },
+    },
     signpost = {
       isModal = function()
         return options.signpostModal == true

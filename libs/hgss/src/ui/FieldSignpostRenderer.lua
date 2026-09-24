@@ -68,7 +68,7 @@ FieldSignpostRenderer.__index = FieldSignpostRenderer
 ---@field fontDef FieldFontDef
 ---@field _atlas love.Image?
 ---@field drawLineWithPalette fun(self: FieldSignpostRenderer.TextRenderer, line: table<string, unknown>, x: number, y: number, palette: table<string, unknown>)
----@field drawFocusIndicator fun(self: FieldSignpostRenderer.TextRenderer, field: integer, x: number, y: number)
+---@field drawFocusIndicator fun(self: FieldSignpostRenderer.TextRenderer, field: integer, x: number, y: number, palette: { [integer]: { r: integer, g: integer, b: integer } })
 
 -- opts.cacheFs: version-scoped private cache holding the generated field-UI
 -- class; opts.manifest: the already-validated generated field-UI manifest
@@ -383,7 +383,7 @@ function FieldSignpostRenderer:draw(controller, viewport, alpha, presentationSca
       self._text:drawLineWithPalette(tokens, contentGeometry.x, lineY, textPalette)
       lineY = lineY + FieldSignpostTheme.LINE_HEIGHT
     end
-    self:_drawFocusIndicator(status, contentGeometry, wipe)
+    self:_drawFocusIndicator(status, contentGeometry, wipe, typeEntry.palette)
   end)
 end
 
@@ -397,13 +397,15 @@ end
 ---@param status FieldSignpostController.Status
 ---@param contentGeometry FieldDialogueTheme.Rect
 ---@param wipe number
-function FieldSignpostRenderer:_drawFocusIndicator(status, contentGeometry, wipe)
+---@param palette { [integer]: { r: integer, g: integer, b: integer } }
+function FieldSignpostRenderer:_drawFocusIndicator(status, contentGeometry, wipe, palette)
   local field = FieldTextRenderer.lastVisibleFocusField(status.visibleLines)
   if field ~= nil then
     self._text:drawFocusIndicator(
       field,
       contentGeometry.x + contentGeometry.width - FieldFontCache.FOCUS_FRAME_WIDTH,
-      contentGeometry.y + wipe
+      contentGeometry.y + wipe,
+      palette
     )
   end
 end

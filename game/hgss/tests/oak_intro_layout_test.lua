@@ -147,19 +147,6 @@ local function disjoint(first, second)
     or second.y + second.height <= first.y
 end
 
-local function assertInterpolated(actual, from, to, progress)
-  local expectedX = from.x + (to.x - from.x) * progress
-  local expectedY = from.y + (to.y - from.y) * progress
-  local expectedScale = from.scale + (to.scale - from.scale) * progress
-  local expectedWidth = from.width + (to.width - from.width) * progress
-  local expectedHeight = from.height + (to.height - from.height) * progress
-  Assert.near(actual.x, expectedX, 1e-4)
-  Assert.near(actual.y, expectedY, 1e-4)
-  Assert.near(actual.scale, expectedScale, 1e-6)
-  Assert.near(actual.width, expectedWidth, 1e-4)
-  Assert.near(actual.height, expectedHeight, 1e-4)
-end
-
 function T.tests.wide_host_metrics_stay_in_physical_pixel_policy_after_logical_conversion()
   local layout, surface = computeForHost(1710, 895, compositionView(1, "gender_select"), {}, manifest())
   local scale = surface.placement.scale
@@ -606,29 +593,6 @@ function T.tests.name_composition_rejects_invalid_progress_state()
         oakBgScrollX = 0,
       },
     },
-    {
-      label = "missing progress in forward transition",
-      view = {
-        phase = "name_composition_transition",
-        visual = "oak",
-        primaryWidget = "oak",
-        genderFocus = 0,
-        genderCompositionProgress = 1,
-        oakBgScrollX = 0,
-      },
-    },
-    {
-      label = "out of range progress in forward transition",
-      view = {
-        phase = "name_composition_transition",
-        visual = "oak",
-        primaryWidget = "oak",
-        genderFocus = 0,
-        genderCompositionProgress = 1,
-        nameCompositionProgress = 1.5,
-        oakBgScrollX = 0,
-      },
-    },
   }
   for _, case in ipairs(cases) do
     Assert.throws(function()
@@ -749,20 +713,10 @@ function T.tests.gender_cards_expose_image_button_geometry()
   end
 end
 
-function T.tests.name_forward_transition_interpolates_directly_between_gender_and_name_endpoints()
+function T.tests.name_confirmation_content_is_inside_the_safe_frame()
   local data = manifest()
   for _, size in ipairs({ { 640, 480 }, { 390, 844 } }) do
-    local w, h = size[1], size[2]
-    local genderEndpoint = compute(w, h, {
-      phase = "name_composition_transition",
-      visual = "oak",
-      primaryWidget = "oak",
-      genderFocus = 0,
-      genderCompositionProgress = 1,
-      nameCompositionProgress = 0,
-      oakBgScrollX = 0,
-    }, {}, data)
-    local nameEndpoint = compute(w, h, {
+    local layout = compute(size[1], size[2], {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -772,87 +726,17 @@ function T.tests.name_forward_transition_interpolates_directly_between_gender_an
       nameCompositionProgress = 1,
       oakBgScrollX = 0,
     }, {}, data)
-    local forwarded = compute(w, h, {
-      phase = "name_composition_transition",
-      visual = "oak",
-      primaryWidget = "oak",
-      genderFocus = 0,
-      genderCompositionProgress = 1,
-      nameCompositionProgress = 0.5,
-      oakBgScrollX = 0,
-    }, {}, data)
-    local genderSubject = assert(genderEndpoint.subject, "gender endpoint must have subject at " .. w .. "x" .. h)
-    local nameSubject = assert(nameEndpoint.subject, "name endpoint must have subject at " .. w .. "x" .. h)
-    local forwardedSubject = assert(forwarded.subject, "forward transition must have subject at " .. w .. "x" .. h)
-    assertInterpolated(forwardedSubject, genderSubject, nameSubject, 0.5)
-    Assert.deepEqual(forwarded.oakRegion, nameEndpoint.oakRegion)
-    Assert.deepEqual(forwarded.selectorRegion, nameEndpoint.selectorRegion)
+    Assert.equal(layout.scene.x, 0)
+    Assert.equal(layout.scene.width, layout.viewport.width)
+    for _, choice in pairs(layout.confirmationButtons) do
+      Assert.isTrue(
+        choice.rect.x >= layout.safeFrame.x
+          and choice.rect.y >= layout.safeFrame.y
+          and choice.rect.x + choice.rect.width <= layout.safeFrame.x + layout.safeFrame.width
+          and choice.rect.y + choice.rect.height <= layout.safeFrame.y + layout.safeFrame.height
+      )
+    end
   end
-end
-
-function T.tests.resize_recomputes_transition_endpoints_at_current_progress()
-  local data = manifest()
-  local progress = 0.4
-  for _, viewport in ipairs({ { 640, 480 }, { 390, 844 } }) do
-    local w, h = viewport[1], viewport[2]
-    local genderEndpoint = compute(w, h, {
-      phase = "name_composition_transition",
-      visual = "oak",
-      primaryWidget = "oak",
-      genderFocus = 0,
-      genderCompositionProgress = 1,
-      nameCompositionProgress = 0,
-      oakBgScrollX = 0,
-    }, {}, data)
-    local nameEndpoint = compute(w, h, {
-      phase = "name_confirm",
-      visual = "oak",
-      primaryWidget = "oak",
-      genderFocus = 0,
-      confirmationChoice = { kind = "name", selected = 0 },
-      genderCompositionProgress = 1,
-      nameCompositionProgress = 1,
-      oakBgScrollX = 0,
-    }, {}, data)
-    local transition = compute(w, h, {
-      phase = "name_composition_transition",
-      visual = "oak",
-      primaryWidget = "oak",
-      genderFocus = 0,
-      genderCompositionProgress = 1,
-      nameCompositionProgress = progress,
-      oakBgScrollX = 0,
-    }, {}, data)
-    assertInterpolated(
-      assert(transition.subject),
-      assert(genderEndpoint.subject),
-      assert(nameEndpoint.subject),
-      progress
-    )
-    Assert.isTrue(inside(assert(transition.subject), assert(transition.viewport)))
-  end
-  local first = compute(640, 480, {
-    phase = "name_composition_transition",
-    visual = "oak",
-    primaryWidget = "oak",
-    genderFocus = 0,
-    genderCompositionProgress = 1,
-    nameCompositionProgress = progress,
-    oakBgScrollX = 0,
-  }, {}, data)
-  local second = compute(390, 844, {
-    phase = "name_composition_transition",
-    visual = "oak",
-    primaryWidget = "oak",
-    genderFocus = 0,
-    genderCompositionProgress = 1,
-    nameCompositionProgress = progress,
-    oakBgScrollX = 0,
-  }, {}, data)
-  Assert.isTrue(
-    first.subject.x ~= second.subject.x or first.subject.y ~= second.subject.y,
-    "resize must recompute host coordinates"
-  )
 end
 
 function T.tests.gender_answer_phases_reserve_dialogue_and_keep_controls_above_it()
