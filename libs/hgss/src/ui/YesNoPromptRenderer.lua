@@ -1,7 +1,8 @@
 -- Renders the reusable two-row choice prompt through the generated button
 -- artwork: both rows draw every active frame at the controller status
--- rectangles, the selected row through its selected visual and the other row
--- through its normal visual. The runtime-validated manifest is injected
+-- rectangles, the selected row through its selected visual while the
+-- controller reports it highlighted and through its normal visual otherwise.
+-- The runtime-validated manifest is injected
 -- explicitly; this renderer never reloads it from the cache. Construction is
 -- failure-safe: a missing section or asset is a loud error, a later
 -- image/quad failure releases every image acquired so far before rethrowing,
@@ -79,13 +80,15 @@ function YesNoPromptRenderer.new(opts)
   return self
 end
 
--- Acquires the four button images and builds their quads. Any failure
--- releases everything acquired so far before the constructor rethrows.
+-- Acquires the button images and builds every visual quad. Images are owned
+-- once per manifest asset id while quads are cached per asset plus rect, so
+-- several button states may share one atlas image. Any failure releases
+-- everything acquired so far before the constructor rethrows.
 ---@param cacheFs CacheFs
 ---@param manifest table<string, unknown>
 function YesNoPromptRenderer:_acquire(cacheFs, manifest)
   local graphics = assert(self._graphics)
-  local function acquire(assetId, rect)
+  local function acquire(assetId)
     local known = self._imageByAsset[assetId]
     if known ~= nil then
       return known
@@ -105,13 +108,21 @@ function YesNoPromptRenderer:_acquire(cacheFs, manifest)
     image:setFilter("nearest", "nearest")
     self._images[#self._images + 1] = image
     self._imageByAsset[assetId] = image
-    local key = assetId .. "\0" .. rect.x .. "," .. rect.y .. "," .. rect.width .. "," .. rect.height
-    self._quads[key] = graphics.newQuad(rect.x, rect.y, rect.width, rect.height, image:getWidth(), image:getHeight())
     return image
+  end
+  local function quadFor(assetId, rect)
+    local key = assetId .. "\0" .. rect.x .. "," .. rect.y .. "," .. rect.width .. "," .. rect.height
+    local quad = self._quads[key]
+    if quad == nil then
+      local image = acquire(assetId)
+      quad = graphics.newQuad(rect.x, rect.y, rect.width, rect.height, image:getWidth(), image:getHeight())
+      self._quads[key] = quad
+    end
+    return quad
   end
   for _, key in ipairs({ "yes.normal", "yes.selected", "no.normal", "no.selected" }) do
     local visual = assert(self._visuals[key], "the compact prompt must carry the " .. key .. " visual")
-    acquire(assert(visual.asset), assert(visual.rect))
+    quadFor(assert(visual.asset), assert(visual.rect))
   end
 end
 
@@ -124,10 +135,10 @@ function YesNoPromptRenderer:_quadFor(assetId, rect)
 end
 
 -- Draws the active prompt: the YES row then the NO row at the status button
--- rectangles, the selected row through its selected visual and the other
--- row through its normal visual. A nil, inactive, or post-release status
--- draws nothing.
----@param status { active: boolean, selected: string?, buttons: { yes: { x: integer, y: integer, width: integer, height: integer }, no: { x: integer, y: integer, width: integer, height: integer } }? }?
+-- rectangles. While the selection is highlighted the selected row draws
+-- through its selected visual; otherwise both rows draw through their
+-- normal visuals. A nil, inactive, or post-release status draws nothing.
+---@param status { active: boolean, selected: string?, selectionHighlighted: boolean?, buttons: { yes: { x: integer, y: integer, width: integer, height: integer }, no: { x: integer, y: integer, width: integer, height: integer } }? }?
 function YesNoPromptRenderer:draw(status)
   if type(status) ~= "table" or status.active ~= true then
     return
@@ -137,12 +148,14 @@ function YesNoPromptRenderer:draw(status)
   end
   local selected = assert(status.selected, "an active prompt has a selection")
   assert(selected == "yes" or selected == "no", "an active prompt has a selection")
+  assert(type(status.selectionHighlighted) == "boolean", "an active prompt carries its selection highlight phase")
   local buttons = assert(status.buttons, "an active prompt carries its button rows")
   assert(type(buttons) == "table", "an active prompt carries its button rows")
   local yesRow = assert(buttons.yes, "an active prompt carries the YES row")
   local noRow = assert(buttons.no, "an active prompt carries the NO row")
-  local yesVisual = assert(self._visuals[selected == "yes" and "yes.selected" or "yes.normal"])
-  local noVisual = assert(self._visuals[selected == "no" and "no.selected" or "no.normal"])
+  local highlighted = status.selectionHighlighted
+  local yesVisual = assert(self._visuals[selected == "yes" and highlighted and "yes.selected" or "yes.normal"])
+  local noVisual = assert(self._visuals[selected == "no" and highlighted and "no.selected" or "no.normal"])
   local graphics = assert(self._graphics)
   graphics.setColor(1, 1, 1, 1)
   graphics.draw(

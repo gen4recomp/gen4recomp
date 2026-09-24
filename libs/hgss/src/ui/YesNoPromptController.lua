@@ -1,10 +1,12 @@
 -- Owns the semantic state of the reusable two-row choice prompt: the compact
 -- button pair the source YesNoPrompt component presents. The prompt reports
 -- one-shot semantic results ("yes"/"no") only; it never touches inventory,
--- messages, or consumer state. Either vertical direction toggles the
--- selection, confirm resolves the selected row, cancel resolves "no", and a
--- pointer tap resolves the tapped row when the press and release land on the
--- same row. Button geometry derives from the generated compact shape
+-- messages, or consumer state. A latched choice stays unpublished through a
+-- short confirmation blink before its result becomes visible. Either vertical
+-- direction toggles the selection, confirm resolves the selected row, cancel
+-- resolves "no", and a pointer tap resolves the tapped row when the press
+-- and release land on the same row. Button geometry derives from the
+-- generated compact shape
 -- dimensions plus the consumer's placement template; this module carries no
 -- source archive, member, tile, palette, or background identities.
 
@@ -15,6 +17,9 @@
 ---@field _selected string
 ---@field _buttons table<string, { x: integer, y: integer, width: integer, height: integer }>|nil
 ---@field _result string?
+---@field _pending string?
+---@field _confirmTimer integer
+---@field _highlighted boolean
 ---@field _capture string?
 ---@field _captureId string?
 local YesNoPromptController = {}
@@ -42,6 +47,9 @@ function YesNoPromptController.new(compactShape)
     _selected = "yes",
     _buttons = nil,
     _result = nil,
+    _pending = nil,
+    _confirmTimer = 0,
+    _highlighted = true,
     _capture = nil,
     _captureId = nil,
   }, YesNoPromptController)
@@ -71,6 +79,9 @@ function YesNoPromptController:open(template)
     no = { x = template.x, y = template.y + self._height, width = self._width, height = self._height },
   }
   self._result = nil
+  self._pending = nil
+  self._confirmTimer = 0
+  self._highlighted = true
   self._capture = nil
   self._captureId = nil
 end
@@ -95,15 +106,49 @@ function YesNoPromptController:_rowAt(x, y)
   return nil
 end
 
+-- Records a resolved choice without publishing it: the confirmation
+-- interval that follows decides when the semantic result becomes visible.
+---@param choice string
+function YesNoPromptController:_latchChoice(choice)
+  self._selected = choice
+  self._pending = choice
+  self._confirmTimer = 0
+  self._highlighted = true
+  self._capture = nil
+  self._captureId = nil
+end
+
+-- Advances the confirmation blink one step. Pairs of highlighted updates
+-- alternate with pairs of unhighlighted updates; the step that moves past
+-- the last count keeps the result unpublished until the terminal update.
+function YesNoPromptController:_advanceConfirmation()
+  local timer = self._confirmTimer
+  if timer % 4 < 2 then
+    self._highlighted = true
+  else
+    self._highlighted = false
+  end
+  self._confirmTimer = timer + 1
+end
+
 ---@param events table[]
 function YesNoPromptController:updateFixed(events)
   assert(type(events) == "table", "the two-row prompt input must be an event list")
   if not self._active then
     return
   end
+  if self._pending ~= nil then
+    if self._confirmTimer >= 8 then
+      self._result = self._pending
+      self._pending = nil
+    else
+      self:_advanceConfirmation()
+    end
+    return
+  end
   for _, event in ipairs(events) do
     assert(type(event) == "table" and type(event.type) == "string", "two-row prompt events need a type")
-    if self._result ~= nil then
+    if self._pending ~= nil then
       break
     end
     if event.type == "navigate" then
@@ -111,9 +156,9 @@ function YesNoPromptController:updateFixed(events)
         self._selected = self._selected == "yes" and "no" or "yes"
       end
     elseif event.type == "confirm" then
-      self._result = self._selected
+      self:_latchChoice(self._selected)
     elseif event.type == "cancel" then
-      self._result = "no"
+      self:_latchChoice("no")
     elseif event.type == "pointer_down" then
       if self._capture == nil then
         assert(type(event.pointerId) == "string", "pointer down needs a pointer id")
@@ -133,7 +178,7 @@ function YesNoPromptController:updateFixed(events)
       self._captureId = nil
       if captured ~= nil and event.pointerId == capturedId and event.dragged ~= true then
         if self:_rowAt(event.x, event.y) == captured then
-          self._result = captured
+          self:_latchChoice(captured)
         end
       end
     elseif event.type == "pointer_cancel" then
@@ -147,7 +192,7 @@ function YesNoPromptController:cancelPointerCapture()
   self._captureId = nil
 end
 
----@return { active: boolean, selected: string?, buttons: { yes: { x: integer, y: integer, width: integer, height: integer }, no: { x: integer, y: integer, width: integer, height: integer } }? }
+---@return { active: boolean, selected: string?, selectionHighlighted: boolean?, buttons: { yes: { x: integer, y: integer, width: integer, height: integer }, no: { x: integer, y: integer, width: integer, height: integer } }? }
 function YesNoPromptController:status()
   if not self._active then
     return { active = false }
@@ -156,6 +201,7 @@ function YesNoPromptController:status()
   return {
     active = true,
     selected = self._selected,
+    selectionHighlighted = self._highlighted,
     buttons = {
       yes = { x = buttons.yes.x, y = buttons.yes.y, width = buttons.yes.width, height = buttons.yes.height },
       no = { x = buttons.no.x, y = buttons.no.y, width = buttons.no.width, height = buttons.no.height },
@@ -178,6 +224,9 @@ function YesNoPromptController:dispose()
   self._selected = "yes"
   self._buttons = nil
   self._result = nil
+  self._pending = nil
+  self._confirmTimer = 0
+  self._highlighted = true
   self._capture = nil
   self._captureId = nil
 end
