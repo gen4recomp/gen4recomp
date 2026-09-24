@@ -11,6 +11,7 @@ local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
 local Hashing = require("romdump.src.digest.Hashing")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local SdatFixture = require("tests.support.SdatFixture")
 local SseqFixture = require("tests.support.SseqFixture")
 local SbnkFixture = require("tests.support.SbnkFixture")
@@ -574,6 +575,34 @@ function T.mon_summary_covers_every_declared_page_for_batch()
   end
   Assert.isTrue(summary["mon-icon-page:3"] == true, "the complete summary still covers page 3")
   Assert.isTrue(summary["mon-icon-page:4"] == true, "the complete summary still covers page 4")
+end
+
+-- The bounded field runtime guarantees both synchronously consumed menu
+-- protocol banks without widening to whole-family message/audio summaries.
+function T.field_runtime_covers_both_menu_protocol_banks_without_family_summaries()
+  local set = {}
+  for _, job in ipairs(ArtifactJobs.fieldRuntimeJobs()) do
+    set[job.kind .. ":" .. job.key] = true
+  end
+  Assert.isTrue(
+    set["message-bank:" .. tostring(MenuProtocol.STANDARD_MESSAGE_BANK)] == true,
+    "field runtime carries the standard list-menu bank"
+  )
+  Assert.isTrue(
+    set["message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK)] == true,
+    "field runtime carries the start menu bank"
+  )
+  Assert.isNil(set["message-summary:global"], "field runtime enrolls no message summary")
+  Assert.isNil(set["audio-summary:global"], "field runtime enrolls no audio summary")
+  for key in pairs(set) do
+    local bank = key:match("^message%-bank:(.+)$")
+    if bank ~= nil then
+      Assert.isTrue(
+        bank == tostring(MenuProtocol.STANDARD_MESSAGE_BANK) or bank == tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
+        "field runtime carries no message bank beyond the two protocol banks: " .. key
+      )
+    end
+  end
 end
 
 return { metadata = { capabilities = {} }, tests = T }

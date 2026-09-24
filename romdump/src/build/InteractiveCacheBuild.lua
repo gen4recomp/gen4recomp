@@ -108,6 +108,7 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field clock fun(): number monotonic seconds source for background admission
 ---@field lastForegroundActivity number monotonic time of the latest required/near request, promotion, or settlement
 ---@field planningPending boolean runnable local planning remains from the last pump
+---@field scriptAudioMemo table<string, unknown>|nil validated current-generation script member audio closures
 ---@field followerMemo string|nil retained follower diagnostic
 ---@field followerChecked boolean
 local InteractiveCacheBuild = {}
@@ -248,6 +249,7 @@ function InteractiveCacheBuild.new(options)
     enrollChunk = 0,
     logicalDemand = {},
     logicalMembers = {},
+    scriptAudioMemo = nil,
     scopes = {},
     roster = {},
     rosterFailure = {},
@@ -1953,11 +1955,49 @@ function InteractiveCacheBuild:_knownMap(mapId)
 end
 
 -- The semantic closure of one map: its field record, its message bank,
--- its script member, the audio catalog and every audio bank its music
--- references resolve to. The closure derives from the published field
--- record and the adopted audio index, so runtime code never duplicates
--- producer catalogs. Missing planning knowledge is pending membership,
--- never an empty closure.
+-- its script member, the script summary, the audio catalog and every audio
+-- bank its music references resolve to, including the banks reachable only
+-- through the script member's published transitive audio closure. The
+-- closure derives from the published field record, the current script
+-- dependency metadata and the adopted audio index, so runtime code never
+-- duplicates producer catalogs. Missing planning knowledge is pending
+-- membership, never an empty closure.
+--- The validated transitive script-audio closure of one script member: the
+--- current published member sequence list for the adopted script plan. The
+--- validated generation index is memoized for the selected generation and
+--- discarded on retirement; a changed adopted plan reloads and revalidates
+--- instead of trusting the retained mapping. Every mismatch is a loud
+--- generation/map-scoped failure, never an empty dependency set.
+---@param mapId integer
+---@param scriptBankId integer
+---@return string[] sorted unique canonical sequence symbols
+function InteractiveCacheBuild:_scriptMemberAudioClosure(mapId, scriptBankId)
+  local adopted = assert(self.adopted, "script member audio needs the adopted inventory")
+  local plan = assert(adopted.scriptPlan, "script member audio needs the adopted script plan")
+  local context = self.generationId .. " logical field " .. tostring(mapId)
+  local ScriptCache = require("libs.assets.src.ScriptCache")
+  local memo = self.scriptAudioMemo
+  if memo == nil or memo.generationKey ~= plan.generationKey or memo.marker ~= plan.marker then
+    local active, activeErr = ScriptCache.loadActive(self.cacheFs)
+    if active == nil then
+      error(context .. ": " .. tostring(activeErr), 0)
+    end
+    if active.generation ~= plan.generationKey or active.marker ~= plan.marker then
+      error(context .. ": published script metadata does not match the adopted script plan", 0)
+    end
+    memo = { generationKey = plan.generationKey, marker = plan.marker, index = active.index }
+    self.scriptAudioMemo = memo
+  end
+  local closure, closureErr = ScriptCache.audioSequencesForMember(
+    assert(memo.index, "script member audio needs its memoized index"),
+    scriptBankId
+  )
+  if closure == nil then
+    error(context .. ": " .. tostring(closureErr), 0)
+  end
+  return closure
+end
+
 ---@param mapId integer
 ---@return { kind: string, key: string }[]|nil members nil while planning knowledge is incomplete
 function InteractiveCacheBuild:_logicalFieldMembers(mapId)
@@ -2027,6 +2067,7 @@ function InteractiveCacheBuild:_logicalFieldMembers(mapId)
     { kind = "map-data", key = tostring(mapId) },
     { kind = "message-bank", key = tostring(messageBankId) },
     { kind = "script-member", key = tostring(scriptBankId) },
+    { kind = "script-summary", key = "global" },
     { kind = "audio-catalog", key = "global" },
   }
   local music = field.music
@@ -2054,6 +2095,13 @@ function InteractiveCacheBuild:_logicalFieldMembers(mapId)
         addSequenceReference(plate.sequence)
       end
     end
+  end
+  -- Script-reachable audio joins the map-derived banks through the same
+  -- adopted sequence resolution, so shared banks collapse and a member with
+  -- an explicit empty closure adds nothing. Unresolvable symbols and missing
+  -- member closures fail loudly instead of reading as no audio.
+  for _, symbol in ipairs(self:_scriptMemberAudioClosure(mapId, scriptBankId)) do
+    addSequenceReference(symbol)
   end
   for bankKey in pairs(banks) do
     members[#members + 1] = { kind = "audio-bank", key = bankKey }
@@ -2104,6 +2152,16 @@ function InteractiveCacheBuild:_enrollLogicalField(mapId, urgency)
   local record = self:_request("map-data", key, urgency)
   if record.failure ~= nil then
     return nil, record.failure
+  end
+  -- The script summary is an explicit prerequisite of the member closure:
+  -- enrollment participates in normal urgency promotion, and a failed
+  -- summary fails the logical map with its cause.
+  local summary = self:_request("script-summary", "global", urgency)
+  if summary.failure ~= nil then
+    return nil, summary.failure
+  end
+  if not summary.ready then
+    return nil, nil
   end
   local members = self.logicalMembers[key]
   if members == nil then
@@ -3317,6 +3375,7 @@ function InteractiveCacheBuild:retire()
   self.rosterFailure = {}
   self.logicalDemand = {}
   self.logicalMembers = {}
+  self.scriptAudioMemo = nil
   self.completeUrgency = nil
   self.completeNext = nil
   self.completeExhausted = false

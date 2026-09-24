@@ -15,8 +15,10 @@ local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
+local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MonCache = require("libs.assets.src.MonCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local ScriptCache = require("libs.assets.src.ScriptCache")
 
 local T = {}
 
@@ -4367,6 +4369,8 @@ local SEMANTIC_MAP_ID = 5311
 local SEMANTIC_DEDUP_MAP_ID = 5312
 local SEMANTIC_MESSAGE_BANK = 219
 local SEMANTIC_SCRIPT_MEMBER = 149
+local SEMANTIC_SCRIPT_GENERATION = string.rep("c", 40)
+local SEMANTIC_SCRIPT_MARKER = "semantic-test-marker"
 
 local function semanticAudioPlan()
   return {
@@ -4384,7 +4388,25 @@ local function semanticAudioPlan()
   }
 end
 
+local function stageSemanticScriptClosure(cacheFs, memberSequences)
+  cacheFs:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SEMANTIC_SCRIPT_GENERATION,
+    marker = SEMANTIC_SCRIPT_MARKER,
+  })
+  cacheFs:write(ScriptCache.markerPath(), SEMANTIC_SCRIPT_MARKER)
+  cacheFs:writeLua(ScriptCache.generationIndexPath(SEMANTIC_SCRIPT_GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SEMANTIC_SCRIPT_GENERATION,
+    marker = SEMANTIC_SCRIPT_MARKER,
+    resources = {},
+    memberAudioSequences = memberSequences or { [tostring(SEMANTIC_SCRIPT_MEMBER)] = {} },
+  })
+  cacheFs:write(ScriptCache.generationMarkerPath(SEMANTIC_SCRIPT_GENERATION), SEMANTIC_SCRIPT_MARKER)
+end
+
 local function stageSemanticFieldRecord(cacheFs, mapId, music, plates)
+  stageSemanticScriptClosure(cacheFs)
   cacheFs:writeLua(FieldMapDataCache.fieldPath(mapId), {
     schema = FieldMapDataCache.FIELD_SCHEMA,
     mapId = mapId,
@@ -4439,7 +4461,7 @@ local function adoptSemanticInventory(session)
   end
   session.adopted = {
     audioPlan = semanticAudioPlan(),
-    scriptPlan = { generationKey = "semantic-test-generation" },
+    scriptPlan = { generationKey = SEMANTIC_SCRIPT_GENERATION, marker = SEMANTIC_SCRIPT_MARKER },
     messageBankIds = session.messageBankIds,
     audioBankIds = session.audioBankIds,
     scriptMemberIds = session.scriptMemberIds,
@@ -4558,7 +4580,8 @@ function T.runtime_milestone_carries_bounded_static_services()
     "items:global",
     "bag:global",
     "starter-choice:global",
-    "message-bank:196",
+    "message-bank:" .. tostring(MenuProtocol.STANDARD_MESSAGE_BANK),
+    "message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
     "audio-bank:750",
     "audio-catalog:global",
     "script-summary:global",
@@ -4584,9 +4607,17 @@ function T.runtime_milestone_carries_bounded_static_services()
     Assert.isTrue(kind ~= "map-data", "runtime enrolls no field record: " .. identityKey)
     Assert.isTrue(kind ~= "map", "runtime enrolls no visual map: " .. identityKey)
     if kind == "message-bank" then
-      Assert.equal(key, "196", "runtime carries only the pinned label bank")
+      Assert.isTrue(
+        key == tostring(MenuProtocol.STANDARD_MESSAGE_BANK) or key == tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
+        "runtime carries only the two protocol menu banks: " .. identityKey
+      )
     end
   end
+end
+
+local function readySemanticScriptChain(pool)
+  pool.states["script-member:" .. tostring(SEMANTIC_SCRIPT_MEMBER)] = "ready"
+  pool.states["script-summary:global"] = "ready"
 end
 
 function T.logical_field_waits_for_map_data_then_enrolls_exact_leaves()
@@ -4595,11 +4626,13 @@ function T.logical_field_waits_for_map_data_then_enrolls_exact_leaves()
   local session, cacheFs = isolatedSession("semantic-logical-generation", pool, backend)
   adoptSemanticInventory(session)
   stageDivergentSemanticRecord(cacheFs, SEMANTIC_MAP_ID)
+  stageSemanticScriptClosure(cacheFs, { [tostring(SEMANTIC_SCRIPT_MEMBER)] = {} })
   local ready, failure = session:requestLogicalField(SEMANTIC_MAP_ID, "required")
   Assert.isFalse(ready, "logical field waits for its field record")
   Assert.isNil(failure, "logical field reports no failure while pending")
   pool.states["map-data:" .. SEMANTIC_MAP_ID] = "ready"
-  for _ = 1, 6 do
+  readySemanticScriptChain(pool)
+  for _ = 1, 12 do
     session:update()
   end
   Assert.isTrue(session.byKey["map-data:" .. SEMANTIC_MAP_ID] ~= nil, "logical field owns its field record")
@@ -4625,11 +4658,13 @@ function T.logical_field_audio_references_collapse_to_unique_banks()
   local session, cacheFs = isolatedSession("semantic-dedup-generation", pool, backend)
   adoptSemanticInventory(session)
   stageConvergentSemanticRecord(cacheFs, SEMANTIC_DEDUP_MAP_ID)
+  stageSemanticScriptClosure(cacheFs, { [tostring(SEMANTIC_SCRIPT_MEMBER)] = {} })
   local ready, failure = session:requestLogicalField(SEMANTIC_DEDUP_MAP_ID, "required")
   Assert.isFalse(ready, "convergent logical field waits for its field record")
   Assert.isNil(failure, "convergent logical field reports no failure while pending")
   pool.states["map-data:" .. SEMANTIC_DEDUP_MAP_ID] = "ready"
-  for _ = 1, 6 do
+  readySemanticScriptChain(pool)
+  for _ = 1, 12 do
     session:update()
   end
   Assert.deepEqual(audioBankInterests(session), { "20" }, "duplicate audio references collapse to one bank")
@@ -4761,6 +4796,363 @@ function T.foreground_promotion_reuses_ticket_identity_without_double_submit()
   for jobKey, count in pairs(counts) do
     Assert.isTrue(count <= 2, "no identity resubmits across promotion: " .. jobKey)
   end
+end
+
+-- Script-derived logical audio closure. One map's field record references
+-- only map-data music, while its script member's published transitive audio
+-- closure reaches an additional bank through the adopted audio index. The
+-- script selector/index files are staged exactly as the published cache
+-- carries them; the session must wait on the script summary, resolve the
+-- member closure through the adopted audio plan, and enroll every resolved
+-- bank at the caller's urgency before it can report logical readiness.
+local SCRIPT_AUDIO_MAP_ID = 5313
+local SCRIPT_AUDIO_MESSAGE_BANK = 220
+local SCRIPT_AUDIO_MEMBER = 150
+local SCRIPT_ONLY_SEQUENCE = "SEQ_SCRIPT_ONLY"
+local SCRIPT_ONLY_SEQUENCE_ID = 200
+local SCRIPT_ONLY_BANK = 40
+local SCRIPT_AUDIO_GENERATION = string.rep("d", 40)
+local SCRIPT_AUDIO_MARKER = "script-audio-test-marker"
+
+local function scriptAudioPlan()
+  return {
+    index = {
+      sequences = {
+        [2] = { id = 2, bankId = 10 },
+        [100] = { id = 100, symbol = "SEQ_SEMANTIC_DAY", bankId = 20 },
+        [101] = { id = 101, symbol = "SEQ_SEMANTIC_NIGHT", bankId = 30 },
+        [SCRIPT_ONLY_SEQUENCE_ID] = {
+          id = SCRIPT_ONLY_SEQUENCE_ID,
+          symbol = SCRIPT_ONLY_SEQUENCE,
+          bankId = SCRIPT_ONLY_BANK,
+        },
+      },
+      sequenceBySymbol = {
+        SEQ_SEMANTIC_DAY = 100,
+        SEQ_SEMANTIC_NIGHT = 101,
+        [SCRIPT_ONLY_SEQUENCE] = SCRIPT_ONLY_SEQUENCE_ID,
+      },
+    },
+  }
+end
+
+local function stageScriptAudioRecord(cacheFs)
+  stageSemanticFieldRecord(cacheFs, SCRIPT_AUDIO_MAP_ID, { day = 2 }, {})
+  local staged = cacheFs:loadLua(FieldMapDataCache.fieldPath(SCRIPT_AUDIO_MAP_ID))
+  staged.messageBankId = SCRIPT_AUDIO_MESSAGE_BANK
+  staged.scriptBankId = SCRIPT_AUDIO_MEMBER
+  cacheFs:writeLua(FieldMapDataCache.fieldPath(SCRIPT_AUDIO_MAP_ID), staged)
+end
+
+local function stageScriptAudioClosure(cacheFs, memberSequences)
+  cacheFs:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_AUDIO_GENERATION,
+    marker = SCRIPT_AUDIO_MARKER,
+  })
+  cacheFs:write(ScriptCache.markerPath(), SCRIPT_AUDIO_MARKER)
+  cacheFs:writeLua(ScriptCache.generationIndexPath(SCRIPT_AUDIO_GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_AUDIO_GENERATION,
+    marker = SCRIPT_AUDIO_MARKER,
+    resources = {},
+    memberAudioSequences = memberSequences,
+  })
+  cacheFs:write(ScriptCache.generationMarkerPath(SCRIPT_AUDIO_GENERATION), SCRIPT_AUDIO_MARKER)
+end
+
+local function adoptScriptAudioInventory(session)
+  session.sourceLoaded = true
+  session.audioBankIds = { 10, 20, 30, SCRIPT_ONLY_BANK }
+  session.scriptMemberIds = { SCRIPT_AUDIO_MEMBER }
+  session.mapDataIds = { SCRIPT_AUDIO_MAP_ID }
+  session.mapCellKeys = { [SCRIPT_AUDIO_MAP_ID] = {} }
+  session.messageBankIds = session.messageBankIds or {}
+  local hasBank = false
+  for _, bankId in ipairs(session.messageBankIds) do
+    if bankId == SCRIPT_AUDIO_MESSAGE_BANK then
+      hasBank = true
+    end
+  end
+  if not hasBank then
+    session.messageBankIds[#session.messageBankIds + 1] = SCRIPT_AUDIO_MESSAGE_BANK
+  end
+  session.adopted = {
+    audioPlan = scriptAudioPlan(),
+    scriptPlan = { generationKey = SCRIPT_AUDIO_GENERATION, marker = SCRIPT_AUDIO_MARKER },
+    messageBankIds = session.messageBankIds,
+    audioBankIds = session.audioBankIds,
+    scriptMemberIds = session.scriptMemberIds,
+    mapDataIds = session.mapDataIds,
+    mapIds = {},
+    mapCellKeys = session.mapCellKeys,
+  }
+  session.byKey["source-plan:global"] = {
+    kind = "source-plan",
+    key = "global",
+    jobKey = "source-plan:global",
+    urgency = "required",
+    priority = 0,
+    submitted = false,
+    ready = true,
+    failure = nil,
+    phase = "ready",
+    finalDeps = {},
+    depsFinal = true,
+    depIndex = 1,
+    pendingDeps = {},
+  }
+  session.interest[#session.interest + 1] = session.byKey["source-plan:global"]
+end
+
+local function settleScriptSummary(session, pool)
+  for _, memberId in ipairs(session.scriptMemberIds or {}) do
+    local key = "script-member:" .. tostring(memberId)
+    if pool.states[key] == nil then
+      pool.states[key] = "ready"
+    end
+  end
+  pool.states["script-summary:global"] = "ready"
+  for _ = 1, 12 do
+    session:update()
+  end
+end
+
+function T.logical_field_enrolls_script_only_audio_before_settling()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("script-audio-generation", pool, backend)
+  adoptScriptAudioInventory(session)
+  stageScriptAudioRecord(cacheFs)
+  stageScriptAudioClosure(cacheFs, { [tostring(SCRIPT_AUDIO_MEMBER)] = { SCRIPT_ONLY_SEQUENCE } })
+  local ready, failure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isFalse(ready, "logical field waits for its field record")
+  Assert.isNil(failure, "logical field reports no failure while pending")
+  pool.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  Assert.isTrue(
+    session.byKey["script-summary:global"] ~= nil,
+    "logical field waits on the script summary before closing its member set"
+  )
+  settleScriptSummary(session, pool)
+  local scriptBank = session.byKey["audio-bank:" .. tostring(SCRIPT_ONLY_BANK)]
+  Assert.isTrue(scriptBank ~= nil, "logical field enrolls the script-only audio bank")
+  Assert.equal(scriptBank.urgency, "required", "the script-only bank inherits the caller urgency")
+  Assert.isTrue(session.byKey["audio-bank:10"] ~= nil, "logical field keeps its map-data audio bank")
+  Assert.isNil(session.byKey["audio-summary:global"], "logical field enrolls no audio summary")
+  Assert.isNil(session.byKey["message-summary:global"], "logical field enrolls no message summary")
+  local pending, pendingFailure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isFalse(pending, "logical field waits while its script-only bank is withheld")
+  Assert.isNil(pendingFailure, "logical field reports no failure while its script-only bank is pending")
+  settleSubmittedExcept(session, pool, nil)
+  local done, doneFailure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isTrue(done, "logical field settles once its script-only bank is ready")
+  Assert.isNil(doneFailure, "logical field reports no failure on success")
+end
+
+function T.script_and_map_audio_union_deduplicates_shared_banks()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("script-audio-union-generation", pool, backend)
+  adoptScriptAudioInventory(session)
+  stageScriptAudioRecord(cacheFs)
+  stageScriptAudioClosure(cacheFs, { [tostring(SCRIPT_AUDIO_MEMBER)] = { SCRIPT_ONLY_SEQUENCE, "SEQ_SEMANTIC_DAY" } })
+  session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  pool.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  settleScriptSummary(session, pool)
+  Assert.deepEqual(
+    audioBankInterests(session),
+    { "10", "20", tostring(SCRIPT_ONLY_BANK) },
+    "shared map/script banks collapse while script-only banks join"
+  )
+  settleSubmittedExcept(session, pool, nil)
+  local done, doneFailure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isTrue(done, "the united closure settles once every bank is ready")
+  Assert.isNil(doneFailure, "the united closure reports no failure on success")
+end
+
+function T.empty_script_closure_adds_no_audio_bank()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("script-audio-empty-generation", pool, backend)
+  adoptScriptAudioInventory(session)
+  stageScriptAudioRecord(cacheFs)
+  stageScriptAudioClosure(cacheFs, { [tostring(SCRIPT_AUDIO_MEMBER)] = {} })
+  session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  pool.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  settleScriptSummary(session, pool)
+  Assert.deepEqual(audioBankInterests(session), { "10" }, "an audio-free script member adds no bank")
+  settleSubmittedExcept(session, pool, nil)
+  local done, doneFailure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isTrue(done, "an audio-free script member still resolves successfully")
+  Assert.isNil(doneFailure, "an audio-free script member reports no failure on success")
+end
+
+function T.missing_script_closure_fails_the_logical_field_loudly()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("script-audio-missing-generation", pool, backend)
+  adoptScriptAudioInventory(session)
+  stageScriptAudioRecord(cacheFs)
+  stageScriptAudioClosure(cacheFs, {})
+  session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  pool.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  settleScriptSummary(session, pool)
+  local ready, failure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isFalse(ready, "a logical field without member closure never reports ready")
+  Assert.isTrue(
+    tostring(failure):find(tostring(SCRIPT_AUDIO_MEMBER), 1, true) ~= nil,
+    "the missing closure names its script member: " .. tostring(failure)
+  )
+end
+
+function T.unknown_script_sequence_fails_the_logical_field_loudly()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("script-audio-unknown-generation", pool, backend)
+  adoptScriptAudioInventory(session)
+  stageScriptAudioRecord(cacheFs)
+  stageScriptAudioClosure(cacheFs, { [tostring(SCRIPT_AUDIO_MEMBER)] = { "SEQ_NO_SUCH_BANK" } })
+  session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  pool.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  settleScriptSummary(session, pool)
+  local ready, failure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isFalse(ready, "a logical field with an unresolvable sequence never reports ready")
+  Assert.isTrue(
+    tostring(failure):find("SEQ_NO_SUCH_BANK", 1, true) ~= nil,
+    "the unresolvable sequence names its symbol: " .. tostring(failure)
+  )
+end
+
+function T.stale_script_generation_fails_instead_of_reading_old_metadata()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("script-audio-stale-generation", pool, backend)
+  adoptScriptAudioInventory(session)
+  stageScriptAudioRecord(cacheFs)
+  stageScriptAudioClosure(cacheFs, { [tostring(SCRIPT_AUDIO_MEMBER)] = { SCRIPT_ONLY_SEQUENCE } })
+  session.adopted.scriptPlan = { generationKey = string.rep("e", 40), marker = SCRIPT_AUDIO_MARKER }
+  session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  pool.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  settleScriptSummary(session, pool)
+  local ready, failure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isFalse(ready, "a logical field never closes over another generation metadata")
+  Assert.isTrue(failure ~= nil, "stale script metadata fails loudly")
+end
+
+function T.failed_script_summary_fails_the_logical_field_with_its_cause()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("script-audio-summary-failure-generation", pool, backend)
+  adoptScriptAudioInventory(session)
+  stageScriptAudioRecord(cacheFs)
+  stageScriptAudioClosure(cacheFs, { [tostring(SCRIPT_AUDIO_MEMBER)] = { SCRIPT_ONLY_SEQUENCE } })
+  session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  pool.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  pool.states["script-member:" .. tostring(SCRIPT_AUDIO_MEMBER)] = "ready"
+  pool.states["script-summary:global"] = { state = "failed", details = { error = "synthetic summary failure" } }
+  for _ = 1, 12 do
+    session:update()
+  end
+  local ready, failure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isFalse(ready, "a logical field never reports ready while its script summary fails")
+  Assert.isTrue(
+    tostring(failure):find("script-summary:global", 1, true) ~= nil,
+    "the summary failure carries its cause: " .. tostring(failure)
+  )
+end
+
+function T.pending_script_summary_keeps_the_logical_field_pending_over_stale_metadata()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("script-audio-stale-pending-generation", pool, backend)
+  adoptScriptAudioInventory(session)
+  stageScriptAudioRecord(cacheFs)
+  -- A previous generation's published selection is still on disk while the
+  -- current summary compiles: the closure is unknowable, not failed.
+  local staleGeneration = string.rep("e", 40)
+  cacheFs:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = staleGeneration,
+    marker = SCRIPT_AUDIO_MARKER,
+  })
+  cacheFs:write(ScriptCache.markerPath(), SCRIPT_AUDIO_MARKER)
+  cacheFs:writeLua(ScriptCache.generationIndexPath(staleGeneration), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = staleGeneration,
+    marker = SCRIPT_AUDIO_MARKER,
+    resources = {},
+    memberAudioSequences = {},
+  })
+  cacheFs:write(ScriptCache.generationMarkerPath(staleGeneration), SCRIPT_AUDIO_MARKER)
+  session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  pool.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  local pending, pendingFailure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isFalse(pending, "a logical field whose summary still compiles never reports ready")
+  Assert.isNil(pendingFailure, "a stale on-disk selection is not a failure while the summary compiles")
+  stageScriptAudioClosure(cacheFs, { [tostring(SCRIPT_AUDIO_MEMBER)] = { SCRIPT_ONLY_SEQUENCE } })
+  settleScriptSummary(session, pool)
+  settleSubmittedExcept(session, pool, nil)
+  local done, doneFailure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isTrue(done, "the demand closes once its summary publishes")
+  Assert.isNil(doneFailure, "the closed demand reports no failure")
+end
+
+function T.retired_session_discards_its_script_dependency_memo()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, cacheFs = isolatedSession("script-audio-retire-generation", pool, backend)
+  adoptScriptAudioInventory(session)
+  stageScriptAudioRecord(cacheFs)
+  stageScriptAudioClosure(cacheFs, { [tostring(SCRIPT_AUDIO_MEMBER)] = { SCRIPT_ONLY_SEQUENCE } })
+  session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  pool.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session:update()
+  end
+  settleScriptSummary(session, pool)
+  settleSubmittedExcept(session, pool, nil)
+  local done, doneFailure = session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  Assert.isTrue(done, "the first session settles its script-derived closure")
+  Assert.isNil(doneFailure, "the first session reports no failure on success")
+  session:retire()
+  local retiredErr = Assert.throws(function()
+    session:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  end)
+  Assert.isTrue(retiredErr ~= nil, "a retired session answers no further logical demand")
+  local pool2 = retryCapablePool()
+  local session2 = isolatedSession("script-audio-reselect-generation", pool2, backend)
+  adoptScriptAudioInventory(session2)
+  session2:requestLogicalField(SCRIPT_AUDIO_MAP_ID, "required")
+  pool2.states["map-data:" .. SCRIPT_AUDIO_MAP_ID] = "ready"
+  for _ = 1, 6 do
+    session2:update()
+  end
+  settleScriptSummary(session2, pool2)
+  Assert.isTrue(
+    session2.byKey["audio-bank:" .. tostring(SCRIPT_ONLY_BANK)] ~= nil,
+    "a reselected session re-enrolls its script-only bank from published metadata"
+  )
 end
 
 return { metadata = { capabilities = {} }, tests = T }
