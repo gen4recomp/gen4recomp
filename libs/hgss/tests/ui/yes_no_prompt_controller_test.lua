@@ -322,4 +322,52 @@ function T.malformed_templates_fail_loudly()
   Assert.isFalse(controller:status().active, "a rejected open leaves the prompt inactive")
 end
 
+function T.simultaneous_keys_resolve_without_moving_the_selection_first()
+  local controller = openAt(200, 48, "no")
+  controller:updateFixed({
+    { type = "navigate", direction = "down" },
+    { type = "confirm" },
+    { type = "cancel" },
+  })
+  Assert.equal(controller:status().selected, "no", "the key press resolves the row held at the start of the tick")
+  Assert.isNil(controller:takeResult(), "the choice tick latches without publishing")
+  drainConfirmation(controller, "no", CONFIRMATION_HIGHLIGHTS)
+  Assert.equal(takeTerminalResult(controller), "no")
+end
+
+function T.simultaneous_press_beats_keys_in_the_same_tick()
+  local controller = openAt(200, 48, "no")
+  controller:updateFixed({
+    { type = "confirm" },
+    { type = "cancel" },
+    { type = "pointer_down", pointerId = "touch", x = 210, y = 60 },
+  })
+  Assert.equal(controller:status().selected, "yes", "the press resolves the touched row immediately")
+  Assert.isNil(controller:takeResult(), "the choice tick latches without publishing")
+  drainConfirmation(controller, "yes", CONFIRMATION_HIGHLIGHTS)
+  Assert.equal(takeTerminalResult(controller), "yes")
+end
+
+function T.key_order_wins_and_outside_presses_stay_inert()
+  local keys = openAt(200, 48, "yes")
+  keys:updateFixed({
+    { type = "confirm" },
+    { type = "cancel" },
+  })
+  Assert.equal(keys:status().selected, "yes", "the first key resolves the row held at the start of the tick")
+  Assert.isNil(keys:takeResult(), "the choice tick latches without publishing")
+  drainConfirmation(keys, "yes", CONFIRMATION_HIGHLIGHTS)
+  Assert.equal(takeTerminalResult(keys), "yes")
+
+  local outside = openAt(200, 48, "no")
+  outside:updateFixed({
+    { type = "confirm" },
+    { type = "pointer_down", pointerId = "touch", x = 10, y = 10 },
+  })
+  Assert.equal(outside:status().selected, "no", "an outside press keeps the key-resolved row")
+  Assert.isNil(outside:takeResult(), "the choice tick latches without publishing")
+  drainConfirmation(outside, "no", CONFIRMATION_HIGHLIGHTS)
+  Assert.equal(takeTerminalResult(outside), "no")
+end
+
 return { tests = T }

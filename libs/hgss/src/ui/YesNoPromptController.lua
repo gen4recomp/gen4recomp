@@ -138,25 +138,40 @@ function YesNoPromptController:updateFixed(events)
     end
     return
   end
+  -- Semantic precedence for an idle prompt tick:
+  -- valid in-row pointer_down > confirm > cancel > any vertical navigation.
+  -- Scan first; mutate once after the scan.
+  local touchedRow = nil
+  local hasConfirm = false
+  local hasCancel = false
+  local hasVertical = false
   for _, event in ipairs(events) do
     assert(type(event) == "table" and type(event.type) == "string", "two-row prompt events need a type")
-    if self._pending ~= nil then
-      break
-    end
-    if event.type == "navigate" then
-      if event.direction == "up" or event.direction == "down" then
-        self._selected = self._selected == "yes" and "no" or "yes"
+    if event.type == "pointer_down" then
+      if touchedRow == nil then
+        local row = self:_rowAt(event.x, event.y)
+        if row ~= nil then
+          touchedRow = row
+        end
       end
     elseif event.type == "confirm" then
-      self:_latchChoice(self._selected)
+      hasConfirm = true
     elseif event.type == "cancel" then
-      self:_latchChoice("no")
-    elseif event.type == "pointer_down" then
-      local row = self:_rowAt(event.x, event.y)
-      if row ~= nil then
-        self:_latchChoice(row)
+      hasCancel = true
+    elseif event.type == "navigate" then
+      if event.direction == "up" or event.direction == "down" then
+        hasVertical = true
       end
     end
+  end
+  if touchedRow ~= nil then
+    self:_latchChoice(touchedRow)
+  elseif hasConfirm then
+    self:_latchChoice(self._selected)
+  elseif hasCancel then
+    self:_latchChoice("no")
+  elseif hasVertical then
+    self._selected = self._selected == "yes" and "no" or "yes"
   end
 end
 
