@@ -872,8 +872,6 @@ function BagController:_confirm()
     -- The modal prompt owns its fixed ticks; input from a batch that
     -- opens it here waits for the next update instead of reusing it.
     return
-  elseif self._state == "toss_ack" then
-    self:_commitToss()
   elseif self._state == "move_select" then
     self:_commitMove()
   elseif self._focusNode == CANCEL_NODE then
@@ -903,8 +901,6 @@ function BagController:_cancel()
     -- The modal prompt owns its fixed ticks; input from a batch that
     -- opens it here waits for the next update instead of reusing it.
     return
-  elseif self._state == "toss_ack" then
-    self:_commitToss()
   elseif self._state == "move_select" then
     self:_cancelMove()
   else
@@ -1084,12 +1080,6 @@ function BagController:_pointerDown(event)
     -- opens it here waits for the next update instead of reusing it.
     return
   end
-  if self._state == "toss_ack" then
-    if pressInsidePane(event) then
-      self:_commitToss()
-    end
-    return
-  end
   if self._pressId ~= nil then
     return
   end
@@ -1137,9 +1127,6 @@ function BagController:_pointerUp(event)
   if self._state == "toss_confirm" then
     -- The modal prompt owns its fixed ticks; input from a batch that
     -- opens it here waits for the next update instead of reusing it.
-    return
-  end
-  if self._state == "toss_ack" then
     return
   end
   if event.pointerId ~= self._pressId then
@@ -1200,6 +1187,49 @@ function BagController:_stepTossPrompt(uiInput)
   self:_resolveTossPrompt()
 end
 
+-- Owns one fixed tick that begins in the post-choice acknowledgement
+-- state: dismissal closes without mutation, A/B or a fresh in-pane press
+-- commits exactly once, and anything else waits. The scan finishes before
+-- any terminal action so batch position never decides the outcome, and
+-- the caller returns before the ordinary loop so the newly entered
+-- browsing state never sees this batch.
+---@param uiInput table[]
+function BagController:_stepTossAck(uiInput)
+  local hasDismiss = false
+  local hasAcknowledgement = false
+  for _, event in ipairs(uiInput) do
+    assert(type(event) == "table" and type(event.type) == "string", "bag events need a type")
+    if event.type == "dismiss" then
+      hasDismiss = true
+    elseif event.type == "confirm" or event.type == "cancel" then
+      hasAcknowledgement = true
+    elseif event.type == "pointer_down" then
+      if pressInsidePane(event) then
+        hasAcknowledgement = true
+      end
+    elseif
+      event.type == "navigate"
+      or event.type == "menu"
+      or event.type == "pointer_move"
+      or event.type == "pointer_up"
+      or event.type == "pointer_cancel"
+      or event.type == "pointer_scroll"
+    then
+      -- Inert while waiting for acknowledgement.
+    else
+      error("unknown bag event type " .. tostring(event.type), 2)
+    end
+  end
+  if hasDismiss then
+    self._result = { kind = "closed" }
+    self._closed = true
+    return
+  end
+  if hasAcknowledgement then
+    self:_commitToss()
+  end
+end
+
 ---@param uiInput table[]
 function BagController:updateFixed(uiInput)
   assert(type(uiInput) == "table", "the bag input must be an event list")
@@ -1224,6 +1254,10 @@ function BagController:updateFixed(uiInput)
   end
   if self._state == "toss_confirm" then
     self:_stepTossPrompt(uiInput)
+    return
+  end
+  if self._state == "toss_ack" then
+    self:_stepTossAck(uiInput)
     return
   end
   for _, event in ipairs(uiInput) do

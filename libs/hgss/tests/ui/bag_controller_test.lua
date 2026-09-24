@@ -1552,4 +1552,103 @@ function T.cancelling_capture_after_a_modal_press_keeps_the_pending_choice()
   Assert.equal(bag:quantity("POTION"), 5, "the cancelled capture changes no quantities")
 end
 
+-- An acknowledgement batch owns its whole tick: confirming and then
+-- cancelling in one update commits once into browsing without replaying
+-- the trailing edge as a browsing close.
+function T.acknowledgement_batch_commits_once_without_replaying_trailing_cancel()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  control:updateFixed({ { type = "confirm" } })
+  settlePromptChoice(control)
+  Assert.equal(control:status().state, "toss_ack", "setup reaches the acknowledgement state")
+  local revision = bag:revision()
+  control:updateFixed({ { type = "confirm" }, { type = "cancel" } })
+  local status = control:status()
+  Assert.equal(status.state, "browsing", "the batch ends in browsing instead of closing")
+  Assert.isTrue(status.open, "the trailing cancel never closes the bag")
+  Assert.isNil(control:takeResult(), "the batch reports no close")
+  Assert.equal(bag:quantity("POTION"), 4, "the batch removes the picked copies")
+  Assert.equal(bag:revision(), revision + 1, "the batch mutates exactly once")
+end
+
+-- Pointer edges from the acknowledgement tick never become browsing
+-- pointer state: the same-batch press commits with the keys, and the
+-- matching release on the next tick stays inert.
+function T.acknowledgement_pointer_cannot_seed_browsing_capture()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  control:updateFixed({ { type = "confirm" } })
+  settlePromptChoice(control)
+  Assert.equal(control:status().state, "toss_ack", "setup reaches the acknowledgement state")
+  local revision = bag:revision()
+  control:updateFixed({
+    { type = "confirm" },
+    { type = "pointer_down", pointerId = "touch:0", x = 76, y = 56 },
+  })
+  local committed = control:status()
+  Assert.equal(committed.state, "browsing", "the batch ends in browsing")
+  Assert.isTrue(committed.open, "the batch never closes the bag")
+  Assert.isNil(control:takeResult(), "the batch reports no close")
+  Assert.equal(bag:quantity("POTION"), 4, "the batch removes the picked copies")
+  Assert.equal(bag:revision(), revision + 1, "the batch mutates exactly once")
+  control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = 76, y = 56 } })
+  local released = control:status()
+  Assert.equal(released.state, "browsing", "the orphaned release opens no menu")
+  Assert.isNil(control:takeResult(), "the release closes nothing")
+  Assert.equal(bag:quantity("POTION"), 4, "the release changes no quantities")
+  Assert.equal(bag:revision(), revision + 1, "the release mutates nothing")
+end
+
+-- While the acknowledgement owns the tick, dismissal stays terminal and
+-- non-mutating in either batch position, and unknown events stay loud.
+function T.acknowledgement_dismissal_stays_terminal_and_unknown_events_raise()
+  local function reachAcknowledgement()
+    local bag = service()
+    Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+    local cursor = BagCursor.new()
+    cursor:setPocket("medicine")
+    local control, layoutManifest = controller(bag, cursor)
+    local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+    tap(control, layout, 76, 56)
+    tap(control, layout, 144, 144)
+    control:updateFixed({ { type = "confirm" } })
+    control:updateFixed({ { type = "confirm" } })
+    settlePromptChoice(control)
+    Assert.equal(control:status().state, "toss_ack", "setup reaches the acknowledgement state")
+    return bag, control
+  end
+  local bag, control = reachAcknowledgement()
+  local revision = bag:revision()
+  control:updateFixed({ { type = "confirm" }, { type = "dismiss" } })
+  Assert.deepEqual(control:takeResult(), { kind = "closed" }, "a trailing dismiss still closes")
+  Assert.isFalse(control:status().open, "the bag is closed")
+  Assert.equal(bag:quantity("POTION"), 5, "the dismissed batch changes no quantities")
+  Assert.equal(bag:revision(), revision, "the dismissed batch mutates nothing")
+  local secondBag, second = reachAcknowledgement()
+  local secondRevision = secondBag:revision()
+  second:updateFixed({ { type = "dismiss" }, { type = "confirm" } })
+  Assert.deepEqual(second:takeResult(), { kind = "closed" }, "a leading dismiss still closes")
+  Assert.isFalse(second:status().open, "the bag is closed")
+  Assert.equal(secondBag:quantity("POTION"), 5, "the leading dismiss changes no quantities")
+  Assert.equal(secondBag:revision(), secondRevision, "the leading dismiss mutates nothing")
+  local _, third = reachAcknowledgement()
+  Assert.throws(function()
+    third:updateFixed({ { type = "warp" } })
+  end)
+end
+
 return { tests = T }
