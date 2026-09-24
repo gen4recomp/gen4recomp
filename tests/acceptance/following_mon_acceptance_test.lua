@@ -100,6 +100,49 @@ local function tryStep(game, direction)
   return not sameTile(playerTile(game:snapshot()), before)
 end
 
+local function assertFollowerTrailsOrdinarySteps(game, followingMon, id, mapId, count)
+  local committed = 0
+  for _ = 1, 4 do
+    for _, direction in ipairs(DIRECTIONS) do
+      if committed == count then
+        return
+      end
+      game:face(direction)
+      local before = game:snapshot()
+      local vacated = playerTile(before)
+      local followerBefore = before.actors[id]
+      Assert.notNil(followerBefore, "the follower remains published before an ordinary step")
+      game:move(direction)
+      local sawFollowerInFlight = false
+      game:advanceUntil("Route 29 player step resolves", function(snapshot)
+        if snapshot.player.motion ~= "idle" and not followingMon:isMovementSettled() then
+          sawFollowerInFlight = true
+        end
+        return snapshot.player.motion == "idle"
+      end, 120)
+      local after = game:snapshot()
+      Assert.equal(after.mapId, mapId, "trail steps remain ordinary Route 29 movement")
+      if not sameTile(playerTile(after), vacated) then
+        Assert.isTrue(sawFollowerInFlight, "the follower becomes unsettled while the player step is still in flight")
+        Assert.isFalse(
+          followerBefore.fieldX == vacated.fieldX and followerBefore.fieldZ == vacated.fieldZ,
+          "each trail step must require follower movement to the newly vacated player anchor"
+        )
+        local followed = game:advanceUntil("follower settles onto the vacated player anchor", function(snapshot)
+          local actor = snapshot.actors[id]
+          return actor ~= nil
+            and actor.fieldX == vacated.fieldX
+            and actor.fieldZ == vacated.fieldZ
+            and followingMon:isMovementSettled()
+        end, 180)
+        Assert.notNil(followed.actors[id], "the follower remains published after trailing")
+        committed = committed + 1
+      end
+    end
+  end
+  Assert.equal(committed, count, "Route 29 must provide the requested committed trail steps")
+end
+
 -- Deterministic probes only: gather up to `count` committed tiles without
 -- any wall-clock wait, erroring loudly when the fixture room cannot supply
 -- them rather than wandering the map.
@@ -359,6 +402,10 @@ function T.tests.partner_crosses_new_bark_route_29_seam_without_stale_map_permis
 
     local handoffs = {}
     local staleFollowerCalls = 0
+    game:moveTo(facts.zoneBoundary.approach)
+    local followingMon = assert(game.runtime.followingMon)
+    Assert.isTrue(followingMon:isSourceActive(), "the gifted follower is source-active before the seam")
+    followingMon:setMovementPaused(true)
     local session = assert(game.runtime.session)
     local originalSessionUpdate = session.updateFixed
     session.updateFixed = function(self)
@@ -369,7 +416,6 @@ function T.tests.partner_crosses_new_bark_route_29_seam_without_stale_map_permis
         handoffs[#handoffs + 1] = { logicalMapId = logicalMapId, actorMapId = actorMapId }
       end
     end
-    local followingMon = assert(game.runtime.followingMon)
     local originalFollowingUpdate = followingMon.update
     followingMon.update = function(self)
       local logicalMapId = assert(game.runtime.session.currentMap).mapId
@@ -395,6 +441,11 @@ function T.tests.partner_crosses_new_bark_route_29_seam_without_stale_map_permis
     Assert.equal(game.runtime.actors.currentMapId, facts.route29.mapId)
     Assert.notNil(partnerId(game), "the active follower must survive the seam")
     Assert.notNil(game:snapshot().actors[partnerId(game)], "the follower must be published on Route 29")
+    game:moveTo(facts.grass)
+    Assert.equal(game:snapshot().mapId, facts.route29.mapId, "the post-seam trail probe starts on Route 29")
+    assertFollowerTrailsOrdinarySteps(game, followingMon, partnerId(game), facts.route29.mapId, 2)
+    assertNoFault(game, "while trailing after the Route 29 seam")
+    Assert.equal(partnerId(game), "field:partner", "the post-seam follower keeps its stable actor identity")
     Assert.equal(game:renderAttempts(), 0, "follower handoff acceptance must stop before GPU rendering")
   end, debug.traceback)
   game:close()

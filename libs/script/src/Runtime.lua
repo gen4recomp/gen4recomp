@@ -980,6 +980,9 @@ local function handleFollowerFacePlayer(_, run)
 end
 
 local function handleFollowerSetPaused(node, run)
+  if not followingMonFor(run):isSourceActive() then
+    return Runtime.OUTCOME_CONTINUE
+  end
   assert(node.paused ~= nil, "follower pause requires its source operand")
   local paused = semanticsFor(run).evaluateValue(node.paused, run)
   followingMonFor(run):setMovementPaused(paused ~= 0 and paused ~= false)

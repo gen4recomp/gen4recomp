@@ -603,6 +603,7 @@ function FollowingMonController:_handleMapChange(mapId)
   self._lastAnchor = nil
   self._lastMovementTransactionRevision = nil
   self._consumedStep = nil
+  self._paused = false
 end
 
 -- Observe one movement-start transaction: an ordinary adjacent walk starts

@@ -131,12 +131,24 @@ function T.face_player_delegates_to_the_controller()
 end
 
 function T.pause_toggle_sets_the_controller_latch()
-  local followingMon = follower()
+  local followingMon = follower({ _sourceActive = true })
   local run = runWith(followingMon)
   Assert.equal(Runtime.executeNode({ op = "follower_set_paused", paused = 1 }, run), Runtime.OUTCOME_CONTINUE)
-  Assert.deepEqual(followingMon._calls[1], { "setMovementPaused", true }, "a nonzero operand pauses")
+  Assert.equal(followingMon._calls[1], "isSourceActive", "the current source object gates pause")
+  Assert.deepEqual(followingMon._calls[2], { "setMovementPaused", true }, "a nonzero operand pauses")
   Assert.equal(Runtime.executeNode({ op = "follower_set_paused", paused = 0 }, run), Runtime.OUTCOME_CONTINUE)
-  Assert.deepEqual(followingMon._calls[2], { "setMovementPaused", false }, "zero resumes")
+  Assert.equal(followingMon._calls[3], "isSourceActive", "resume is also gated by the current object")
+  Assert.deepEqual(followingMon._calls[4], { "setMovementPaused", false }, "zero resumes")
+end
+
+function T.inactive_pause_command_does_not_evaluate_or_mutate_its_operand()
+  local followingMon = follower({ _sourceActive = false })
+  local run = runWith(followingMon)
+  Assert.equal(
+    Runtime.executeNode({ op = "follower_set_paused", paused = { value = "unsupported" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.deepEqual(followingMon._calls, { "isSourceActive" }, "inactive pause is a true no-op")
 end
 
 function T.movement_wait_blocks_on_controller_settlement()
