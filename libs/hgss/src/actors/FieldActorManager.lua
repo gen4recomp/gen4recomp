@@ -118,6 +118,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field _drawRecordByActorId table<string, FieldActorManager.DrawRecord>
 ---@field _renderSample { x: number?, y: number?, z: number? }
 ---@field autonomy FieldActorAutonomy
+---@field beginFixedStep fun(self: FieldActorManager)
 ---@field step fun(self: FieldActorManager, tick: integer, context: FieldActorStepContext?)
 ---@field _resolveSpriteId fun(self: FieldActorManager, event: FieldActorEvent, eventState: FieldEventState?): integer
 ---@field _acquireVisual fun(self: FieldActorManager, spriteId: integer, actorId: string): FieldActorAsset
@@ -1566,6 +1567,15 @@ local function sortedMapIds(maps)
   return ids
 end
 
+function FieldActorManager:beginFixedStep()
+  for _, mapId in ipairs(sortedMapIds(self.maps)) do
+    local entry = assert(self.maps[mapId])
+    for _, actor in ipairs(entry.store:orderedActors()) do
+      actor:beginFixedStep()
+    end
+  end
+end
+
 ---@param tick integer
 ---@param context FieldActorStepContext?
 ---@param self FieldActorManager
@@ -1588,7 +1598,6 @@ function FieldActorManager:step(tick, context)
   for _, mapId in ipairs(sortedMapIds(self.maps)) do
     local entry = assert(self.maps[mapId])
     for _, actor in ipairs(entry.store:orderedActors()) do
-      actor:beginFixedStep()
       local movementLocked = context.autonomousLocked == true
       if not movementLocked and context.actorLocked then
         movementLocked = context.actorLocked(actor.actorId) == true

@@ -239,6 +239,7 @@ local function managerContext(h)
 end
 
 local function stepWorld(h, tick)
+  h.mgr:beginFixedStep()
   h.scheduler:step(tick, nil)
   h.mgr:step(tick, managerContext(h))
 end
@@ -288,6 +289,40 @@ function T.ordinary_actor_settles_to_static_idle_after_locomotion()
     Assert.equal(record.world.y, worldY, "static idle keeps draw worldY at its logical anchor")
     Assert.equal(record.world.z, worldZ, "static idle keeps draw worldZ at its logical anchor")
   end
+end
+
+function T.scripted_walk_retains_a_fractional_render_midpoint_after_scheduler_mutation()
+  local h = harness()
+  local resource = S.script({
+    api = 1,
+    id = "test.scripted_actor_interpolation",
+    steps = {
+      S.applyMovement({
+        actor = ACTOR_ID,
+        movement = { S.m.walk({ direction = "east", speed = "normal", tiles = 1 }) },
+      }),
+      S.waitMovement(),
+      S.stop(),
+    },
+  })
+  startForeground(h, resource, 100)
+  stepWorld(h, 100)
+  local actor = assert(h.mgr:getById(ACTOR_ID))
+  local before = actor:renderPosition(1)
+
+  stepWorld(h, 101)
+  local movedAtFirstTick = actor:renderPosition(1)
+  if movedAtFirstTick.x == before.x then
+    stepWorld(h, 102)
+  end
+
+  local current = actor:renderPosition(1)
+  local previous = actor:renderPosition(0)
+  local midpoint = actor:renderPosition(0.5)
+  Assert.isTrue(current.x ~= before.x, "the scheduler advances the scripted actor during this world tick")
+  Assert.equal(previous.x, before.x, "the manager baseline is captured before scheduler mutation")
+  Assert.equal(midpoint.x, (before.x + current.x) / 2, "scripted actor keeps its real X midpoint")
+  Assert.equal(midpoint.z, (before.z + current.z) / 2, "scripted actor keeps its real Z midpoint")
 end
 
 function T.follower_actor_animates_from_idle_before_and_after_locomotion()
@@ -574,6 +609,7 @@ function T.follower_idle_presentation_advances_during_delay_without_double_advan
   h.mgr:advanceScriptedAction(ACTOR_ID, 1, 32)
   Assert.equal(actor.pose, "idle", "a delay uses the follower's idle pose")
   Assert.equal(actor:getPoseTick(), initialPoseTick + 1, "a delay advances follower idle by one source tick")
+  h.mgr:beginFixedStep()
   h.mgr:step(100, managerContext(h))
   Assert.equal(actor:getPoseTick(), initialPoseTick + 1, "the manager does not double-advance a scripted delay tick")
 
@@ -581,6 +617,7 @@ function T.follower_idle_presentation_advances_during_delay_without_double_advan
   h.mgr:advanceScriptedAction(ACTOR_ID, 3, 32)
   Assert.equal(actor:getPoseTick(), initialPoseTick + 3, "successive delay ticks advance follower idle exactly once")
   Assert.equal(actor:getPresentationOffset().y, -0.5, "delay idle applies the displayed frame's bob")
+  h.mgr:beginFixedStep()
   h.mgr:step(101, managerContext(h))
   Assert.equal(actor:getPoseTick(), initialPoseTick + 3, "the manager does not add a second delay tick")
   Assert.equal(actor:getPresentationOffset().y, -0.5, "the scripted delay bob remains stable for the published tick")
@@ -594,6 +631,7 @@ function T.follower_idle_presentation_advances_during_delay_without_double_advan
   h.mgr:advanceScriptedAction(ACTOR_ID, 1, 32)
   Assert.equal(actor.pose, "idle", "an emote uses the follower's idle pose")
   Assert.equal(actor:getPoseTick(), emotePoseTick + 1, "an emote advances follower idle by one source tick")
+  h.mgr:beginFixedStep()
   h.mgr:step(102, managerContext(h))
   Assert.equal(actor:getPoseTick(), emotePoseTick + 1, "the manager does not double-advance a scripted emote tick")
 end
@@ -1695,6 +1733,7 @@ end
 function T.object_actor_draw_records_follow_render_alpha_between_fixed_positions()
   local h = harness()
   local actor = assert(h.mgr:getById(ACTOR_ID))
+  h.mgr:beginFixedStep()
   h.mgr:step(100, { autonomousLocked = true })
   local previousX, previousY, previousZ =
     assert(actor:getWorldPosition().x), assert(actor:getWorldPosition().y), assert(actor:getWorldPosition().z)
@@ -1739,6 +1778,7 @@ function T.manager_snapshots_each_actor_once_per_fixed_step()
     calls = calls + 1
     return original(self)
   end
+  h.mgr:beginFixedStep()
   h.mgr:step(200, { autonomousLocked = true })
   Assert.equal(calls, 1, "one fixed step snapshots each actor exactly once")
   actor.beginFixedStep = original
@@ -1747,6 +1787,7 @@ end
 function T.completed_walk_keeps_final_draw_segment_until_next_step()
   local h = harness()
   assert(h.mgr:getById(ACTOR_ID))
+  h.mgr:beginFixedStep()
   h.mgr:step(100, { autonomousLocked = true })
   h.mgr:beginScriptedAction(ACTOR_ID, { action = "walk", direction = "east", speed = "normal" })
   for progress = 1, 8 do
@@ -1761,6 +1802,7 @@ function T.completed_walk_keeps_final_draw_segment_until_next_step()
     committedZeroX ~= committedOneX,
     "a committed walk keeps its final fixed-step segment for the following frame"
   )
+  h.mgr:beginFixedStep()
   h.mgr:step(101, { autonomousLocked = true })
   local collapsedZero = assert(h.mgr:drawRecords(0)[1])
   local collapsedZeroX, collapsedZeroY, collapsedZeroZ =
@@ -1775,6 +1817,7 @@ end
 function T.draw_offsets_apply_once_after_interpolation()
   local h = harness()
   local actor = assert(h.mgr:getById(ACTOR_ID))
+  h.mgr:beginFixedStep()
   h.mgr:step(100, { autonomousLocked = true })
   local previousX, previousY, previousZ =
     assert(actor:getWorldPosition().x), assert(actor:getWorldPosition().y), assert(actor:getWorldPosition().z)
@@ -1795,6 +1838,7 @@ end
 function T.draw_alpha_leaves_occupancy_unchanged()
   local h = harness()
   local actor = assert(h.mgr:getById(ACTOR_ID))
+  h.mgr:beginFixedStep()
   h.mgr:step(100, { autonomousLocked = true })
   h.mgr:beginScriptedAction(ACTOR_ID, { action = "walk", direction = "east", speed = "normal" })
   h.mgr:advanceScriptedAction(ACTOR_ID, 4, 8)

@@ -1225,6 +1225,7 @@ function T.ambient_clip_advances_once_per_session_tick_and_through_dialogue()
   }
   ---@cast transition FieldTransition
   local actors = {
+    beginFixedStep = function() end,
     step = function() end,
   }
   ---@cast actors FieldActorManager

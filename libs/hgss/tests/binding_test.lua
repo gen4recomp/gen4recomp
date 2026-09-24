@@ -581,7 +581,7 @@ T["session script phase"] = function()
     clearEdges = function() end,
   }
   ---@cast input FieldInput
-  local actors = { step = function() end }
+  local actors = { beginFixedStep = function() end, step = function() end }
   ---@cast actors FieldActorManager
   local dialogue = {
     isModal = function()

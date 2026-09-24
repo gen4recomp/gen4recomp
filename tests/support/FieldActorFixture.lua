@@ -189,7 +189,10 @@ function FieldActorFixture.visual(spriteId, opts)
     }
     if not opts.omitWalk then
       set.walk = {
-        frames = { { frameIndex = index, ticks = 2 }, { frameIndex = 5, ticks = 3 } },
+        frames = {
+          { frameIndex = index, ticks = 2, displayOffsetY = 0 },
+          { frameIndex = 5, ticks = 3, displayOffsetY = 0 },
+        },
         loop = true,
         durationTicks = 5,
         sourceRange = { startFrame = 0, endFrame = 15, endMode = 0 },

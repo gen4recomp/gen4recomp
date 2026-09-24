@@ -655,6 +655,19 @@ function FieldObjectActor:advanceAction(progressTicks, durationTicks)
       state.poseTick = m.startPoseTick + poseProgress
     end
   end
+  if m.action == "walk" then
+    local pose = FieldActorPose.select(self._visual, self.facing, "walk")
+    local segment = FieldActorPose.sampleAt(pose, state.poseTick)
+    if segment.displayOffsetY ~= nil then
+      state.presentationOffsetY = segment.displayOffsetY
+    else
+      assert(
+        self._idlePresentation.mode == "static",
+        "field actor " .. self.actorId .. " walk frame " .. segment.frameIndex .. " has no display offset"
+      )
+      state.presentationOffsetY = 0
+    end
+  end
   if m.action == "delay" or m.action == "emote" then
     applyIdlePresentation(self, state.animationPaused == 0)
   end

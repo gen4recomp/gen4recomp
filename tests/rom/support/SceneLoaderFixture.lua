@@ -241,7 +241,7 @@ function SceneLoaderFixture.newHarness(versionId, opts)
   }
   ---@cast camera FieldCamera
   ---@cast playerVisual FieldPlayerVisual
-  local actors = { step = function() end }
+  local actors = { beginFixedStep = function() end, step = function() end }
   ---@cast actors FieldActorManager
   session = FieldSession.new({
     versionId = versionId,

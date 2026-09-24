@@ -729,6 +729,7 @@ function FieldSession:updateFixed(inputSnapshot)
     return
   end
 
+  self.actors:beginFixedStep()
   local playerInputOwnedAtTickStart = runScriptPhase(self, inputSnapshot)
   if advancePostSchedulerBoundary(self) == TICK_CONSUMED then
     return

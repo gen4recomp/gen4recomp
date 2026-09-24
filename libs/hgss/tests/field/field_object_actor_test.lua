@@ -201,6 +201,126 @@ function T.animated_locomotion_keeps_bob_phase_through_commit_and_settle()
   Assert.equal(ordinary:getPoseTick(), 0, "static settle keeps the existing baseline reset")
 end
 
+function T.translated_walk_uses_the_selected_authored_pose_offset_without_moving_world_y()
+  local visual = animatedBobVisual()
+  for _, segment in ipairs(visual.directions.north.walk.frames) do
+    segment.displayOffsetY = -0.25
+  end
+  local a = actor({}, { visual = visual, idlePresentation = visual.idlePresentation })
+  a:setFacing("east")
+  local initialWorldY = a:getWorldPosition().y
+  a:beginAction({
+    action = "walk",
+    direction = "east",
+    distance = "near",
+    speed = "normal",
+    start = {
+      fieldX = 6,
+      fieldZ = 5,
+      worldX = 6.5,
+      worldY = initialWorldY,
+      worldZ = 5.5,
+      surfaceId = 0,
+      resident = true,
+    },
+    dest = {
+      fieldX = 7,
+      fieldZ = 5,
+      worldX = 7.5,
+      worldY = initialWorldY,
+      worldZ = 5.5,
+      surfaceId = 0,
+      resident = true,
+    },
+    durationTicks = 8,
+  }, "script")
+
+  for progressTicks = 1, 5 do
+    a:advanceAction(progressTicks, 8)
+    local expected = FieldActorPose.sampleAt(visual.directions.east.walk, a:getPoseTick()).displayOffsetY
+    Assert.equal(a:getPresentationOffset().y, expected, "walk offset matches the displayed facing pose segment")
+    Assert.equal(a:getWorldPosition().y, initialWorldY, "walk bob never changes physical world Y")
+  end
+  Assert.equal(a:getPresentationOffset().y, -0.125, "the authored nonzero walking offset is consumed")
+
+  a:commitAction()
+  a:settlePresentation()
+  a:setFacing("north")
+  a:beginAction({
+    action = "walk",
+    direction = "north",
+    distance = "near",
+    speed = "normal",
+    start = {
+      fieldX = 6,
+      fieldZ = 5,
+      worldX = 6.5,
+      worldY = initialWorldY,
+      worldZ = 5.5,
+      surfaceId = 0,
+      resident = true,
+    },
+    dest = {
+      fieldX = 6,
+      fieldZ = 4,
+      worldX = 6.5,
+      worldY = initialWorldY,
+      worldZ = 4.5,
+      surfaceId = 0,
+      resident = true,
+    },
+    durationTicks = 8,
+  }, "script")
+  a:advanceAction(1, 8)
+  Assert.equal(a:getPresentationOffset().y, -0.25, "walk samples the new facing's authored pose")
+  Assert.equal(a:getWorldPosition().y, initialWorldY, "direction-specific bob remains render-only")
+end
+
+function T.static_walk_accepts_missing_display_offsets_as_zero()
+  local visual = FieldActorFixture.visual(99)
+  for _, direction in pairs(visual.directions) do
+    for _, segment in ipairs(direction.walk.frames) do
+      segment.displayOffsetY = nil
+    end
+  end
+  local a = actor({}, { visual = visual, idlePresentation = visual.idlePresentation })
+  a:beginAction({
+    action = "walk",
+    direction = "east",
+    distance = "near",
+    speed = "normal",
+    start = { fieldX = 6, fieldZ = 5, worldX = 6.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    dest = { fieldX = 7, fieldZ = 5, worldX = 7.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    durationTicks = 8,
+  }, "script")
+
+  a:advanceAction(1, 8)
+  Assert.equal(a:getPresentationOffset().y, 0, "static source walk segments without bob stay at zero offset")
+end
+
+function T.animated_walk_rejects_a_missing_display_offset()
+  local visual = animatedBobVisual()
+  for _, direction in pairs(visual.directions) do
+    for _, segment in ipairs(direction.walk.frames) do
+      segment.displayOffsetY = nil
+    end
+  end
+  local a = actor({}, { visual = visual, idlePresentation = visual.idlePresentation })
+  a:beginAction({
+    action = "walk",
+    direction = "east",
+    distance = "near",
+    speed = "normal",
+    start = { fieldX = 6, fieldZ = 5, worldX = 6.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    dest = { fieldX = 7, fieldZ = 5, worldX = 7.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    durationTicks = 8,
+  }, "script")
+
+  Assert.throws(function()
+    a:advanceAction(1, 8)
+  end, "animated source walk segments require an authored display offset")
+end
+
 function T.animated_pose_clock_freezes_and_resumes_while_paused()
   local visual = animatedBobVisual()
   local animated = actor({}, { visual = visual, idlePresentation = visual.idlePresentation })

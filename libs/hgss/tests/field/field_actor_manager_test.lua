@@ -875,6 +875,60 @@ function T.a_recreated_actor_observes_clean_state_after_slot_release()
   mgr:dispose()
 end
 
+function T.begin_fixed_step_captures_every_owned_map_actor_without_advancing_them()
+  local mgr = manager({
+    object({ eventFlag = 401 }),
+    object({ index = 1, objectEventId = 1, x = 8, z = 8, eventFlag = 402 }),
+  })
+
+  local function advance(actorId)
+    local actor = assert(mgr:getById(actorId))
+    local start = actor:getWorldPosition()
+    actor:beginAction({
+      action = "walk",
+      direction = "east",
+      distance = "near",
+      speed = "normal",
+      start = {
+        fieldX = actor:getFieldPosition().fieldX,
+        fieldZ = actor:getFieldPosition().fieldZ,
+        worldX = start.x,
+        worldY = start.y,
+        worldZ = start.z,
+        surfaceId = 0,
+        resident = true,
+      },
+      dest = {
+        fieldX = actor:getFieldPosition().fieldX + 1,
+        fieldZ = actor:getFieldPosition().fieldZ,
+        worldX = start.x + 1,
+        worldY = start.y,
+        worldZ = start.z,
+        surfaceId = 0,
+        resident = true,
+      },
+      durationTicks = 8,
+    }, "script")
+    actor:advanceAction(2, 8)
+    return actor
+  end
+
+  local first = advance("map:61:object:0")
+  local second = advance("map:61:object:1")
+  local firstPoseTick, secondPoseTick = first:getPoseTick(), second:getPoseTick()
+  mgr:beginFixedStep()
+
+  for _, actor in ipairs({ first, second }) do
+    local previous, current = actor:renderPosition(0), actor:renderPosition(1)
+    Assert.equal(previous.x, current.x, "the aggregate baseline pass captures each map's current actor X")
+    Assert.equal(previous.y, current.y, "the aggregate baseline pass captures each map's current actor Y")
+    Assert.equal(previous.z, current.z, "the aggregate baseline pass captures each map's current actor Z")
+  end
+  Assert.equal(first:getPoseTick(), firstPoseTick, "baseline capture does not advance the first actor's pose")
+  Assert.equal(second:getPoseTick(), secondPoseTick, "baseline capture does not advance the second actor's pose")
+  mgr:dispose()
+end
+
 function T.failed_actor_construction_releases_the_acquired_visual()
   -- The facing is validated inside FieldObjectActor.new, after the visual was
   -- acquired: the failed construction must return the visual to the provider.

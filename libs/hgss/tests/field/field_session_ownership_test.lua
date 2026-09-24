@@ -83,7 +83,9 @@ local function makeSession(opts)
   opts = opts or {}
   local player = (opts.player or basePlayer()) --[[@as FieldPlayer]]
   local camera = (opts.camera or { updateFixed = function() end }) --[[@as FieldCamera]]
-  local actors = (opts.actors or { step = function() end, syncEventStateChanges = opts.syncFn }) --[[@as FieldActorManager]]
+  local actors = (
+    opts.actors or { beginFixedStep = function() end, step = function() end, syncEventStateChanges = opts.syncFn }
+  ) --[[@as FieldActorManager]]
   local scheduler = opts.scheduler
     or {
       step = function() end,
@@ -259,6 +261,7 @@ end
 function T.actor_world_continues_while_foreground_holds_the_field_and_release_tick_stays_suppressed()
   local poseAdvances = 0
   local actors = {
+    beginFixedStep = function() end,
     step = function(_, _)
       poseAdvances = poseAdvances + 1
       -- Synchronously apply any queued presence if present; keep as plain step for this scenario.

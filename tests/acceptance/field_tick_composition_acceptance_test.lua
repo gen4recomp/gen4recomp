@@ -7,6 +7,9 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
+local S = require("gen4.script")
+local Registry = require("libs.script.src.Registry")
+local Composition = require("libs.script.src.Composition")
 
 local T = {
   metadata = {
@@ -100,6 +103,41 @@ local function stepExactlyOnce(game, direction)
   return before, after
 end
 
+local function assertActorMidpoint(actor, before, current, camera, label)
+  local previous = actor:renderPosition(0)
+  local midpoint = actor:renderPosition(0.5)
+  Assert.near(previous.x, before.x, 1e-9, label .. " previous X endpoint")
+  Assert.near(previous.y, before.y, 1e-9, label .. " previous Y endpoint")
+  Assert.near(previous.z, before.z, 1e-9, label .. " previous Z endpoint")
+  Assert.near(midpoint.x, (before.x + current.x) / 2, 1e-9, label .. " X midpoint")
+  Assert.near(midpoint.y, (before.y + current.y) / 2, 1e-9, label .. " Y midpoint")
+  Assert.near(midpoint.z, (before.z + current.z) / 2, 1e-9, label .. " Z midpoint")
+
+  local cameraMidpoint = {
+    x = (camera.previousTarget.x + camera.target.x) / 2,
+    y = (camera.previousTarget.y + camera.target.y) / 2,
+    z = (camera.previousTarget.z + camera.target.z) / 2,
+  }
+  Assert.near(
+    midpoint.x - cameraMidpoint.x,
+    ((before.x - camera.previousTarget.x) + (current.x - camera.target.x)) / 2,
+    1e-9,
+    label .. " camera-relative X midpoint"
+  )
+  Assert.near(
+    midpoint.y - cameraMidpoint.y,
+    ((before.y - camera.previousTarget.y) + (current.y - camera.target.y)) / 2,
+    1e-9,
+    label .. " camera-relative Y midpoint"
+  )
+  Assert.near(
+    midpoint.z - cameraMidpoint.z,
+    ((before.z - camera.previousTarget.z) + (current.z - camera.target.z)) / 2,
+    1e-9,
+    label .. " camera-relative Z midpoint"
+  )
+end
+
 function T.tests.foreground_field_script_preserves_phase_ownership_and_tick_cadence()
   withGame(labHarness(), LAB_1F, function(game)
     game:waitForFieldEntry()
@@ -119,6 +157,7 @@ function T.tests.foreground_field_script_preserves_phase_ownership_and_tick_cade
     Assert.equal(startPlayer.fieldZ, 10, "the scene setup must select the north-walk start row")
     local sawScriptedPlayerMovement = false
     local sawActorMovement = false
+    local sawInterpolatedActorMovement = false
     local completed = false
 
     for _ = 1, 600 do
@@ -151,8 +190,110 @@ function T.tests.foreground_field_script_preserves_phase_ownership_and_tick_cade
       end
     end
 
+    local scripts = assert(game.runtime.scripts, "the production field script runtime must remain available")
+    local registry = Registry.new()
+    local actorWalk = S.script({
+      api = 1,
+      id = "acceptance.scripted_actor_walk",
+      steps = {
+        S.applyMovement({
+          actor = "player",
+          movement = { S.m.walk({ direction = "north", speed = "normal", tiles = 1 }) },
+        }),
+        S.applyMovement({
+          actor = ELM_ACTOR_ID,
+          movement = { S.m.walk({ direction = "east", speed = "normal", tiles = 1 }) },
+        }),
+        S.waitMovement(),
+        S.stop(),
+      },
+    })
+    registry:installBase(actorWalk.id, actorWalk, "generated")
+    local composedWalk = assert(Composition.new(registry):effective(actorWalk.id))
+    assert(
+      scripts.scheduler:createForeground(composedWalk, nil, assert(game.runtime.session).tick),
+      "the production scheduler must accept concurrent scripted player and actor walks"
+    )
+    local sawMovingCameraScriptedActor = false
+    for _ = 1, 40 do
+      local actorBefore = assert(game.runtime.actors:getById(ELM_ACTOR_ID))
+      local beforeWorldPosition = actorBefore:getWorldPosition()
+      local beforeWorld = {
+        x = beforeWorldPosition.x,
+        y = beforeWorldPosition.y,
+        z = beforeWorldPosition.z,
+      }
+      local beforeFieldPosition = actorBefore:getFieldPosition()
+      local beforeFieldX, beforeFieldZ = beforeFieldPosition.fieldX, beforeFieldPosition.fieldZ
+      local before = actorBefore:renderPosition(1)
+      local beforeSnapshot, after = stepExactlyOnce(game)
+      local actor = assert(game.runtime.actors:getById(ELM_ACTOR_ID))
+      local currentWorld = actor:getWorldPosition()
+      local currentField = actor:getFieldPosition()
+      if
+        beforeFieldX ~= currentField.fieldX
+        or beforeFieldZ ~= currentField.fieldZ
+        or beforeWorld.x ~= currentWorld.x
+        or beforeWorld.y ~= currentWorld.y
+        or beforeWorld.z ~= currentWorld.z
+      then
+        local current = actor:renderPosition(1)
+        local camera = assert(after.camera, "the production field camera must remain available")
+        local playerMoved = beforeSnapshot.player.worldX ~= after.player.worldX
+          or beforeSnapshot.player.worldY ~= after.player.worldY
+          or beforeSnapshot.player.worldZ ~= after.player.worldZ
+        local cameraMoved = camera.previousTarget.x ~= camera.target.x
+          or camera.previousTarget.y ~= camera.target.y
+          or camera.previousTarget.z ~= camera.target.z
+        if playerMoved then
+          Assert.isTrue(cameraMoved, "the scripted player step must move the production camera target")
+          assertActorMidpoint(actor, before, current, camera, "same-tick scripted actor and moving camera")
+          sawMovingCameraScriptedActor = true
+        end
+        assertActorMidpoint(actor, before, current, camera, "scripted world translation")
+        sawInterpolatedActorMovement = true
+        if sawMovingCameraScriptedActor then
+          break
+        end
+      end
+      if scripts.scheduler:foregroundEnvironmentId() == nil then
+        break
+      end
+    end
+
     Assert.isTrue(sawScriptedPlayerMovement, "the script-owned player walk must advance while the field is locked")
     Assert.isTrue(sawActorMovement, "the production script phase must still advance actor presentation")
+    Assert.isTrue(
+      sawMovingCameraScriptedActor,
+      "a scripted NPC step and the scripted player-following camera must move on the same field tick"
+    )
+    local finalActor = assert(game.runtime.actors:getById(ELM_ACTOR_ID))
+    local finalActorPosition = finalActor:getFieldPosition()
+    local actorWalkEvents = {}
+    for _, name in ipairs({ "script.started", "script.ended", "script.error" }) do
+      for _, record in ipairs(recordsNamed(game, name)) do
+        if record.payload.scriptId == actorWalk.id then
+          actorWalkEvents[#actorWalkEvents + 1] = name
+            .. ":"
+            .. tostring(record.payload.completed)
+            .. ":"
+            .. tostring(record.payload.reason or record.payload.message)
+        end
+      end
+    end
+    Assert.isTrue(
+      sawInterpolatedActorMovement,
+      "a scripted NPC step must retain a fractional render midpoint; position="
+        .. finalActorPosition.fieldX
+        .. ","
+        .. finalActorPosition.fieldZ
+        .. " events="
+        .. table.concat(actorWalkEvents, ",")
+        .. " action="
+        .. tostring(finalActor:currentAction())
+        .. " foreground="
+        .. tostring(scripts.scheduler:foregroundEnvironmentId())
+    )
     Assert.isTrue(completed, "the foreground field script must reach its source completion boundary")
     Assert.isTrue(
       game.runtime.scripts.worldState:isFlagSet(FLAG_ELMS_LAB_PREVENT_PLAYER_ESCAPE),
@@ -162,7 +303,11 @@ function T.tests.foreground_field_script_preserves_phase_ownership_and_tick_cade
     Assert.equal(finalPlayer.fieldX, 4, "the scripted walk must keep the start column")
     Assert.equal(finalPlayer.fieldZ, 7, "the scripted walk must reach the end of the north path")
     Assert.isFalse(game:snapshot().fieldLocked, "script completion must release field ownership")
-    Assert.equal(#recordsNamed(game, "script.started"), baselineStarts + 1)
+    Assert.equal(
+      #recordsNamed(game, "script.started"),
+      baselineStarts + 2,
+      "the field-entry scene and scripted actor walk must each start one foreground script"
+    )
   end)
 end
 
