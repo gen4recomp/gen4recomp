@@ -164,7 +164,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field cancelScriptedMovement fun(self: FieldActorManager, actorId: string)
 ---@field isScriptedMoving fun(self: FieldActorManager, actorId: string): boolean
 ---@field _advanceAutonomousAction fun(self: FieldActorManager, entry: FieldActorManager.Entry, actor: FieldActorManager.Actor, action: table<string, unknown>)
----@field _beginAutonomousAction fun(self: FieldActorManager, entry: FieldActorManager.Entry, actor: FieldActorManager.Actor, direction: FieldDirection, context: table<string, unknown>): boolean
+---@field _beginAutonomousAction fun(self: FieldActorManager, entry: FieldActorManager.Entry, actor: FieldActorManager.Actor, direction: FieldDirection, context: table<string, unknown>, holdWhenBlocked?: boolean): boolean
 ---@field getCollisionAt fun(self: FieldActorManager, mapId: integer, candidate: FieldOccupancyCandidate): FieldActorManager.Actor?
 ---@field isPausable fun(self: FieldActorManager, actorId: string): boolean
 ---@field allPausable fun(self: FieldActorManager): boolean
@@ -696,9 +696,11 @@ function FieldActorManager:_destroy(entry, actor)
   entry.autonomousPresentationCarry[actor.actorId] = nil
   local action = entry.autonomousActions[actor.actorId]
   if action then
-    local reservation = entry.occupancy:reservationByKey(action.reservationKey)
-    assert(reservation and reservation.actorId == actor.actorId, "actor reservation owner disagrees")
-    entry.occupancy:cancelReservation(reservation.candidate, actor.actorId)
+    if action.reservationKey then
+      local reservation = entry.occupancy:reservationByKey(action.reservationKey)
+      assert(reservation and reservation.actorId == actor.actorId, "actor reservation owner disagrees")
+      entry.occupancy:cancelReservation(reservation.candidate, actor.actorId)
+    end
     entry.autonomousActions[actor.actorId] = nil
     actor:cancelAction()
   end
@@ -1035,17 +1037,19 @@ function FieldActorManager:_restoreEntry(entry, eventState, snapshot)
         cellKey = destination.cellKey,
         sourceSurfaceId = destination.sourceSurfaceId,
       }
-      local key = occupancy:key(candidate)
-      if occupancy:winnerByKey(key) ~= nil or occupancy:reservation(candidate) then
-        Errors.raise(
-          FieldErrors.ACTOR_OCCUPANCY_CONFLICT,
-          "saved autonomous reservations conflict",
-          { actorId = actorId }
-        )
+      if action.start.fieldX ~= action.destination.fieldX or action.start.fieldZ ~= action.destination.fieldZ then
+        local key = occupancy:key(candidate)
+        if occupancy:winnerByKey(key) ~= nil or occupancy:reservation(candidate) then
+          Errors.raise(
+            FieldErrors.ACTOR_OCCUPANCY_CONFLICT,
+            "saved autonomous reservations conflict",
+            { actorId = actorId }
+          )
+        end
+        occupancy:reserve(actorId, candidate)
+        plan.reservationKey = key
       end
-      occupancy:reserve(actorId, candidate)
       plan.destination = destination
-      plan.reservationKey = key
     end
   end
 
@@ -1063,7 +1067,10 @@ function FieldActorManager:_restoreEntry(entry, eventState, snapshot)
       if record.action then
         local action = record.action
         actor:beginAction({
-          action = action.kind,
+          action = action.start.fieldX == action.destination.fieldX
+              and action.start.fieldZ == action.destination.fieldZ
+              and "walk_in_place"
+            or action.kind,
           direction = action.direction,
           distance = "near",
           speed = "normal",
@@ -1183,7 +1190,7 @@ local function captureAutonomousAction(entry, actor)
   local motion = assert(actor:scriptedMotionState())
   return {
     owner = assert(motion.owner),
-    kind = assert(motion.action),
+    kind = motion.action == "walk_in_place" and "walk" or assert(motion.action),
     direction = assert(motion.direction),
     start = {
       fieldX = motion.startFieldX,
@@ -1440,50 +1447,61 @@ local function resolveAutonomousDestination(self, entry, actor, direction, conte
   return destination
 end
 
-function FieldActorManager:_beginAutonomousAction(entry, actor, direction, context)
+function FieldActorManager:_beginAutonomousAction(entry, actor, direction, context, holdWhenBlocked)
   local destination = resolveAutonomousDestination(self, entry, actor, direction, context)
-  if destination == nil then
+  if destination == nil and not holdWhenBlocked then
     return false
   end
-  local destinationCandidate = {
-    fieldX = destination.fieldX,
-    fieldZ = destination.fieldZ,
-    surfaceId = destination.surfaceId,
-    cellKey = destination.cellKey,
-    sourceSurfaceId = destination.sourceSurfaceId,
+  local state = actor:numericState()
+  local start = {
+    fieldX = state.fieldX,
+    fieldZ = state.fieldZ,
+    worldX = state.hasWorldPosition == 1 and state.worldX or nil,
+    worldY = state.hasWorldPosition == 1 and state.worldY or nil,
+    worldZ = state.hasWorldPosition == 1 and state.worldZ or nil,
+    surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
+    cellKey = actor.cellKey,
+    sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
+    resident = state.resident == 1,
   }
-  local reservationKey = entry.occupancy:key(destinationCandidate)
-  if entry.occupancy:reservationByKey(reservationKey) ~= nil then
-    return false
+  local destinationCandidate
+  local reservationKey
+  local runtimeAction = "walk"
+  if destination == nil then
+    destination = start
+    runtimeAction = "walk_in_place"
+  else
+    destinationCandidate = {
+      fieldX = destination.fieldX,
+      fieldZ = destination.fieldZ,
+      surfaceId = destination.surfaceId,
+      cellKey = destination.cellKey,
+      sourceSurfaceId = destination.sourceSurfaceId,
+    }
+    reservationKey = entry.occupancy:key(destinationCandidate)
+    if entry.occupancy:reservationByKey(reservationKey) ~= nil then
+      return false
+    end
+    entry.occupancy:reserve(actor.actorId, destinationCandidate)
   end
-  entry.occupancy:reserve(actor.actorId, destinationCandidate)
   entry.autonomousActions[actor.actorId] =
     { reservationKey = reservationKey, progressTicks = 0, destination = destination }
   local ok, err = pcall(function()
-    local state = actor:numericState()
     actor:beginAction({
-      action = "walk",
+      action = runtimeAction,
       direction = direction,
       distance = "near",
       speed = "normal",
-      start = {
-        fieldX = state.fieldX,
-        fieldZ = state.fieldZ,
-        worldX = state.hasWorldPosition == 1 and state.worldX or nil,
-        worldY = state.hasWorldPosition == 1 and state.worldY or nil,
-        worldZ = state.hasWorldPosition == 1 and state.worldZ or nil,
-        surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
-        cellKey = actor.cellKey,
-        sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
-        resident = state.resident == 1,
-      },
+      start = start,
       dest = destination,
       durationTicks = AUTONOMOUS_STEP_TICKS,
     }, "autonomous")
   end)
   if not ok then
     entry.autonomousActions[actor.actorId] = nil
-    entry.occupancy:cancelReservation(destinationCandidate, actor.actorId)
+    if destinationCandidate then
+      entry.occupancy:cancelReservation(destinationCandidate, actor.actorId)
+    end
     error(err)
   end
   return true
@@ -1497,26 +1515,37 @@ function FieldActorManager:_advanceAutonomousAction(entry, actor, action)
     return
   end
   local destination = action.destination
-  local reservation = entry.occupancy:reservationByKey(action.reservationKey)
-  assert(reservation and reservation.actorId == actor.actorId, "autonomous reservation is missing at commit")
-  local oldKey = entry.occupancy:key(candidateForActor(actor))
-  local newKey = entry.occupancy:key(reservation.candidate)
-  local commitState = actor:numericState()
-  if commitState.solid == 1 then
-    assert(entry.occupancy:winnerByKey(newKey) == nil, "autonomous destination became occupied")
-    if commitState.resident == 1 then
-      assert(entry.occupancy:containsByKey(oldKey, actor), "autonomous departure occupancy is missing")
+  if action.reservationKey then
+    local reservation = entry.occupancy:reservationByKey(action.reservationKey)
+    assert(reservation and reservation.actorId == actor.actorId, "autonomous reservation is missing at commit")
+    local oldKey = entry.occupancy:key(candidateForActor(actor))
+    local newKey = entry.occupancy:key(reservation.candidate)
+    local commitState = actor:numericState()
+    if commitState.solid == 1 then
+      assert(entry.occupancy:winnerByKey(newKey) == nil, "autonomous destination became occupied")
+      if commitState.resident == 1 then
+        assert(entry.occupancy:containsByKey(oldKey, actor), "autonomous departure occupancy is missing")
+      end
     end
+    assert(
+      entry.occupancy:key(destination --[[@as FieldOccupancyCandidate]]) == newKey,
+      "autonomous destination changed"
+    )
+    local resolvedDestination =
+      assert(actor:commitAction() --[[@as FieldActorResolvedPosition]], "autonomous action destination is missing")
+    assert(
+      entry.occupancy:key(resolvedDestination --[[@as FieldOccupancyCandidate]]) == newKey,
+      "autonomous action destination changed"
+    )
+    publishResolvedPosition(entry, actor, resolvedDestination)
+    entry.occupancy:cancelReservation(reservation.candidate, actor.actorId)
+  else
+    assert(
+      destination.fieldX == actor:numericState().fieldX and destination.fieldZ == actor:numericState().fieldZ,
+      "reservationless autonomous action must remain in place"
+    )
+    actor:commitAction()
   end
-  assert(entry.occupancy:key(destination --[[@as FieldOccupancyCandidate]]) == newKey, "autonomous destination changed")
-  local resolvedDestination =
-    assert(actor:commitAction() --[[@as FieldActorResolvedPosition]], "autonomous action destination is missing")
-  assert(
-    entry.occupancy:key(resolvedDestination --[[@as FieldOccupancyCandidate]]) == newKey,
-    "autonomous action destination changed"
-  )
-  publishResolvedPosition(entry, actor, resolvedDestination)
-  entry.occupancy:cancelReservation(reservation.candidate, actor.actorId)
   entry.autonomousActions[actor.actorId] = nil
   self.autonomy:applyPendingMovementType(actor.actorId)
   local autonomyState = self.autonomy:state(actor.actorId)
@@ -1591,6 +1620,13 @@ function FieldActorManager:step(tick, context)
             local target = assert(self:getById(id))
             return self:_beginAutonomousAction(entry, target, direction, context)
           end
+          local function patternStep(_, id, direction)
+            local target = assert(self:getById(id))
+            if target.interactionFacingOverride == nil then
+              target:setFacing(direction)
+            end
+            return self:_beginAutonomousAction(entry, target, direction, context, true)
+          end
           local capability = {
             fieldX = stepState.fieldX,
             fieldZ = stepState.fieldZ,
@@ -1601,6 +1637,7 @@ function FieldActorManager:step(tick, context)
             player = playerFacts,
             setFacing = setFacing,
             walk = walk,
+            patternStep = patternStep,
           }
           self.autonomy:step(actor.actorId, capability)
         end
@@ -1665,14 +1702,17 @@ local function stageActionReprojection(entry, stagedOccupancy, plan)
     "autonomous destination disagrees with actor motion"
   )
   local destination = plan.destination
-  plan.reservationKey = stagedOccupancy:reserve(actor.actorId, {
-    fieldX = destination.fieldX,
-    fieldZ = destination.fieldZ,
-    surfaceId = destination.surfaceId,
-    cellKey = destination.cellKey,
-    sourceSurfaceId = destination.sourceSurfaceId,
-  })
+  if motion.startFieldX ~= motion.destFieldX or motion.startFieldZ ~= motion.destFieldZ then
+    plan.reservationKey = stagedOccupancy:reserve(actor.actorId, {
+      fieldX = destination.fieldX,
+      fieldZ = destination.fieldZ,
+      surfaceId = destination.surfaceId,
+      cellKey = destination.cellKey,
+      sourceSurfaceId = destination.sourceSurfaceId,
+    })
+  end
   plan.progressTicks = autonomousAction.progressTicks
+  plan.hasAutonomousAction = true
 end
 
 -- Applies one staged plan after the replacement occupancy is published:
@@ -1703,7 +1743,7 @@ local function applyReprojectionPlan(entry, plan)
   end
   local destination = assert(plan.destination, "reconcile plan destination is missing")
   actor:reprojectActiveAction(start, destination)
-  if plan.reservationKey then
+  if plan.hasAutonomousAction then
     entry.autonomousActions[actor.actorId] = {
       reservationKey = plan.reservationKey,
       progressTicks = plan.progressTicks,
@@ -2633,8 +2673,10 @@ function FieldActorManager:beginScriptedAction(actorId, action)
   entry.autonomousPresentationCarry[actorId] = nil
   local autonomousAction = entry.autonomousActions[actorId]
   if autonomousAction then
-    local reservation = assert(entry.occupancy:reservationByKey(autonomousAction.reservationKey))
-    entry.occupancy:cancelReservation(reservation.candidate, actorId)
+    if autonomousAction.reservationKey then
+      local reservation = assert(entry.occupancy:reservationByKey(autonomousAction.reservationKey))
+      entry.occupancy:cancelReservation(reservation.candidate, actorId)
+    end
     entry.autonomousActions[actorId] = nil
     actor:cancelAction()
     self.autonomy:applyPendingMovementType(actorId)

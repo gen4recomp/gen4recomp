@@ -292,15 +292,7 @@ end
 local function stepPattern(state, capability)
   local sequence = assert(state.profile.sequence)
   local direction = sequence[state.sequenceIndex]
-  capability:setFacing(state.actorId, direction)
-  if capability:walk(state.actorId, direction) then
-    state.sequenceIndex = state.sequenceIndex % #sequence + 1
-    return
-  end
-  state.sequenceIndex = state.sequenceIndex % #sequence + 1
-  direction = sequence[state.sequenceIndex]
-  capability:setFacing(state.actorId, direction)
-  if capability:walk(state.actorId, direction) then
+  if capability:patternStep(state.actorId, direction) then
     state.sequenceIndex = state.sequenceIndex % #sequence + 1
   end
 end

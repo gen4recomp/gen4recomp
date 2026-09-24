@@ -35,7 +35,7 @@ local function actorEvent(movementType, overrides)
 end
 
 local function capability(overrides)
-  local calls = { facing = {}, walks = {} }
+  local calls = { facing = {}, walks = {}, patternSteps = {} }
   local result = {
     fieldX = 4,
     fieldZ = 5,
@@ -45,6 +45,10 @@ local function capability(overrides)
     end,
     walk = function(_, actorId, direction)
       calls.walks[#calls.walks + 1] = { actorId = actorId, direction = direction }
+      return true
+    end,
+    patternStep = function(_, actorId, direction)
+      calls.patternSteps[#calls.patternSteps + 1] = { actorId = actorId, direction = direction }
       return true
     end,
   }
@@ -92,7 +96,7 @@ function T.fixed_rotation_and_spin_profiles_do_not_translate()
   Assert.equal(autonomy:state("spin").timer, 24)
 end
 
-function T.rotation_and_sequence_profiles_preserve_order_and_retry_once()
+function T.rotation_and_sequence_profiles_preserve_order_and_pattern_requests_one_direction()
   local autonomy = FieldActorAutonomy.new({ rng = rng({ 0 }) })
   autonomy:attach("rotate", "rotate_clockwise", actorEvent("rotate_clockwise"))
   local rotate = capability()
@@ -105,20 +109,29 @@ function T.rotation_and_sequence_profiles_preserve_order_and_retry_once()
     "walk_north_east_west_south",
     actorEvent("walk_north_east_west_south", { facingDirection = "north" })
   )
-  local attempts = 0
   local pattern
   pattern = capability({
-    walk = function(_, actorId, direction)
-      attempts = attempts + 1
-      pattern.calls.walks[#pattern.calls.walks + 1] = { actorId = actorId, direction = direction }
-      return attempts > 1 and direction == "east"
+    patternStep = function(_, actorId, direction)
+      pattern.calls.patternSteps[#pattern.calls.patternSteps + 1] = { actorId = actorId, direction = direction }
+      return true
     end,
   })
   autonomy:step("pattern", pattern)
-  Assert.equal(attempts, 2)
-  Assert.equal(pattern.calls.walks[1].direction, "north")
-  Assert.equal(pattern.calls.walks[2].direction, "east")
-  Assert.equal(autonomy:state("pattern").sequenceIndex, 3)
+  Assert.equal(#pattern.calls.patternSteps, 1)
+  Assert.equal(pattern.calls.patternSteps[1].direction, "north")
+  Assert.equal(autonomy:state("pattern").sequenceIndex, 2)
+
+  local rejected
+  rejected = capability({
+    patternStep = function(_, actorId, direction)
+      rejected.calls.patternSteps[#rejected.calls.patternSteps + 1] = { actorId = actorId, direction = direction }
+      return false
+    end,
+  })
+  autonomy:step("pattern", rejected)
+  Assert.equal(#rejected.calls.patternSteps, 1)
+  Assert.equal(rejected.calls.patternSteps[1].direction, "east")
+  Assert.equal(autonomy:state("pattern").sequenceIndex, 2, "sequence advances only after an action starts")
 
   autonomy:attach("shuttle", "walk_back_and_forth", actorEvent("walk_back_and_forth"))
   local shuttle

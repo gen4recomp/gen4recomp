@@ -8,6 +8,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
+local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 
 local T = {
@@ -20,6 +21,7 @@ local T = {
 
 local TOWN = "MAP_NEW_BARK"
 local HOUSE_1F = "MAP_NEW_BARK_PLAYER_HOUSE_1F"
+local RIVAL_HOUSE_2F = "MAP_NEW_BARK_RIVAL_HOUSE_2F"
 local TOWN_HOUSE_DOOR_APPROACH = { fieldX = 695, fieldZ = 397 }
 local VAR_SCENE_PLAYERS_HOUSE_1F = OpeningLifecycle.VAR_SCENE_PLAYERS_HOUSE_1F
 local FLAG_HIDE_NEW_BARK_FRIEND = FieldScriptSymbols.flagsByName.FLAG_HIDE_NEW_BARK_FRIEND
@@ -300,6 +302,87 @@ function T.tests.friend_marill_animates_while_staying_on_its_tile()
       "the stationary marill advances its idle clock instead of holding frame zero"
     )
   end, { recordingScriptHosts = true })
+end
+
+function T.tests.rival_house_marill_holds_blocked_pattern_steps()
+  withGame(RIVAL_HOUSE_2F, function(game)
+    game:waitForFieldEntry()
+    Assert.equal(game.runtime.runtimeMap.mapSymbol, RIVAL_HOUSE_2F)
+
+    local marillEvents = {}
+    for _, event in ipairs(game.runtime.runtimeMap.fieldData.events.objects) do
+      if event.movementType == "walk_east_south_west_north" then
+        marillEvents[#marillEvents + 1] = event
+      end
+    end
+    Assert.equal(#marillEvents, 1, "Rival House 2F must contain one source-pattern Marill event")
+    local event = marillEvents[1]
+    Assert.equal(event.xRange, 2, "the Marill event keeps its source horizontal movement range")
+    Assert.equal(event.yRange, 2, "the Marill event keeps its source vertical movement range")
+    local actorId = "map:" .. game.runtime.runtimeMap.mapId .. ":object:" .. event.objectEventId
+    local actor = assert(game.runtime.actors:getById(actorId), "the pre-starter Marill must be present")
+    Assert.equal(actor.movementType, "walk_east_south_west_north", "raw movement 44 stays source-normalized")
+
+    local previousFacing = actor.facing
+    local blockedHoldObserved = false
+    local function assertInSourceRange(sampledActor)
+      local position = sampledActor:getFieldPosition()
+      Assert.isTrue(
+        math.abs(position.fieldX - event.x) <= math.abs(event.xRange),
+        "the Marill stays inside its source horizontal range"
+      )
+      Assert.isTrue(
+        math.abs(position.fieldZ - event.z) <= math.abs(event.yRange),
+        "the Marill stays inside its source vertical range"
+      )
+      return position
+    end
+
+    for _ = 1, 480 do
+      game:step()
+      actor = assert(game.runtime.actors:getById(actorId), "the pre-starter Marill must remain live")
+      local position = assertInSourceRange(actor)
+      local action = actor:currentAction()
+      if actor.facing ~= previousFacing then
+        Assert.isTrue(
+          action == "walk" or action == "walk_in_place",
+          "a Marill facing change must have a timed autonomous locomotion action"
+        )
+        previousFacing = actor.facing
+      end
+
+      if action == "walk_in_place" then
+        blockedHoldObserved = true
+        local heldFacing = actor.facing
+        local motion = assert(actor:scriptedMotionState())
+        Assert.equal(motion.action, "walk_in_place")
+        Assert.equal(motion.durationTicks, MovementCalibration.SPEED_TICKS.normal)
+        for _ = 1, MovementCalibration.SPEED_TICKS.normal - motion.progressTicks - 1 do
+          game:step()
+          actor = assert(game.runtime.actors:getById(actorId), "the Marill must remain live during a blocked hold")
+          Assert.equal(
+            actor:currentAction(),
+            "walk_in_place",
+            "a blocked direction owns a normal movement interval; progress="
+              .. tostring(actor:scriptedMotionState() and actor:scriptedMotionState().progressTicks)
+          )
+          Assert.equal(actor.facing, heldFacing, "a blocked direction does not trigger rapid facing churn")
+          local heldPosition = assertInSourceRange(actor)
+          Assert.equal(heldPosition.fieldX, position.fieldX, "a blocked action does not translate field position")
+          Assert.equal(heldPosition.fieldZ, position.fieldZ, "a blocked action does not translate field position")
+        end
+        game:step()
+        actor = assert(game.runtime.actors:getById(actorId), "the Marill must remain live after a blocked hold")
+        Assert.isNil(actor:currentAction(), "the blocked action settles after the normal movement interval")
+        local settledPosition = assertInSourceRange(actor)
+        Assert.equal(settledPosition.fieldX, position.fieldX)
+        Assert.equal(settledPosition.fieldZ, position.fieldZ)
+        break
+      end
+    end
+
+    Assert.isTrue(blockedHoldObserved, "the real Rival House Marill must exercise a blocked pattern direction")
+  end)
 end
 
 return T
