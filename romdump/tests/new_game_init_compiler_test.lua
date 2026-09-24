@@ -5,6 +5,7 @@ local Hashing = require("romdump.src.digest.Hashing")
 local Narc = require("libs.nds.src.nitro.Narc")
 local NarcBuilder = require("tests.support.NarcBuilder")
 local NewGameInitCompiler = require("romdump.src.digest.newgame.NewGameInitCompiler")
+local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local ScriptFixture = require("tests.support.ScriptFixture")
 
 local PINNED_STD_INIT_SCRIPT = {
@@ -206,7 +207,7 @@ function T.compiles_the_real_standard_init_script_with_ordered_operations()
   local beforeSymbol = artifact.operations[lotoIndex - 1].symbol
   local afterSymbol = artifact.operations[lotoIndex + 1].symbol
   Assert.isTrue(beforeSymbol ~= nil and afterSymbol ~= nil, "loto must be between two flag ops")
-  Assert.equal(artifact.schema, "g4-new-game-init-v2")
+  Assert.equal(artifact.schema, "g4-new-game-init-v3")
 
   local drifted = copyScript(PINNED_STD_INIT_SCRIPT)
   table.insert(drifted, #drifted, { mnemonic = "GivePokemon", operands = { "SPECIES_TOTODILE" } })
@@ -219,6 +220,27 @@ function T.compiles_the_real_standard_init_script_with_ordered_operations()
       variableSymbols = vars,
     })
   end)
+end
+
+function T.compiled_artifact_carries_the_source_grounded_initial_location()
+  local vars = FieldScriptSymbols.variablesByName
+
+  local artifact = NewGameInitCompiler.compile({
+    versionId = "heartgold",
+    standardScriptMember = 149,
+    instructions = PINNED_STD_INIT_SCRIPT,
+    symbolTable = FieldScriptSymbols.flagsByName,
+    variableSymbols = vars,
+    sourceSha1 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+  })
+  Assert.deepEqual(artifact.initialLocation, {
+    mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+    fieldX = 6,
+    fieldZ = 6,
+    facing = "south",
+  })
+  Assert.equal(MapCatalog.idForSymbol("MAP_NEW_BARK_PLAYER_HOUSE_2F"), 64)
+  Assert.equal(MapCatalog.symbolForId(64), "MAP_NEW_BARK_PLAYER_HOUSE_2F")
 end
 
 function T.non_field_side_effect_is_explicit_and_bounded_to_loto_id_set()
@@ -345,7 +367,7 @@ function T.compile_from_rom_decodes_only_the_catalog_selected_member()
   Assert.deepEqual(selectedList, { initMember })
   Assert.equal(compiled.artifact.sourceDependency.standardScriptMember, initMember)
   Assert.equal(compiled.artifact.sourceDependency.sha1, Hashing.sha1hex(initBytes))
-  Assert.equal(compiled.artifact.schema, "g4-new-game-init-v2")
+  Assert.equal(compiled.artifact.schema, "g4-new-game-init-v3")
   Assert.equal(#compiled.artifact.operations, 2)
   Assert.deepEqual(compiled.artifact.operations[1], {
     op = "set_flag",

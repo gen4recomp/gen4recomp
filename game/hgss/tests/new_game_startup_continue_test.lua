@@ -50,6 +50,7 @@ local function withSpies(fn)
   local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
   local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
   local originalApply = NewGameInitialization.apply
+  local originalInitialLocation = NewGameInitialization.initialLocation
   local originalFieldStateNew = FieldState.new
   local originalValidationNew = GameSaveValidation.new
   local originalStoreNew = GameSaveStore.new
@@ -78,8 +79,24 @@ local function withSpies(fn)
         },
       },
       sourceDependency = { standardScriptMember = 0, sha1 = "0000000000000000000000000000000000000000" },
+      initialLocation = {
+        mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+        fieldX = 6,
+        fieldZ = 6,
+        facing = "south",
+      },
     }
     return originalApply(candidate, artifact)
+  end)
+  -- Same fake-ready-host seam as the routing suite: candidate reservation
+  -- observes the generated start location without touching the real cache.
+  rawset(NewGameInitialization, "initialLocation", function(_)
+    return {
+      mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+      fieldX = 6,
+      fieldZ = 6,
+      facing = "south",
+    }
   end)
   FieldState.new = function(game, options)
     fieldStateCalls[#fieldStateCalls + 1] = game
@@ -135,6 +152,7 @@ local function withSpies(fn)
     fn(applyCalls, fieldStateCalls, context)
   end)
   rawset(NewGameInitialization, "apply", originalApply)
+  rawset(NewGameInitialization, "initialLocation", originalInitialLocation)
   FieldState.new = originalFieldStateNew
   rawset(GameSaveValidation, "new", originalValidationNew)
   rawset(GameSaveStore, "new", originalStoreNew)
@@ -574,7 +592,7 @@ function T.presented_oak_black_draw_precedes_field_construction()
       mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
       fieldX = 6,
       fieldZ = 6,
-      sourceFacing = 1,
+      facing = "south",
     },
   })
   withSpies(function(applyCalls, fieldStateCalls, context)

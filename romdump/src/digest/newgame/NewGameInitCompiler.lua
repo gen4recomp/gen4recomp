@@ -9,6 +9,8 @@
 local Errors = require("libs.errors.src.Errors")
 local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
 local Hashing = require("romdump.src.digest.Hashing")
+local MapCatalog = require("romdump.src.digest.map.MapCatalog")
+local NewGameFacts = require("romdump.src.reference.hgss.new_game")
 
 local NewGameInitCompiler = {}
 
@@ -84,6 +86,20 @@ function NewGameInitCompiler.compile(input)
     Errors.raise(NewGameInitCompiler.ERROR.SOURCE_INVALID, "standard init script must terminate with End", {})
   end
 
+  -- The player-room start is a pinned source fact, not a compiled script
+  -- value: the reference symbol must resolve through the frozen map catalog
+  -- to the pinned source id before the normalized location is published.
+  -- Only the source-independent symbol, local coordinates, and cardinal
+  -- facing reach the generated artifact.
+  local playerRoom = NewGameFacts.playerRoom
+  if MapCatalog.idForSymbol(playerRoom.mapSymbol) ~= playerRoom.mapId then
+    Errors.raise(
+      NewGameInitCompiler.ERROR.SOURCE_INVALID,
+      "player-room source symbol does not resolve to the pinned map id",
+      { symbol = playerRoom.mapSymbol, mapId = playerRoom.mapId }
+    )
+  end
+
   local artifact = {
     schema = NewGameInitCache.SCHEMA,
     versionId = input.versionId,
@@ -91,6 +107,12 @@ function NewGameInitCompiler.compile(input)
     sourceDependency = {
       standardScriptMember = input.standardScriptMember,
       sha1 = input.sourceSha1 or "",
+    },
+    initialLocation = {
+      mapSymbol = playerRoom.mapSymbol,
+      fieldX = playerRoom.fieldX,
+      fieldZ = playerRoom.fieldZ,
+      facing = playerRoom.facing,
     },
   }
   local ok, err = NewGameInitCache.validate(artifact)

@@ -236,7 +236,9 @@ DerivedAssetContract.fieldWeather = {
 
 DerivedAssetContract.newGameInit = {
   cacheFormat = "g4-new-game-init-cache-v1",
-  schema = "g4-new-game-init-v2",
+  -- v3 carries the source-grounded initial player-room location alongside
+  -- the ordered startup operations; stale v2 artifacts rebuild.
+  schema = "g4-new-game-init-v3",
 }
 
 DerivedAssetContract.fieldEffects = {

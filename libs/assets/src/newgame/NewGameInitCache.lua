@@ -1,7 +1,8 @@
 -- Cache schema, path, and strict validator for the generated fresh-game
--- startup event initializer. Schema v2 carries a single ordered `operations`
--- array plus the source dependency; eventOperations / nonFieldEffects are
--- rejected and unknown operations fail strictly.
+-- startup event initializer. Schema v3 carries the source-grounded initial
+-- player-room location alongside the ordered `operations` array plus the
+-- source dependency; eventOperations / nonFieldEffects are rejected and
+-- unknown operations fail strictly.
 
 local Errors = require("libs.errors.src.Errors")
 local Contract = require("libs.assets.src.DerivedAssetContract")
@@ -105,6 +106,31 @@ local function validateOperation(index, operation)
   end
 end
 
+local function validateLocation(location)
+  if type(location) ~= "table" then
+    return false, Errors.new(ARTIFACT_INVALID, "artifact initialLocation must be a table", {})
+  end
+  local allowed = { mapSymbol = true, fieldX = true, fieldZ = true, facing = true }
+  local ok, err = strictTableKeys(location, allowed, "initialLocation")
+  if not ok then
+    return false, err
+  end
+  if type(location.mapSymbol) ~= "string" or not string.match(location.mapSymbol, "^MAP_") then
+    return false, Errors.new(ARTIFACT_INVALID, "initialLocation mapSymbol must be a MAP_*-style symbol", {})
+  end
+  for _, key in ipairs({ "fieldX", "fieldZ" }) do
+    local coordinate = location[key]
+    if type(coordinate) ~= "number" or coordinate % 1 ~= 0 then
+      return false, Errors.new(ARTIFACT_INVALID, "initialLocation " .. key .. " must be an integer", { key = key })
+    end
+  end
+  local facings = { north = true, south = true, west = true, east = true }
+  if facings[location.facing] ~= true then
+    return false, Errors.new(ARTIFACT_INVALID, "initialLocation facing must be a cardinal direction", {})
+  end
+  return true
+end
+
 function NewGameInitCache.validate(artifact)
   if type(artifact) ~= "table" then
     return false, Errors.new(ARTIFACT_INVALID, "artifact is not a table", {})
@@ -120,7 +146,8 @@ function NewGameInitCache.validate(artifact)
   if artifact.eventOperations ~= nil or artifact.nonFieldEffects ~= nil then
     return false, Errors.new(ARTIFACT_INVALID, "artifact contains stale v1 fields", {})
   end
-  local topAllowed = { schema = true, versionId = true, operations = true, sourceDependency = true }
+  local topAllowed =
+    { schema = true, versionId = true, operations = true, sourceDependency = true, initialLocation = true }
   local ok, err = strictTableKeys(artifact, topAllowed, "artifact")
   if not ok then
     return false, err
@@ -167,6 +194,10 @@ function NewGameInitCache.validate(artifact)
   local sha1 = artifact.sourceDependency.sha1
   if type(sha1) ~= "string" or sha1 == "" then
     return false, Errors.new(ARTIFACT_INVALID, "artifact sourceDependency.sha1 must be a non-empty string", {})
+  end
+  local locationOk, locationErr = validateLocation(artifact.initialLocation)
+  if not locationOk then
+    return false, locationErr
   end
   return true
 end

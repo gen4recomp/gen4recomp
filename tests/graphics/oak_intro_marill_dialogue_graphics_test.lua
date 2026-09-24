@@ -33,7 +33,7 @@ local function candidate(versionId)
     versionId = versionId,
     eventState = FieldEventState.new(),
     scriptSymbols = FieldScriptSymbols,
-    mapIdentity = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6, sourceFacing = 1 },
+    mapIdentity = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6, facing = "south" },
   })
 end
 

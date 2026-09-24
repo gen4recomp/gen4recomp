@@ -29,7 +29,7 @@ local function candidate(options)
       mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
       fieldX = 6,
       fieldZ = 6,
-      sourceFacing = 1,
+      facing = "south",
     },
   }
   for key, value in pairs(options or {}) do
@@ -72,7 +72,7 @@ function T.derived_seed_is_stable_nonzero_and_identity_scoped()
       mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
       fieldX = 6,
       fieldZ = 6,
-      sourceFacing = 1,
+      facing = "south",
     },
     catalog = catalog,
     nowSeconds = 1720000000,

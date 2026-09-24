@@ -148,6 +148,7 @@ local function withCompositionSpies(fn)
   local original = {
     fieldNew = modules.fieldState.new,
     apply = modules.initialization.apply,
+    initialLocation = modules.initialization.initialLocation,
     validationNew = modules.validation.new,
     storeNew = modules.store.new,
     candidate = modules.newGame.createCandidate,
@@ -194,6 +195,18 @@ local function withCompositionSpies(fn)
   rawset(modules.initialization, "apply", function(game)
     context.applyCalls[#context.applyCalls + 1] = game
     return game
+  end)
+  -- The generated start-location read is behind the same fake-ready host:
+  -- the stub returns the pinned record so routing observes the pass-through
+  -- without touching the real cache. Accessor behavior itself is covered in
+  -- new_game_initialization_test against a stubbed CacheFs.
+  rawset(modules.initialization, "initialLocation", function(_)
+    return {
+      mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+      fieldX = 6,
+      fieldZ = 6,
+      facing = "south",
+    }
   end)
   modules.validation.new = function(options)
     context.validationCalls[#context.validationCalls + 1] = options
@@ -260,6 +273,7 @@ local function withCompositionSpies(fn)
 
   modules.fieldState.new = original.fieldNew
   rawset(modules.initialization, "apply", original.apply)
+  rawset(modules.initialization, "initialLocation", original.initialLocation)
   modules.validation.new = original.validationNew
   rawset(modules.store, "new", original.storeNew)
   rawset(modules.newGame, "createCandidate", original.candidate)
@@ -304,7 +318,7 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
         mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
         fieldX = 6,
         fieldZ = 6,
-        sourceFacing = 1,
+        facing = "south",
       })
       return candidate
     end
