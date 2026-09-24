@@ -18,6 +18,7 @@ local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -54,7 +55,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v10", versionId .. " renders the current bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v11", versionId .. " renders the current bag manifest")
   return cacheFs, manifest
 end
 
@@ -216,13 +217,19 @@ local function twoPockets(manifest, versionId)
   return first, second
 end
 
-local function owners(cacheFs, manifest, scope)
+local function owners(cacheFs, manifest, scope, versionId)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
   local icons = scope:own(ItemIconAssetProvider.new(cacheFs))
   local heroRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+  local uiManifest = assert(
+    cacheFs:loadLua(FieldUiAssetCache.manifestPath()),
+    (versionId or "bag") .. " the generated field-UI manifest loads"
+  )
+  Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), (versionId or "bag") .. " field-UI manifest is invalid")
   local renderer = scope:own(BagRenderer.new({
     cacheFs = cacheFs,
     manifest = manifest,
+    promptManifest = uiManifest,
     text = text,
     heroRenderer = heroRenderer,
   }))
@@ -516,7 +523,7 @@ function T.hero_pane_renders_the_model_and_tracks_the_pocket(scope, context)
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local pocketA, pocketB = twoPockets(manifest, versionId)
     local textRect = assert(manifest.hero.description.textRect, versionId .. " carries its description text rectangle")
     local heroFrame = heroFrameOf(layout, versionId)
@@ -568,7 +575,7 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
     local interactiveFrame = interactiveFrameOf(layout, versionId)
@@ -607,6 +614,23 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
       presentation(firstIcon, secondIcon, heroStatus, {
         state = "toss_confirm",
         quantity = 2,
+        yesNoPrompt = {
+          active = true,
+          selected = "yes",
+          buttons = {
+            yes = { x = 200, y = 48, width = 48, height = 32 },
+            no = { x = 200, y = 80, width = 48, height = 32 },
+          },
+        },
+      }),
+      layout
+    )
+    local ack = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "toss_ack",
+        quantity = 2,
       }),
       layout
     )
@@ -617,6 +641,10 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
     Assert.isTrue(
       regionDistance(quantity, confirm, interactiveFrame, 2) > 100,
       versionId .. " the quantity picker and the confirmation are distinct surfaces"
+    )
+    Assert.isTrue(
+      regionDistance(confirm, ack, interactiveFrame, 2) > 100,
+      versionId .. " the confirmation and the acknowledgement are distinct surfaces"
     )
     Assert.isTrue(
       regionDistance(menu, confirm, interactiveFrame, 2) > 100,
@@ -637,7 +665,7 @@ function T.registration_slots_render_distinct_markers(scope, context)
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
 
@@ -691,7 +719,7 @@ function T.all_pocket_tabs_render_the_source_focus_visual_at_their_targets(scope
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local tabs = assert(interactive.pocketTabs, versionId .. " carries the pocket tabs")
     local strips = assert(tabs.strips, versionId .. " carries one strip per active pocket")
@@ -789,7 +817,7 @@ function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
@@ -960,7 +988,7 @@ function T.mixed_occupancy_uses_its_own_count_chrome(scope, context)
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
@@ -1059,7 +1087,7 @@ function T.foreground_tab_cursor_covers_the_strip_at_its_own_target(scope, conte
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local interactiveFrame = interactiveFrameOf(layout, versionId)
     local tabFocus = assert(
@@ -1141,7 +1169,7 @@ function T.cancel_label_paints_centered_on_its_source_label_area(scope, context)
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
@@ -1211,7 +1239,7 @@ function T.action_focus_follows_the_selected_action(scope, context)
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local focus = assert(interactive.focus, versionId .. " carries its generated focus")
     local actionFocus = assert(focus.actions, versionId .. " carries its action focus")
@@ -1264,7 +1292,7 @@ function T.item_row_paints_icon_and_name_inside_their_own_geometry(scope, contex
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local interactiveFrame = interactiveFrameOf(layout, versionId)
     local pocket = twoPockets(manifest, versionId)
@@ -1307,7 +1335,7 @@ function T.repeated_draw_at_one_semantic_frame_is_identical(scope, context)
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
     local record = presentation(firstIcon, secondIcon, heroStatus)
@@ -1338,9 +1366,13 @@ function T.release_teardown_is_idempotent(scope, context)
     local text = FieldTextRenderer.new({ cacheFs = cacheFs })
     local icons = ItemIconAssetProvider.new(cacheFs)
     local heroRenderer = BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest })
+    local uiManifest =
+      assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()), versionId .. " the generated field-UI manifest loads")
+    Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), versionId .. " field-UI manifest is invalid")
     local renderer = BagRenderer.new({
       cacheFs = cacheFs,
       manifest = manifest,
+      promptManifest = uiManifest,
       text = text,
       heroRenderer = heroRenderer,
     })
@@ -1561,7 +1593,7 @@ function T.integrated_hero_preserves_generated_backdrop_in_model_free_pixels(sco
   local cacheFs, manifest = soulSilverCache(context)
   local layout = twoPaneLayout(manifest)
   local firstIcon, secondIcon = iconKeys(cacheFs, "soulsilver")
-  local owned = owners(cacheFs, manifest, scope)
+  local owned = owners(cacheFs, manifest, scope, "soulsilver")
   local pocket = twoPockets(manifest, "soulsilver")
   local status = heroStatusAt(manifest, pocket, 0)
   local placement = canonicalHeroPlacement()
@@ -1632,7 +1664,7 @@ function T.active_pocket_strip_survives_item_focus(scope, context)
     local cacheFs, manifest = manifestFor(versionId)
     local layout = twoPaneLayout(manifest)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local tabs = assert(interactive.pocketTabs, versionId .. " carries the pocket tabs")
     local strips = assert(tabs.strips, versionId .. " carries one strip per active pocket")
@@ -1750,7 +1782,7 @@ function T.hero_model_composites_once_at_full_origin_under_the_visible_clip(scop
   end
   for _, versionId in ipairs(versions) do
     local cacheFs, manifest = manifestFor(versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local hero = owned.heroRenderer
     local pocket = twoPockets(manifest, versionId)
     local status = heroStatusAt(manifest, pocket, 40)
@@ -1910,7 +1942,7 @@ function T.compact_description_uses_the_source_frame_with_three_lines_and_focus_
     local cacheFs, manifest = manifestFor(versionId)
     local layout = singlePaneLayout(manifest, versionId)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
-    local owned = owners(cacheFs, manifest, scope)
+    local owned = owners(cacheFs, manifest, scope, versionId)
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
     local interactiveFrame = interactiveFrameOf(layout, versionId)

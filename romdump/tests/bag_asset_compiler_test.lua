@@ -187,6 +187,7 @@ end
 local EOS_UNIT = 0xFFFF
 local ITEM_SUBSTITUTION = { 0xFFFE, 0x0108, 2, 0, 0 }
 local QUANTITY_SUBSTITUTION = { 0xFFFE, 0x0134, 2, 1, 0 }
+local QUANTITY_SUBSTITUTION_ALIAS = { 0xFFFE, 0x0133, 2, 1, 0 }
 
 local codeForGlyph = nil
 local function glyphCode(text)
@@ -230,6 +231,7 @@ local function syntheticMessageBanks()
   bank10[19] = messageUnits({ "DESELECT" })
   bank10[47] = messageUnits({ "Move ", ITEM_SUBSTITUTION, "." })
   bank10[54] = messageUnits({ "Toss ", ITEM_SUBSTITUTION, "?" })
+  bank10[55] = messageUnits({ "Threw away ", QUANTITY_SUBSTITUTION, " ", ITEM_SUBSTITUTION, "." })
   bank10[56] = messageUnits({ "Toss ", QUANTITY_SUBSTITUTION, " ", ITEM_SUBSTITUTION, "?" })
   bank10[76] = messageUnits({ "MOVE" })
   bank10[102] = messageUnits({ "TYPE" })
@@ -544,6 +546,40 @@ function T.unsupported_message_substitution_fails_with_the_protocol_error()
   Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
 end
 
+function T.toss_result_template_reads_the_audited_message_through_the_template_path()
+  local romFs = fixture({
+    messageTamper = function(banks)
+      banks[10][55] = messageUnits({ "Threw away ", { 0xFFFE, 0x0103, 2, 0, 0 }, "." })
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "an out-of-vocabulary substitution in the result template must not compile")
+  local typed = assert(err, "an out-of-vocabulary result substitution must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("unsupported token"),
+    "the failure must name the result template path rather than a later stage, got: " .. tostring(typed.message)
+  )
+end
+
+-- The post-toss message addresses its quantity through the field-51 alias:
+-- placeholder expansion selects the buffer by the marker's first argument,
+-- so field 51 carries the same buffered quantity as field 52.
+function T.result_quantity_alias_lowers_through_the_template_path()
+  local romFs = fixture({
+    messageTamper = function(banks)
+      banks[10][54] = messageUnits({ "Threw away ", QUANTITY_SUBSTITUTION_ALIAS, " ", ITEM_SUBSTITUTION, "." })
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
+  local typed = assert(err, "the aliased result template must lower past the message stage")
+  Assert.notNil(
+    tostring(typed.message):find("hero"),
+    "the 51-aliased quantity must lower so compilation reaches the hero stage, got: " .. tostring(typed.message)
+  )
+end
+
 function T.message_bank_control_break_fails_with_the_protocol_error()
   local romFs = fixture({
     messageTamper = function(banks)
@@ -600,6 +636,7 @@ function T.producer_declares_the_audited_message_selection()
     movePrompt = { bank = 10, index = 46 },
     tossQuantity = { bank = 10, index = 53 },
     tossConfirm = { bank = 10, index = 55 },
+    tossResult = { bank = 10, index = 54 },
   })
 end
 
@@ -727,7 +764,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v10",
+    schema = "g4-bag-assets-v11",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -960,6 +997,15 @@ local function syntheticBundle(marker)
             { kind = "text", value = "?" },
           },
         },
+        tossResult = {
+          segments = {
+            { kind = "text", value = "Threw away " },
+            { kind = "quantity" },
+            { kind = "text", value = " " },
+            { kind = "item" },
+            { kind = "text", value = "." },
+          },
+        },
       },
       overlays = {
         actionMenu = {
@@ -1053,6 +1099,7 @@ local function syntheticBundle(marker)
           frame = { x = 0, y = 144, width = 256, height = 48 },
           textRect = { x = 20, y = 144, width = 236, height = 48 },
         },
+        tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
       },
     },
   }
@@ -1099,7 +1146,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v10")
+  Assert.equal(loaded.schema, "g4-bag-assets-v11")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

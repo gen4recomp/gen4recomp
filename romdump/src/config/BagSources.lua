@@ -357,8 +357,8 @@ BagSources.unboundAnimations = { 21 }
 -- runtime manifest carries only the lowered labels/templates, never these
 -- selectors. Pinned facts: msg_0010 carries TRASH (1), REGISTER (2),
 -- CONFIRM (5), CANCEL (8), DESELECT (18), the move prompt (46), the toss
--- quantity prompt (53), the MOVE label (75), and the toss confirmation
--- prompt (55).
+-- quantity prompt (53), the post-choice result text (54), the MOVE label
+-- (75), and the toss confirmation prompt (55).
 BagSources.messages = {
   actionLabels = {
     toss = { bank = 10, index = 1 },
@@ -372,7 +372,24 @@ BagSources.messages = {
     movePrompt = { bank = 10, index = 46 },
     tossQuantity = { bank = 10, index = 53 },
     tossConfirm = { bank = 10, index = 55 },
+    tossResult = { bank = 10, index = 54 },
   },
+}
+
+-- The audited toss-confirmation prompt template from ov15_021FF004: the Bag
+-- YesNoPrompt opens on background 5 from tile 0x81 through palette slot 9
+-- at tile (25, 6) with the cursor on YES and the compact shape. These stay
+-- producer facts; the compiler normalizes tiles to pixels and the cursor
+-- and shape to their semantic names before anything reaches the runtime
+-- manifest.
+BagSources.tossPrompt = {
+  bgId = 5,
+  tileStart = 0x81,
+  plttSlot = 9,
+  x = 25,
+  y = 6,
+  initialCursorPos = 0,
+  shapeParam = 0,
 }
 
 -- Template-entry inventory beyond the tab/cursor groups: entry 0 is the

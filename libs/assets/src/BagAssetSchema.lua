@@ -24,7 +24,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v10"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v11"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -191,13 +191,36 @@ local function checkTemplate(template, context, what, allowedKinds)
   end
 end
 
+-- The post-choice acknowledgement names the removed copies, so its template
+-- must expand through both the picked amount and the selected item: a
+-- text-only record cannot feed the acknowledgement presentation.
+---@param template table<string, unknown>?
+---@param context table<string, unknown>
+local function checkTossResult(template, context)
+  local quantityKinds = { text = true, item = true, quantity = true }
+  checkTemplate(template, context, "interactive.text.tossResult", quantityKinds)
+  local segments = assert(template, "the result template carries its segments").segments
+  assert(type(segments) == "table", "the result template carries its segments")
+  local sawItem, sawQuantity = false, false
+  for _, segment in ipairs(segments) do
+    if type(segment) == "table" and segment.kind == "item" then
+      sawItem = true
+    elseif type(segment) == "table" and segment.kind == "quantity" then
+      sawQuantity = true
+    end
+  end
+  if not sawItem or not sawQuantity then
+    fail("interactive.text.tossResult must name the removed item and quantity", context)
+  end
+end
+
 local function checkText(text, context)
   if type(text) ~= "table" then
     fail("interactive.text must be a record", context)
   end
   checkKeys(
     text,
-    { actions = true, movePrompt = true, tossQuantity = true, tossConfirm = true },
+    { actions = true, movePrompt = true, tossQuantity = true, tossConfirm = true, tossResult = true },
     context,
     "interactive.text"
   )
@@ -216,6 +239,7 @@ local function checkText(text, context)
   checkTemplate(text.movePrompt, context, "interactive.text.movePrompt", itemKinds)
   checkTemplate(text.tossQuantity, context, "interactive.text.tossQuantity", itemKinds)
   checkTemplate(text.tossConfirm, context, "interactive.text.tossConfirm", quantityKinds)
+  checkTossResult(text.tossResult, context)
 end
 
 -- Registration-slot markers: two distinct 40x16 images with the slot-local
@@ -757,6 +781,33 @@ local function checkFocus(focus, context)
   checkFocusClass(focus.actions, 4, context, "interactive.focus.actions")
 end
 
+-- The modal confirmation placement is the audited source geometry, not a
+-- tunable: only the compact prompt at its audited position with YES
+-- preselected opens the destructive confirmation.
+---@param prompt table<string, unknown>?
+---@param context table<string, unknown>
+local function checkTossPrompt(prompt, context)
+  if type(prompt) ~= "table" then
+    fail("interactive.overlays.tossPrompt must be a record", context)
+  end
+  checkKeys(
+    prompt,
+    { x = true, y = true, shape = true, initialSelection = true },
+    context,
+    "interactive.overlays.tossPrompt"
+  )
+  assert(type(prompt) == "table", "the toss prompt placement is a record")
+  if prompt.x ~= 200 or prompt.y ~= 48 then
+    fail("interactive.overlays.tossPrompt must carry the audited placement", context)
+  end
+  if prompt.shape ~= "compact" then
+    fail("interactive.overlays.tossPrompt must use the compact prompt shape", context)
+  end
+  if prompt.initialSelection ~= "yes" then
+    fail("interactive.overlays.tossPrompt must preselect YES", context)
+  end
+end
+
 local function checkInteractive(interactive, context)
   if type(interactive) ~= "table" then
     fail("interactive must be a record", context)
@@ -909,10 +960,11 @@ local function checkInteractive(interactive, context)
   end
   checkKeys(
     overlays,
-    { actionMenu = true, quantity = true, descriptionFallback = true },
+    { actionMenu = true, quantity = true, descriptionFallback = true, tossPrompt = true },
     context,
     "interactive.overlays"
   )
+  checkTossPrompt(overlays.tossPrompt, context)
   local actionMenu = overlays.actionMenu
   if type(actionMenu) ~= "table" then
     fail("interactive.overlays.actionMenu must be a record", context)

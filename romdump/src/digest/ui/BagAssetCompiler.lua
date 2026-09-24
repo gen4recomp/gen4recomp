@@ -767,12 +767,19 @@ end
 
 -- Semantic message lowering. The pinned Bag messages carry two STRVAR
 -- placeholders: the item-name reference (STRVAR_1 field 8) and the toss
--- quantity reference (STRVAR_1 field 52). Labels accept display glyphs and
--- line breaks only; templates additionally accept those two placeholders.
--- Every other substitution or control is malformed source, never a runtime
--- marker to interpret.
+-- quantity reference (STRVAR_1 field 52, addressed as field 51 by the
+-- post-toss message). Labels accept display glyphs and line breaks only;
+-- templates additionally accept those placeholders. Every other
+-- substitution or control is malformed source, never a runtime marker to
+-- interpret.
 local ITEM_SUBSTITUTION = FieldMessageText.STRVAR_1 + 8
 local QUANTITY_SUBSTITUTION = FieldMessageText.STRVAR_1 + 52
+-- The post-toss message addresses its quantity through STRVAR_1 field 51.
+-- Retail StringExpandPlaceholders selects the text buffer by the marker's
+-- first argument rather than the field number, and the toss flow buffers
+-- the item name to field 0 and the amount to field 1, so field 51 carries
+-- the same buffered quantity as field 52 in the confirmation message.
+local QUANTITY_SUBSTITUTION_ALIAS = FieldMessageText.STRVAR_1 + 51
 
 local function readMessageBank(archive, bankId, role, dependencies)
   local bytes, err = archive:readMember(bankId)
@@ -855,7 +862,10 @@ local function lowerTemplate(bank, bankId, index, role)
     elseif token.kind == "substitution" and token.control == ITEM_SUBSTITUTION then
       flush()
       segments[#segments + 1] = { kind = "item" }
-    elseif token.kind == "substitution" and token.control == QUANTITY_SUBSTITUTION then
+    elseif
+      token.kind == "substitution"
+      and (token.control == QUANTITY_SUBSTITUTION or token.control == QUANTITY_SUBSTITUTION_ALIAS)
+    then
       flush()
       segments[#segments + 1] = { kind = "quantity" }
     else
@@ -889,7 +899,7 @@ local function compileText(messageArchive, dependencies)
     labels[action] = lowerLabel(bankOf(selector.bank), selector.bank, selector.index, "label:" .. action)
   end
   local templates = {}
-  for _, name in ipairs({ "movePrompt", "tossQuantity", "tossConfirm" }) do
+  for _, name in ipairs({ "movePrompt", "tossQuantity", "tossConfirm", "tossResult" }) do
     local selector = BagSources.messages.templates[name]
     templates[name] = lowerTemplate(bankOf(selector.bank), selector.bank, selector.index, "template:" .. name)
   end
@@ -898,6 +908,34 @@ local function compileText(messageArchive, dependencies)
     movePrompt = templates.movePrompt,
     tossQuantity = templates.tossQuantity,
     tossConfirm = templates.tossConfirm,
+    tossResult = templates.tossResult,
+  }
+end
+
+-- Normalizes the audited toss-confirmation prompt template to the runtime
+-- semantic placement: source tiles are 8 pixels, shape 0 is the compact
+-- prompt, and cursor 0 preselects YES. Physical background, tile, and
+-- palette facts stay producer-side; only pixels and names reach the
+-- manifest.
+local function compileTossPrompt()
+  local template = assert(BagSources.tossPrompt, "the producer must declare the toss prompt template")
+  if template.shapeParam ~= 0 then
+    sourceError("bag toss prompt carries an unsupported shape", { shapeParam = template.shapeParam })
+  end
+  if template.initialCursorPos ~= 0 then
+    sourceError(
+      "bag toss prompt carries an unsupported initial cursor",
+      { initialCursorPos = template.initialCursorPos }
+    )
+  end
+  local x = assert(template.x, "the toss prompt template carries its tile column")
+  local y = assert(template.y, "the toss prompt template carries its tile row")
+  assert(x == math.floor(x) and y == math.floor(y), "the toss prompt template carries integral tiles")
+  return {
+    x = x * 8,
+    y = y * 8,
+    shape = "compact",
+    initialSelection = "yes",
   }
 end
 
@@ -1458,6 +1496,7 @@ local function _compile(romFs)
           cancelHitRect = geometry.quantityCancelHitRect,
         },
         descriptionFallback = { frame = geometry.descriptionFrame, textRect = geometry.descriptionText },
+        tossPrompt = compileTossPrompt(),
       },
     },
   }
@@ -1487,6 +1526,7 @@ local function _compile(romFs)
       browseCountBlocks = BagSources.browseCountBlocks,
       hero = BagSources.hero,
       messages = BagSources.messages,
+      tossPrompt = BagSources.tossPrompt,
       registration = BagSources.registration,
     },
     presentation = BagSources.presentation,

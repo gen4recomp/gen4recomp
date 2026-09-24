@@ -1436,6 +1436,7 @@ function FieldRuntime:_applicationDescriptors()
       service = bagService,
       cursor = bagCursor,
       manifest = manifest,
+      uiManifest = assert(self.uiManifest, "the bag application requires the validated field-UI manifest"),
       monCatalog = self.monCatalog,
       heroGender = heroGender,
       measureDisplay = measureDisplay,

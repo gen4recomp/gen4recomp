@@ -21,6 +21,7 @@
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
 ---@class BagRenderer
 ---@field _graphics love.graphics
@@ -29,6 +30,7 @@ local BagSave = require("libs.hgss.src.save.BagSave")
 ---@field _manifest table<string, unknown>
 ---@field _images table<string, love.Image>
 ---@field _visuals table<string, table<string, unknown>>
+---@field _promptRenderer table<string, unknown>? the owned modal prompt renderer for toss confirmation
 local BagRenderer = {}
 BagRenderer.__index = BagRenderer
 
@@ -112,6 +114,14 @@ local function promptText(presentation, manifest)
     local quantity = assert(presentation.quantity, "the confirmation prompt carries its amount")
     return formatBagTemplate(
       assert(generated.tossConfirm, "the bag manifest carries its confirmation prompt"),
+      selected,
+      quantity
+    )
+  elseif state == "toss_ack" then
+    local selected = assert(presentation.selected, "the toss prompt needs its selected item")
+    local quantity = assert(presentation.quantity, "the acknowledgement carries its amount")
+    return formatBagTemplate(
+      assert(generated.tossResult, "the bag manifest carries its result text"),
       selected,
       quantity
     )
@@ -238,12 +248,13 @@ local function fontSlot(fontDef, slot)
   return { r = r * 255, g = g * 255, b = b * 255 }
 end
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.graphics }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, promptManifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.graphics }
 ---@return BagRenderer
 function BagRenderer.new(opts)
   assert(type(opts) == "table", "bag renderer options must be a table")
   local cacheFs = assert(opts.cacheFs, "BagRenderer requires a CacheFs")
   local manifest = assert(opts.manifest, "BagRenderer requires the validated bag manifest")
+  local promptManifest = assert(opts.promptManifest, "BagRenderer requires the validated field-UI prompt manifest")
   local text = assert(opts.text, "BagRenderer requires the shared text renderer")
   local heroRenderer = assert(opts.heroRenderer, "BagRenderer requires its borrowed hero model renderer")
   assert(type(heroRenderer.draw) == "function", "the borrowed hero model renderer draws the hero model")
@@ -345,6 +356,13 @@ function BagRenderer.new(opts)
     assert(type(registration.offset) == "table", "the registration markers carry their generated offset")
     acquire("registrationSlot1", slot1)
     acquire("registrationSlot2", slot2)
+    -- The modal prompt button art binds after every bag visual, so the
+    -- prompt images stay trailing in acquisition order.
+    self._promptRenderer = YesNoPromptRenderer.new({
+      cacheFs = cacheFs,
+      manifest = promptManifest,
+      graphics = graphics,
+    })
   end)
   if not ok then
     self:release()
@@ -524,6 +542,7 @@ function BagRenderer:_drawStateBackground(state, pocket, presentation)
     action_menu = "action",
     toss_quantity = "quantity",
     toss_confirm = "confirmation",
+    toss_ack = "confirmation",
   }
   local background = assert(backgroundByState[state], "the bag renderer draws a known lower-pane state")
   if background == "browse" then
@@ -756,7 +775,7 @@ function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
   elseif presentation.state == "toss_quantity" then
     self:_drawQuantityState(presentation)
   elseif presentation.state == "toss_confirm" then
-    self:_drawConfirmationState(presentation)
+    self:_drawTossPrompt(presentation)
   elseif presentation.state == "move_select" then
     self:_drawMoveHighlight(presentation)
   end
@@ -903,14 +922,14 @@ function BagRenderer:_drawQuantityState(presentation)
   drawVisual(self._graphics, assert(self._visuals.quantityConfirm), center.x, center.y)
 end
 
--- The toss confirmation rests on its distinct generated screen; the item
--- and amount it confirms travel in the contextual prompt, so no digit
--- widgets or quantity layers belong here.
+-- The toss confirmation rests on its distinct generated screen while the
+-- modal prompt renderer owns both button rows at the controller's prompt
+-- presentation; the item and amount travel in the contextual prompt, so no
+-- digit widgets, quantity layers, or Bag action-slot labels belong here.
 ---@param presentation table<string, unknown>
-function BagRenderer:_drawConfirmationState(presentation)
-  assert(presentation.quantity ~= nil, "the toss confirmation carries its amount")
-  assert(presentation.selected ~= nil, "the toss confirmation needs its selected item")
-  self:_drawResponsiveButtons(self:_actionButtons(), { [3] = self:_confirmLabel() })
+function BagRenderer:_drawTossPrompt(presentation)
+  local prompt = assert(self._promptRenderer, "the toss confirmation owns its modal prompt renderer")
+  prompt:draw(presentation.yesNoPrompt)
 end
 
 -- Without a hero pane the state-specific contextual text would be lost, so
@@ -1043,6 +1062,11 @@ function BagRenderer:release()
     if image ~= nil and image.release then
       image:release()
     end
+  end
+  local promptRenderer = self._promptRenderer
+  self._promptRenderer = nil
+  if promptRenderer ~= nil then
+    promptRenderer:release()
   end
 end
 

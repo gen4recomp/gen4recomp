@@ -211,14 +211,10 @@ function BagLayout.resolve(spec)
         return { kind = "cancel" }
       end
       return nil
-    elseif buttonState == "toss_confirm" then
-      actionSlotRecords = actionSlotRecords or getActionSlots(interactive)
-      if LayoutGeometry.containsPoint(actionSlotRecords[3].hitRect, logicalX, logicalY) then
-        return { kind = "confirm" }
-      end
-      if LayoutGeometry.containsPoint(cancelRect, logicalX, logicalY) then
-        return { kind = "cancel" }
-      end
+    elseif buttonState == "toss_confirm" or buttonState == "toss_ack" then
+      -- The modal Yes/No prompt owns toss confirmation input through its
+      -- own source geometry, so neither modal state exposes a Bag-owned
+      -- target or falls through to the browsing controls underneath.
       return nil
     elseif buttonState == "move_select" then
       actionSlotRecords = actionSlotRecords or getActionSlots(interactive)

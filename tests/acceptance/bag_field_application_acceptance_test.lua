@@ -454,7 +454,9 @@ end
 
 -- Commit the selected item's toss with one quantity step through the
 -- composed host: open the action menu, enter the quantity picker, step
--- once, confirm twice, and land back in browsing.
+-- once, confirm through the quantity, accept the prompt so the
+-- acknowledgement state opens, and acknowledge once more to commit and
+-- land back in browsing.
 local function tossSelectedWithSingleCopyStep(game, state)
   confirm(game)
   Assert.equal(bagView(game).state, "action_menu", "confirming the composed selection opens the action menu")
@@ -463,6 +465,8 @@ local function tossSelectedWithSingleCopyStep(game, state)
   tapDirection(game, state, "w")
   confirm(game)
   Assert.equal(bagView(game).state, "toss_confirm", "confirming a quantity asks for confirmation")
+  confirm(game)
+  Assert.equal(bagView(game).state, "toss_ack", "accepting the prompt opens the acknowledgement state")
   confirm(game)
   Assert.equal(bagView(game).state, "browsing", "a committed toss returns to browsing")
 end

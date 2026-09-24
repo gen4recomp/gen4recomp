@@ -218,6 +218,21 @@ function T.message_selection_names_the_audited_banks_and_indexes()
     movePrompt = { bank = 10, index = 46 },
     tossQuantity = { bank = 10, index = 53 },
     tossConfirm = { bank = 10, index = 55 },
+    tossResult = { bank = 10, index = 54 },
+  })
+end
+
+function T.toss_prompt_selection_names_the_audited_template_facts()
+  local BagSources = sources()
+  local prompt = assert(BagSources.tossPrompt, "the producer must declare the toss prompt template")
+  Assert.deepEqual(prompt, {
+    bgId = 5,
+    tileStart = 0x81,
+    plttSlot = 9,
+    x = 25,
+    y = 6,
+    initialCursorPos = 0,
+    shapeParam = 0,
   })
 end
 

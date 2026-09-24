@@ -218,6 +218,7 @@ function FieldPresentationResources.new(runtime)
     self.bagRenderer = BagRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = bagManifest,
+      promptManifest = runtime.uiManifest,
       text = textRenderer,
       heroRenderer = self.heroRenderer,
     })

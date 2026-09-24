@@ -278,11 +278,12 @@ DerivedAssetContract.items = {
 -- its source-centered label area, the browse count-variant backgrounds,
 -- four action slots, six quantity controls with static press visuals, the
 -- action/quantity/confirmation overlays, semantic action text/templates,
--- and the two registration-slot markers). Item icons stay in the item
+-- the toss prompt placement with its post-choice result text, and the two
+-- registration-slot markers). Item icons stay in the item
 -- class; the bag manifest references no icon pixels.
 DerivedAssetContract.bag = {
   cacheFormat = "bag-cache-v2",
-  schema = "g4-bag-assets-v10",
+  schema = "g4-bag-assets-v11",
 }
 
 DerivedAssetContract.audio = {

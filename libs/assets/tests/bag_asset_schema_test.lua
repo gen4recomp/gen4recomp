@@ -424,7 +424,17 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v10"
+  manifest.schema = "g4-bag-assets-v11"
+  manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
+  manifest.interactive.text.tossResult = {
+    segments = {
+      { kind = "text", value = "Threw away " },
+      { kind = "quantity" },
+      { kind = "text", value = " " },
+      { kind = "item" },
+      { kind = "text", value = "." },
+    },
+  }
   local icon = function(key)
     return { image = "assets/generated/bag/move-" .. key .. ".png", width = 64, height = 16 }
   end
@@ -512,7 +522,7 @@ function T.previous_manifest_fails_schema_and_cache_contract()
   Assert.isFalse(pcall(BagCache.validateManifest, manifest), "the cache validator must reject the stale fixture")
   Assert.isNil(manifest.interactive.widgets, "the stale manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v10")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v11")
 end
 
 function T.schema_rejects_wrong_logical_size()
@@ -597,9 +607,9 @@ local function assertInvalid(manifest, why)
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v10")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v10")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v10")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v11")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v11")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v11")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
 end
 
@@ -935,13 +945,13 @@ function T.control_overlay_rejects_incomplete_or_timeline_shapes()
 end
 
 function T.stale_previous_manifest_fails_once_the_focus_contract_is_current()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v10", "the schema carries the move summary contract")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v11", "the schema carries the move summary contract")
   Assert.equal(
     DerivedAssetContract.bag.schema,
-    "g4-bag-assets-v10",
+    "g4-bag-assets-v11",
     "the central contract carries the move summary schema"
   )
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v10", "the loader requires the move summary schema")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v11", "the loader requires the move summary schema")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing is unchanged")
   Assert.isFalse(
     BagAssetSchema.isValidManifest(validManifest()),
@@ -1233,9 +1243,9 @@ local function validStripManifest()
 end
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v10")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v10")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v10")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v11")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v11")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v11")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")
@@ -1351,6 +1361,68 @@ function T.cache_readiness_requires_every_pocket_strip()
   Assert.isTrue(BagCache.isReady(cacheFs, marker), "the complete strip class is ready")
   cacheFs:remove("assets/generated/bag/tabs-mail.png")
   Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing pocket strip is not ready")
+end
+
+-- The toss contract under test: the current focus fixture plus the
+-- semantic prompt placement and the post-choice result text on the
+-- bumped schema. Only the new toss scenarios build on it; every other
+-- scenario keeps the versioned focus fixture above.
+local function validTossManifest()
+  local manifest = validFocusManifest()
+  manifest.schema = "g4-bag-assets-v11"
+  manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
+  manifest.interactive.text.tossResult = {
+    segments = {
+      { kind = "text", value = "Threw away " },
+      { kind = "quantity" },
+      { kind = "text", value = " " },
+      { kind = "item" },
+      { kind = "text", value = "." },
+    },
+  }
+  return manifest
+end
+
+function T.toss_prompt_placement_and_result_text_are_required()
+  local manifest = validTossManifest()
+  Assert.deepEqual(
+    manifest.interactive.overlays.tossPrompt,
+    { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
+    "the toss prompt carries the audited semantic placement"
+  )
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the prompt placement and result text must pass")
+  local missingPlacement = validTossManifest()
+  missingPlacement.interactive.overlays.tossPrompt = nil
+  assertInvalid(missingPlacement, "a manifest without the toss prompt placement must fail")
+  local missingResult = validTossManifest()
+  missingResult.interactive.text.tossResult = nil
+  assertInvalid(missingResult, "a manifest without the post-choice result text must fail")
+end
+
+function T.toss_prompt_rejects_malformed_placement_and_source_identities()
+  local leaked = validTossManifest()
+  leaked.interactive.overlays.tossPrompt = {
+    x = 200,
+    y = 48,
+    shape = "compact",
+    initialSelection = "yes",
+    memberId = 3,
+  }
+  assertInvalid(leaked, "producer-side source identities must not leak into the toss prompt")
+  local wide = validTossManifest()
+  wide.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "wide", initialSelection = "yes" }
+  assertInvalid(wide, "an unsupported prompt shape must fail")
+  local unselected = validTossManifest()
+  unselected.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "maybe" }
+  assertInvalid(unselected, "an unsupported initial selection must fail")
+  local moved = validTossManifest()
+  moved.interactive.overlays.tossPrompt = { x = 0, y = 0, shape = "compact", initialSelection = "yes" }
+  assertInvalid(moved, "an unaudited prompt placement must fail")
+  local quantityOnly = validTossManifest()
+  quantityOnly.interactive.text.tossResult = {
+    segments = { { kind = "text", value = "Gone." } },
+  }
+  assertInvalid(quantityOnly, "a result template outside the item vocabulary must fail")
 end
 
 return { tests = T }

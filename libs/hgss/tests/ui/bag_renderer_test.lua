@@ -13,6 +13,8 @@ local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
+local PromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 local FakeGraphics = require("tests.support.FakeGraphics").new
 
@@ -21,6 +23,11 @@ local T = {}
 local IMAGE_SIZES = {}
 for _ = 1, 20 do
   IMAGE_SIZES[#IMAGE_SIZES + 1] = { 256, 192 }
+end
+-- The prompt button art is acquired after the bag visuals, so the four
+-- compact button images close the size sequence.
+for _ = 1, 4 do
+  IMAGE_SIZES[#IMAGE_SIZES + 1] = { 48, 32 }
 end
 
 local function manifest()
@@ -176,8 +183,18 @@ local function manifest()
             { kind = "text", value = "?" },
           },
         },
+        tossResult = {
+          segments = {
+            { kind = "text", value = "Threw away " },
+            { kind = "quantity" },
+            { kind = "text", value = " " },
+            { kind = "item" },
+            { kind = "text", value = "." },
+          },
+        },
       },
       overlays = {
+        tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
         descriptionFallback = {
           frame = { x = 0, y = 144, width = 256, height = 48 },
           textRect = { x = 20, y = 144, width = 236, height = 48 },
@@ -313,6 +330,10 @@ local function seedCache()
   for _, path in ipairs(paths) do
     cache:write(path, "png-bytes")
   end
+  cache:write(FieldUiFixture.PROMPT_YES_NORMAL_PATH, FieldUiFixture.promptButtonBytes("yes_normal"))
+  cache:write(FieldUiFixture.PROMPT_YES_SELECTED_PATH, FieldUiFixture.promptButtonBytes("yes_selected"))
+  cache:write(FieldUiFixture.PROMPT_NO_NORMAL_PATH, FieldUiFixture.promptButtonBytes("no_normal"))
+  cache:write(FieldUiFixture.PROMPT_NO_SELECTED_PATH, FieldUiFixture.promptButtonBytes("no_selected"))
   return cache
 end
 
@@ -600,10 +621,21 @@ local function plan(heroVisible)
   }
 end
 
+local function promptManifest()
+  return FieldUiFixture.manifest()
+end
+
+local function promptStatusAt(x, y, selected)
+  local control = PromptController.new(FieldUiFixture.promptCompactSection().shapes.compact)
+  control:open({ x = x, y = y, shape = "compact", initialSelection = selected })
+  return control:status()
+end
+
 local function renderer(graphics)
   return BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -645,6 +677,7 @@ function T.hero_switches_between_machine_summary_and_ordinary_description()
   local draw = BagRenderer.new({
     cacheFs = moveSummaryCache(reads),
     manifest = moveSummaryManifest(),
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -678,6 +711,7 @@ function T.hero_switches_between_machine_summary_and_ordinary_description()
   local lowerDraw = BagRenderer.new({
     cacheFs = moveSummaryCache({}),
     manifest = moveSummaryManifest(),
+    promptManifest = promptManifest(),
     text = lowerContent,
     graphics = FakeGraphics({ imageSizes = IMAGE_SIZES }),
     heroRenderer = heroSpy(nil),
@@ -694,6 +728,7 @@ function T.two_pane_mode_draws_hero_and_interactive_content()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -721,6 +756,7 @@ function T.page_indicator_prints_inside_its_manifest_rectangle()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -743,6 +779,7 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
   local draw = BagRenderer.new({
     cacheFs = trackingCache(reads),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -801,6 +838,7 @@ function T.browse_keeps_generated_chrome()
   local draw = BagRenderer.new({
     cacheFs = trackingCache(reads),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -865,6 +903,7 @@ function T.empty_pockets_draw_no_icons_but_keep_navigation_labels()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -906,6 +945,7 @@ function T.constrained_overlay_draws_the_description_panel()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -992,6 +1032,7 @@ local function snapshotImages(records, mode)
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1016,6 +1057,7 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
     local draw = BagRenderer.new({
       cacheFs = seedCache(),
       manifest = manifested,
+      promptManifest = promptManifest(),
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
@@ -1055,6 +1097,7 @@ function T.action_menu_acquires_faces_and_uses_physical_focus_nodes()
   local draw = BagRenderer.new({
     cacheFs = trackingCache(reads),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1075,6 +1118,7 @@ function T.action_focus_indexes_from_the_selected_action_without_clamping()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1101,6 +1145,7 @@ function T.action_menu_resolves_register_and_unregister_labels_independently()
     local draw = BagRenderer.new({
       cacheFs = seedCache(),
       manifest = manifest(),
+      promptManifest = promptManifest(),
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
@@ -1124,6 +1169,7 @@ function T.action_menu_without_generated_labels_is_a_composition_error()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = broken,
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1143,6 +1189,7 @@ function T.action_menu_without_generated_buttons_is_a_composition_error()
     BagRenderer.new({
       cacheFs = seedCache(),
       manifest = plain,
+      promptManifest = promptManifest(),
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
@@ -1163,6 +1210,7 @@ function T.quantity_state_draws_generated_layers_digits_and_prompt()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1200,6 +1248,7 @@ function T.quantity_state_acquires_six_controls_and_no_text_surrogates()
   local draw = BagRenderer.new({
     cacheFs = trackingCache(reads),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1226,6 +1275,7 @@ function T.confirmation_state_draws_its_own_screen_and_prompt()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1256,6 +1306,7 @@ function T.move_state_communicates_the_generated_move_prompt()
     local draw = BagRenderer.new({
       cacheFs = seedCache(),
       manifest = manifest(),
+      promptManifest = promptManifest(),
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
@@ -1286,6 +1337,7 @@ function T.toss_states_communicate_their_prompts_in_every_topology()
       local draw = BagRenderer.new({
         cacheFs = seedCache(),
         manifest = manifest(),
+        promptManifest = promptManifest(),
         text = content,
         graphics = graphics,
         heroRenderer = heroSpy(nil),
@@ -1310,6 +1362,7 @@ function T.move_highlight_marks_the_target_across_a_page_boundary()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1359,6 +1412,7 @@ function T.nested_states_label_their_responsive_buttons()
     local draw = BagRenderer.new({
       cacheFs = seedCache(),
       manifest = manifested,
+      promptManifest = promptManifest(),
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
@@ -1376,9 +1430,9 @@ function T.nested_states_label_their_responsive_buttons()
   Assert.equal(#graphics.rectangles, 0, "nested states never fall back to primitive outlines")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   local confirmGraphics, confirmContent = drawFor("toss_confirm")
-  Assert.isTrue(
+  Assert.isFalse(
     textInRect(confirmContent, "YES", actionSlots[3].textRect),
-    "the confirmation state labels its confirm button"
+    "the toss confirmation never labels a Bag action slot"
   )
   Assert.equal(#confirmGraphics.rectangles, 0, "the confirmation state never falls back to primitive outlines")
   local moveGraphics, moveContent = drawFor("move_select")
@@ -1390,24 +1444,23 @@ function T.nested_states_label_their_responsive_buttons()
   local sharedManifest = manifest()
   local _, sharedContent = drawFor("toss_confirm", sharedManifest)
   local sharedSlot = sharedManifest.interactive.overlays.actionMenu.slots[3]
-  Assert.isTrue(
+  Assert.isFalse(
     textInRect(sharedContent, "YES", sharedSlot.textRect),
-    "the confirmation state labels its confirm button in the shared manifest"
+    "the confirmation state labels no Bag action slot in the shared manifest"
   )
   local pointX = sharedSlot.textRect.x + sharedSlot.textRect.width / 2
   local pointY = sharedSlot.textRect.y + sharedSlot.textRect.height / 2
   local layout = BagLayout.resolve({ manifest = sharedManifest, heroVisible = true })
-  local confirmHit = assert(
+  Assert.isNil(
     layout.hitTest(pointX, pointY, { state = "toss_confirm" }),
-    "the rendered YES region resolves a confirmation target"
+    "the retired slot region resolves no confirmation target"
   )
-  Assert.equal(confirmHit.kind, "confirm", "the rendered YES control and the hit target coincide")
 end
 
 function T.release_frees_images_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  Assert.equal(#graphics.images, 103, "the renderer acquires every generated state, tab, focus, and control image")
+  Assert.equal(#graphics.images, 107, "the renderer acquires bag and prompt button images")
   draw:release()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every image releases exactly once")
@@ -1428,6 +1481,7 @@ local function rendererWithHero(graphics, order)
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = spy,
@@ -1438,7 +1492,13 @@ end
 function T.construction_requires_the_borrowed_hero_model_renderer()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   Assert.throws(function()
-    BagRenderer.new({ cacheFs = seedCache(), manifest = manifest(), text = text(), graphics = graphics })
+    BagRenderer.new({
+      cacheFs = seedCache(),
+      manifest = manifest(),
+      promptManifest = promptManifest(),
+      text = text(),
+      graphics = graphics,
+    })
   end, "the pane composer borrows its hero model renderer")
 end
 
@@ -1503,6 +1563,7 @@ function T.unknown_registration_slot_is_a_composition_error()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1520,13 +1581,14 @@ function T.acquisition_failure_releases_every_image_acquired_before_it()
   local bound = renderer(probe)
   local total = #probe.images
   bound:release()
-  Assert.equal(total, 103, "setup binds every generated state, tab, focus, and control image")
+  Assert.equal(total, 107, "setup binds every generated state, tab, focus, control, and prompt image")
   for _, failCall in ipairs({ 1, total }) do
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
     Assert.throws(function()
       BagRenderer.new({
         cacheFs = seedCache(),
         manifest = manifest(),
+        promptManifest = promptManifest(),
         text = text(),
         graphics = graphics,
         heroRenderer = heroSpy(nil),
@@ -1575,6 +1637,7 @@ function T.registration_markers_follow_live_service_slot_identities()
   local draw = BagRenderer.new({
     cacheFs = cache,
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1674,6 +1737,7 @@ local function composedRenderer(graphics, content, reads)
   return BagRenderer.new({
     cacheFs = cache,
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1747,6 +1811,7 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1798,6 +1863,7 @@ function T.item_rows_use_split_text_geometry_with_unchanged_icons()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1835,6 +1901,7 @@ function T.item_focus_draws_the_generated_visual_at_the_visible_target()
   local draw = BagRenderer.new({
     cacheFs = trackingCache(reads),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = paletteText(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1914,6 +1981,7 @@ function T.cancel_uses_background_chrome_and_its_text_window()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -1961,6 +2029,7 @@ function T.browse_background_follows_the_visible_occupied_count()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2004,6 +2073,7 @@ function T.tab_focus_draws_after_the_selected_strip()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2034,6 +2104,7 @@ function T.cancel_label_centers_inside_its_source_label_area()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2055,6 +2126,7 @@ function T.browse_background_selects_each_partial_count()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2083,6 +2155,7 @@ function T.leading_empty_cell_fails_the_visible_count()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2100,6 +2173,7 @@ function T.normal_tab_draws_match_with_and_without_focus()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2134,6 +2208,7 @@ function T.cancel_focus_draws_after_the_normal_tab_row()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2204,6 +2279,7 @@ function T.browse_draws_the_committed_strip_before_tab_focus()
   local draw = BagRenderer.new({
     cacheFs = trackingStripCache(reads),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2272,6 +2348,7 @@ function T.tabbed_strip_and_focus_resolve_from_separate_pockets()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2409,6 +2486,7 @@ function T.compact_browsing_description_uses_source_frame_and_three_lines()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifested,
+    promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
@@ -2446,6 +2524,7 @@ function T.compact_browsing_description_follows_item_focus_while_prompts_persist
     local draw = BagRenderer.new({
       cacheFs = seedCache(),
       manifest = manifested,
+      promptManifest = promptManifest(),
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
@@ -2521,6 +2600,78 @@ function T.compact_browsing_description_follows_item_focus_while_prompts_persist
     )
     draw:release()
   end
+end
+
+-- The modal prompt owns the Toss confirmation buttons: both prompt rows
+-- draw from the generated button artwork through quads, and no Bag
+-- action slot carries a confirmation label for the Toss flow.
+function T.toss_confirm_delegates_its_buttons_to_the_modal_prompt()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = renderer(graphics)
+  local record = status({ state = "toss_confirm", quantity = 2, quantityMax = 5 })
+  record.yesNoPrompt = promptStatusAt(200, 48, "yes")
+  draw:draw(record, plan(true), { icons = icons() })
+  local rows = {}
+  for _, entry in ipairs(graphics.draws) do
+    local quad = entry.quad
+    if type(quad) == "table" and quad.w == 48 and quad.h == 32 then
+      rows[#rows + 1] = entry
+    end
+  end
+  Assert.equal(#rows, 2, "both prompt rows draw from the generated button artwork")
+  Assert.isFalse(printedText(content, "YES"), "the toss confirmation draws no Bag action-slot label")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+-- The generated prompt renderer is a required composition: a Bag renderer
+-- without the validated prompt resources fails instead of drawing a
+-- prompt-less confirmation.
+function T.bag_renderer_without_prompt_resources_is_a_composition_error()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  Assert.throws(function()
+    BagRenderer.new({
+      cacheFs = seedCache(),
+      manifest = manifest(),
+      text = text(),
+      graphics = graphics,
+      heroRenderer = heroSpy(nil),
+    })
+  end)
+end
+
+-- The acknowledgement state presents the generated post-choice text:
+-- the picked amount and item expand through the result template while the
+-- modal prompt draws nothing more.
+function T.toss_ack_presents_the_generated_result_text()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local record = status({ state = "toss_ack", quantity = 2, quantityMax = 5 })
+  draw:draw(record, plan(true), { icons = icons() })
+  local joined = joinedText(content)
+  Assert.isTrue(
+    joined:find("Threw away 2 POTION.", 1, true) ~= nil,
+    "the acknowledgement expands the generated result template"
+  )
+  local rows = 0
+  for _, entry in ipairs(graphics.draws) do
+    local quad = entry.quad
+    if type(quad) == "table" and quad.w == 48 and quad.h == 32 then
+      rows = rows + 1
+    end
+  end
+  Assert.equal(rows, 0, "the acknowledgement draws no prompt rows")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
 end
 
 return { tests = T }

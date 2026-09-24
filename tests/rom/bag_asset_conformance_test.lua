@@ -324,6 +324,19 @@ function T.compiled_text_lowers_labels_and_templates_in_order(romFs, versionId)
   Assert.deepEqual(segmentKinds(manifest.interactive.text.tossConfirm), { "text", "quantity", "text", "item", "text" })
 end
 
+function T.compiled_toss_prompt_and_result_follow_the_audited_selection(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = bundle.manifest
+  Assert.deepEqual(BagSources.messages.templates.tossResult, { bank = 10, index = 54 })
+  Assert.deepEqual(segmentKinds(manifest.interactive.text.tossResult), { "text", "quantity", "text", "item", "text" })
+  Assert.deepEqual(manifest.interactive.overlays.tossPrompt, {
+    x = 200,
+    y = 48,
+    shape = "compact",
+    initialSelection = "yes",
+  })
+end
+
 function T.registration_markers_are_distinct_40x16_assets(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local registration = bundle.manifest.interactive.itemSlots.registration
@@ -657,7 +670,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v10", "the rebuilt bag cache must publish the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v11", "the rebuilt bag cache must publish the current contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}

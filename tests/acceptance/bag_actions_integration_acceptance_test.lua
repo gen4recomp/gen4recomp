@@ -638,10 +638,18 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     game:step()
     view = bagView(game)
     Assert.equal(view.state, "toss_confirm", "confirming a quantity must ask for confirmation")
+    Assert.equal(bag:revision(), revision, "entering confirmation must not mutate")
     confirm(game)
     game:step()
     game:step()
-    Assert.equal(bag:quantity(SECOND_KEY), 3, "the toss must remove exactly the confirmed quantity")
+    view = bagView(game)
+    Assert.equal(view.state, "toss_ack", "accepting YES must wait for a later acknowledgement")
+    Assert.equal(bag:quantity(SECOND_KEY), 5, "accepting YES must change no quantities")
+    Assert.equal(bag:revision(), revision, "accepting YES must bump no revision")
+    confirm(game)
+    game:step()
+    game:step()
+    Assert.equal(bag:quantity(SECOND_KEY), 3, "the acknowledgement must remove exactly the confirmed quantity")
     Assert.equal(bag:revision(), revision + 1, "the toss must mutate the live service exactly once")
     backToBrowsing(game)
 
@@ -723,6 +731,93 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     local reread = assert(game.runtime.bagService, "continue must restore the live bag service")
     Assert.equal(reread:quantity(GRANTED_KEY), 1, "continue must keep the granted quantity")
     Assert.equal(reread:quantity(SECOND_KEY), 3, "continue must keep the tossed quantity")
+    Assert.equal(game:renderAttempts(), 0, "the journey must stop before GPU rendering")
+  end, debug.traceback)
+  local namespace = game.saveNamespace
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+  Assert.isNil(love.filesystem.getInfo(namespace), "teardown removes the isolated save namespace")
+end
+
+-- A rejected Toss never mutates, and an accepted Toss mutates only on a
+-- later acknowledgement: down-plus-confirm resolves NO back to browsing,
+-- a lone granted copy skips the quantity picker, YES alone changes
+-- nothing, and the later acknowledgement removes exactly once.
+function T.tests.toss_rejection_and_delayed_commit_safety()
+  local game = lakeHarness():boot({
+    versionId = AcceptanceHarness.defaultVersion(),
+    map = GRANT_MAP,
+    save = "fresh",
+    fieldOptions = { recordingScriptHosts = true },
+  })
+  local ok, err = xpcall(function()
+    game:waitForFieldEntry()
+    game:advanceUntil("field ready for ordinary input", function(snapshot)
+      return not snapshot.fieldLocked and not snapshot.dialogue.modal
+    end, 480)
+    local state = hostCallbacks(game)
+    game:setWorldState({ flag = FLAG_GOT_BAG })
+
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    Assert.isTrue(bag:add(SECOND_KEY, 5), "stocking a second manual-order item must succeed")
+    seedBallVisible(game)
+    game:face("west")
+    game:pressAction()
+    local outcome = driveGrantToEnd(game)
+    Assert.isTrue(outcome.completed, "the grant routine must reach its source End")
+    Assert.equal(bag:quantity(GRANTED_KEY), 1, "the grant must add exactly one copy")
+
+    local view = openBag(game, state)
+    gotoPocketState(game, state, "the stocked medicine pocket", 160, function()
+      return viewPocket(bagView(game)) == bag:pocketOf(GRANTED_KEY)
+    end)
+    local revision = bag:revision()
+
+    -- Down plus confirm rejects the toss without mutation.
+    driveUntil(game, state, "the stocked item", 60, function()
+      return selectedKey(bagView(game)) == SECOND_KEY
+    end)
+    view = openActionMenu(game, state)
+    Assert.isTrue(hasAction(view, "toss"), "a tossable item must offer to toss")
+    view = chooseAction(game, state, "toss")
+    Assert.equal(view.state, "toss_quantity", "choosing toss must enter the quantity picker")
+    setQuantity(game, state, 2)
+    confirm(game)
+    game:step()
+    game:step()
+    Assert.equal(bagView(game).state, "toss_confirm", "confirming a quantity must ask for confirmation")
+    tapDirection(game, state, "s")
+    confirm(game)
+    game:step()
+    game:step()
+    Assert.equal(bagView(game).state, "browsing", "down plus confirm must reject back to browsing")
+    Assert.equal(bag:quantity(SECOND_KEY), 5, "a rejected toss must change no quantities")
+    Assert.equal(bag:revision(), revision, "a rejected toss must bump no revision")
+
+    -- A lone copy skips the picker; YES waits; the later acknowledgement
+    -- commits exactly once.
+    driveUntil(game, state, "the granted item", 60, function()
+      return selectedKey(bagView(game)) == GRANTED_KEY
+    end)
+    view = openActionMenu(game, state)
+    view = chooseAction(game, state, "toss")
+    Assert.equal(view.state, "toss_confirm", "a single copy must confirm without the quantity picker")
+    Assert.equal(view.quantity, 1, "the skipped picker must carry the one owned copy")
+    Assert.equal(bag:revision(), revision, "skipping the picker must not mutate")
+    confirm(game)
+    game:step()
+    game:step()
+    Assert.equal(bagView(game).state, "toss_ack", "accepting YES must wait for a later acknowledgement")
+    Assert.equal(bag:quantity(GRANTED_KEY), 1, "accepting YES must change no quantities")
+    Assert.equal(bag:revision(), revision, "accepting YES must bump no revision")
+    confirm(game)
+    game:step()
+    game:step()
+    Assert.equal(bagView(game).state, "browsing", "the acknowledgement must return to browsing")
+    Assert.equal(bag:quantity(GRANTED_KEY), 0, "the acknowledgement must remove the granted copy")
+    Assert.equal(bag:revision(), revision + 1, "the acknowledgement must mutate exactly once")
     Assert.equal(game:renderAttempts(), 0, "the journey must stop before GPU rendering")
   end, debug.traceback)
   local namespace = game.saveNamespace

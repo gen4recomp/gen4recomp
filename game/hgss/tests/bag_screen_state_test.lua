@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
@@ -80,6 +81,7 @@ local function manifest()
           frame = { x = 0, y = 144, width = 256, height = 48 },
           textRect = { x = 20, y = 144, width = 236, height = 48 },
         },
+        tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
         actionMenu = {
           slots = {
             { hitRect = { x = 8, y = 136, width = 80, height = 16 } },
@@ -141,6 +143,7 @@ local function composition(overrides)
     },
     cursor = BagCursor.new(),
     manifest = manifest(),
+    uiManifest = FieldUiFixture.manifest(),
     heroGender = "male",
     measureDisplay = function()
       return measurementFor(box)
@@ -233,12 +236,24 @@ function T.toss_flow_mutates_once_through_the_live_service()
   state:updateFixed({ { type = "navigate", direction = "up" } })
   state:updateFixed({ { type = "confirm" } })
   Assert.equal(state:status().state, "toss_confirm", "confirming a quantity asks for confirmation")
+  Assert.equal(bag:revision(), revision, "entering confirmation never mutates")
+  state:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:status().state, "toss_ack", "accepting YES waits for a later acknowledgement")
+  Assert.equal(bag:quantity("POTION"), 5, "accepting YES changes no quantities")
   state:updateFixed({ { type = "confirm" } })
   local status = state:status()
-  Assert.equal(status.state, "browsing", "a committed toss returns to browsing")
+  Assert.equal(status.state, "browsing", "the acknowledgement returns to browsing")
   Assert.equal(bag:quantity("POTION"), 3, "the menu toss removes the picked copies")
   Assert.equal(bag:revision(), revision + 1, "one toss mutates exactly once")
   state:dispose()
+end
+
+function T.bag_screen_without_prompt_resources_is_a_composition_error()
+  local options = composition()
+  options.uiManifest = nil
+  Assert.throws(function()
+    BagScreenState.new(options)
+  end)
 end
 
 function T.pointer_only_register_flows_through_the_live_service()
@@ -712,6 +727,10 @@ local function seedComposedCache()
   put("test/bag/quantity-confirm.png")
   put("test/bag/registration-slot-1.png")
   put("test/bag/registration-slot-2.png")
+  cache:write(FieldUiFixture.PROMPT_YES_NORMAL_PATH, FieldUiFixture.promptButtonBytes("yes_normal"))
+  cache:write(FieldUiFixture.PROMPT_YES_SELECTED_PATH, FieldUiFixture.promptButtonBytes("yes_selected"))
+  cache:write(FieldUiFixture.PROMPT_NO_NORMAL_PATH, FieldUiFixture.promptButtonBytes("no_normal"))
+  cache:write(FieldUiFixture.PROMPT_NO_SELECTED_PATH, FieldUiFixture.promptButtonBytes("no_selected"))
   return cache
 end
 
@@ -795,6 +814,7 @@ function T.production_bag_draws_pocket_specific_presentation()
   local draw = BagRenderer.new({
     cacheFs = seedComposedCache(),
     manifest = manifested,
+    promptManifest = FieldUiFixture.manifest(),
     text = content,
     graphics = graphics,
     heroRenderer = hero,

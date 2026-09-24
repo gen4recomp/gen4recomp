@@ -78,8 +78,8 @@ function T.rebuilt_bundle_publishes_the_semantic_focus_contract(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
 
-  Assert.equal(manifest.schema, "g4-bag-assets-v10", "the rebuilt Bag cache must publish the current contract")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v10", "the loader must require the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v11", "the rebuilt Bag cache must publish the current contract")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v11", "the loader must require the current contract")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing must not change with the semantic migration")
   for _, stale in ipairs({
     "g4-bag-assets-v2",
@@ -305,7 +305,7 @@ end
 function T.machine_summary_publishes_the_complete_semantic_contract(romFs, versionId)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
-  Assert.equal(manifest.schema, "g4-bag-assets-v10", "the rebuilt Bag cache must publish the move-summary contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v11", "the rebuilt Bag cache must publish the move-summary contract")
   local summary = assert(assert(manifest.hero).moveSummary, "the hero must publish a machine move summary")
   Assert.isNil(manifest.hero.description.frame.alternateImage, "the retired alternate-image owner is removed")
   Assert.deepEqual(summary.labels, {

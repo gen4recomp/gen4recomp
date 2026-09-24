@@ -189,27 +189,26 @@ function T.nested_states_offer_responsive_controls_from_the_generated_buttons()
   local quantityConfirm =
     assert(resolved.hitTest(144, 176, stateFor("toss_quantity")), "the quantity confirm control confirms")
   Assert.equal(quantityConfirm.kind, "confirm")
-  -- The confirmation screen shows its YES label in the bottom-left action
-  -- slot, so only that slot confirms; the quantity-picker confirm rectangle
-  -- lives on the right-hand side and must stay out of this state.
-  local confirmSlot = assert(
+  -- Toss confirmation is a modal Yes/No prompt owned outside the Bag
+  -- layout: neither the retired action-slot coordinate nor the normal
+  -- cancel control resolves a Toss choice, and the quantity-picker confirm
+  -- rectangle stays out of this state.
+  Assert.isNil(
     resolved.hitTest(48, 176, stateFor("toss_confirm")),
-    "the confirmation state confirms through its visible action slot"
+    "the retired slot coordinate never confirms the toss"
   )
-  Assert.equal(confirmSlot.kind, "confirm")
   Assert.isNil(
     resolved.hitTest(144, 176, stateFor("toss_confirm")),
     "the quantity-only confirm region never confirms the toss"
   )
-  local confirmCancel = assert(
-    resolved.hitTest(220, 176, stateFor("toss_confirm")),
-    "the confirmation state cancels through the normal cancel control"
-  )
-  Assert.equal(confirmCancel.kind, "cancel")
+  Assert.isNil(resolved.hitTest(220, 176, stateFor("toss_confirm")), "the normal cancel control never cancels the toss")
   Assert.isNil(
     resolved.hitTest(185, 176, stateFor("toss_confirm")),
     "the quantity-only cancel extension never cancels the toss"
   )
+  Assert.isNil(resolved.hitTest(224, 64, stateFor("toss_confirm")), "the prompt YES row carries no Bag-owned target")
+  Assert.isNil(resolved.hitTest(224, 96, stateFor("toss_confirm")), "the prompt NO row carries no Bag-owned target")
+  Assert.isNil(resolved.hitTest(224, 64, stateFor("toss_ack")), "the acknowledgement state carries no Bag-owned target")
   local cell = assert(resolved.hitTest(76, 56, stateFor("move_select")), "move keeps its cell targets")
   Assert.equal(cell.kind, "item")
   Assert.equal(cell.visibleIndex, 0)
@@ -307,7 +306,7 @@ end
 
 function T.toss_states_hide_the_browsing_targets_underneath()
   local resolved = BagLayout.resolve({ manifest = manifest(), heroVisible = true })
-  for _, state in ipairs({ "toss_quantity", "toss_confirm" }) do
+  for _, state in ipairs({ "toss_quantity", "toss_confirm", "toss_ack" }) do
     local visibleSlots = {}
     for index = 1, 6 do
       visibleSlots[index] = { item = "ITEM_" .. index }
@@ -315,8 +314,13 @@ function T.toss_states_hide_the_browsing_targets_underneath()
     local modal = { state = state, visibleSlots = visibleSlots }
     Assert.isNil(resolved.hitTest(48, 16, modal), state .. " exposes no pocket target")
     Assert.isNil(resolved.hitTest(76, 56, modal), state .. " exposes no item target underneath")
-    local cancel = assert(resolved.hitTest(220, 176, modal), state .. " keeps its cancel target")
-    Assert.equal(cancel.kind, "cancel")
+    if state == "toss_quantity" then
+      local cancel = assert(resolved.hitTest(220, 176, modal), state .. " keeps its cancel target")
+      Assert.equal(cancel.kind, "cancel")
+    else
+      Assert.isNil(resolved.hitTest(220, 176, modal), state .. " exposes no Bag-owned cancel target")
+      Assert.isNil(resolved.hitTest(48, 176, modal), state .. " exposes no Bag-owned confirm target")
+    end
   end
 end
 

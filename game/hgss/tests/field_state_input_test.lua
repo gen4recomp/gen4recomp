@@ -10,6 +10,7 @@ local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {}
 
@@ -339,9 +340,11 @@ function T.open_bag_stays_controllable_across_window_blur()
             frame = { x = 0, y = 144, width = 256, height = 48 },
             textRect = { x = 20, y = 144, width = 236, height = 48 },
           },
+          tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
         },
       },
     },
+    uiManifest = FieldUiFixture.manifest(),
     heroGender = "male",
     measureDisplay = function()
       return {

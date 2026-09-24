@@ -105,6 +105,22 @@ local function stockEightItems(bag)
   return bag
 end
 
+local function promptShape()
+  local visual = function()
+    return {}
+  end
+  return {
+    width = 48,
+    height = 32,
+    yes = { normal = visual(), selected = visual() },
+    no = { normal = visual(), selected = visual() },
+  }
+end
+
+local function tossPrompt()
+  return { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
+end
+
 ---@param bag HgssBagService
 ---@param cursor BagCursor
 ---@param heroVisible boolean? true unless the constrained lower-only composition is under test
@@ -123,6 +139,8 @@ local function controller(bag, cursor, heroVisible)
     },
     cursor = cursor,
     resolveLayout = resolveLayout,
+    promptShape = promptShape(),
+    tossPrompt = tossPrompt(),
     commands = {
       toss = function(itemKey, quantity)
         return bag:take(itemKey, quantity)
@@ -659,9 +677,17 @@ function T.pointer_quantity_steps_confirm_and_nested_cancel_hold_across_updates(
   Assert.equal(control:status().quantity, 1, "the decrement affordance steps the picked quantity back")
   tap(control, layout, 144, 176)
   Assert.equal(control:status().state, "toss_confirm", "the confirm affordance asks for confirmation")
-  tap(control, layout, 48, 176)
+  -- Toss confirmation is a modal Yes/No prompt, not a Bag action slot: the
+  -- YES row acknowledges into a post-choice state without mutating, and only
+  -- a later acknowledgement commits.
+  tap(control, layout, 224, 64)
+  local acknowledged = control:status()
+  Assert.equal(acknowledged.state, "toss_ack", "tapping the YES row acknowledges without mutating")
+  Assert.equal(bag:quantity("POTION"), 5, "the YES tap changes no quantities")
+  Assert.equal(bag:revision(), revision, "the YES tap bumps no service revision")
+  control:updateFixed({ { type = "confirm" } })
   local status = control:status()
-  Assert.equal(status.state, "browsing", "confirming the toss returns to browsing")
+  Assert.equal(status.state, "browsing", "the later acknowledgement returns to browsing")
   Assert.equal(bag:quantity("POTION"), 4, "one pointer toss removes the picked copies")
   Assert.equal(bag:revision(), revision + 1, "one pointer toss mutates exactly once")
   tap(control, layout, 76, 56)
@@ -1123,6 +1149,182 @@ function T.external_registration_revision_refreshes_same_item_actions_before_dis
     { "BICYCLE" },
     "the confirm runs the current registration, not the stale release"
   )
+end
+
+-- A lone copy skips the quantity picker: choosing Toss with exactly one
+-- owned copy opens the modal Yes/No confirmation directly with the picked
+-- quantity of one, without ever entering the quantity state.
+function T.single_copy_toss_skips_the_quantity_picker()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 1), "setup stocks a single tossable copy")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  Assert.equal(control:status().state, "action_menu", "activating the selected cell opens the action menu")
+  tap(control, layout, 144, 144)
+  local status = control:status()
+  Assert.equal(status.state, "toss_confirm", "a single copy confirms without the quantity picker")
+  Assert.equal(status.quantity, 1, "the skipped picker preselects the one owned copy")
+  local prompt = assert(status.yesNoPrompt, "the confirmation exposes its modal prompt presentation")
+  Assert.equal(prompt.selected, "yes", "the prompt opens with YES selected")
+  Assert.deepEqual(prompt.buttons.yes, { x = 200, y = 48, width = 48, height = 32 }, "YES sits on the upper row")
+  Assert.deepEqual(prompt.buttons.no, { x = 200, y = 80, width = 48, height = 32 }, "NO stacks below YES")
+  Assert.equal(bag:revision(), revision, "skipping the picker mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 1, "skipping the picker changes no quantities")
+end
+
+-- Cancelling the quantity picker returns straight to browsing: the
+-- cancelled amount never reopens the action menu and never mutates.
+function T.quantity_cancel_returns_directly_to_browsing()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  Assert.equal(control:status().state, "toss_quantity", "setup enters the quantity picker")
+  control:updateFixed({ { type = "cancel" } })
+  local status = control:status()
+  Assert.equal(status.state, "browsing", "one cancel leaves the picker for browsing")
+  Assert.equal(bag:revision(), revision, "cancelling the picker mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "cancelling the picker changes no quantities")
+end
+
+-- Down plus confirm is a rejection, never a destructive confirmation: the
+-- vertical toggle moves YES to NO, and accepting NO returns to browsing
+-- with the inventory untouched.
+function T.down_then_confirm_rejects_the_toss()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  control:updateFixed({ navigate("down") })
+  local prompt = assert(control:status().yesNoPrompt, "the confirmation exposes its modal prompt")
+  Assert.equal(prompt.selected, "no", "down toggles YES to NO")
+  control:updateFixed({ { type = "confirm" } })
+  local status = control:status()
+  Assert.equal(status.state, "browsing", "accepting NO returns to browsing")
+  Assert.equal(bag:revision(), revision, "a rejected toss mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "a rejected toss changes no quantities")
+end
+
+-- The modal rows own pointer confirmation: YES acknowledges into the
+-- post-choice state and NO returns to browsing, both without mutating,
+-- while the retired action-slot and cancel coordinates resolve nothing.
+function T.pointer_rows_resolve_the_choice_and_retired_controls_resolve_nothing()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  tap(control, layout, 48, 176)
+  Assert.equal(control:status().state, "toss_confirm", "the retired slot coordinate never confirms")
+  Assert.equal(bag:revision(), revision, "the retired slot coordinate mutates nothing")
+  tap(control, layout, 224, 180)
+  Assert.equal(control:status().state, "toss_confirm", "the retired cancel coordinate never cancels")
+  Assert.equal(bag:revision(), revision, "the retired cancel coordinate mutates nothing")
+  tap(control, layout, 224, 96)
+  Assert.equal(control:status().state, "browsing", "the NO row returns to browsing")
+  Assert.equal(bag:revision(), revision, "the NO row mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "the NO row changes no quantities")
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation again")
+  tap(control, layout, 224, 64)
+  local acknowledged = control:status()
+  Assert.equal(acknowledged.state, "toss_ack", "the YES row acknowledges without mutating")
+  Assert.isNil(acknowledged.yesNoPrompt, "the prompt closes once YES is accepted")
+  Assert.equal(bag:revision(), revision, "the YES row mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "the YES row changes no quantities")
+end
+
+-- Accepting YES is non-destructive: the controller enters the
+-- acknowledgement state with the picked amount, and only a later
+-- acknowledgement commits exactly once.
+function T.yes_then_a_later_acknowledgement_commits_exactly_once()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  control:updateFixed({ { type = "confirm" } })
+  local acknowledged = control:status()
+  Assert.equal(acknowledged.state, "toss_ack", "accepting YES enters the acknowledgement state")
+  Assert.equal(acknowledged.quantity, 1, "the acknowledgement carries the picked amount")
+  Assert.equal(bag:revision(), revision, "entering the acknowledgement mutates nothing")
+  control:updateFixed({ { type = "confirm" } })
+  local committed = control:status()
+  Assert.equal(committed.state, "browsing", "the acknowledgement returns to browsing")
+  Assert.equal(bag:quantity("POTION"), 4, "the acknowledgement removes the picked copies")
+  Assert.equal(bag:revision(), revision + 1, "the acknowledgement mutates exactly once")
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(bag:quantity("POTION"), 4, "a later input cannot repeat the toss")
+  Assert.equal(bag:revision(), revision + 1, "a later input bumps no further revision")
+end
+
+-- The YES-producing input edge never doubles as the acknowledgement: two
+-- confirms in one batch still leave the controller waiting in the
+-- acknowledgement state with the inventory untouched.
+function T.yes_and_acknowledgement_cannot_share_one_input_batch()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  control:updateFixed({ { type = "confirm" }, { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_ack", "the batch edge after YES still waits for a later input")
+  Assert.equal(bag:revision(), revision, "the shared batch mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "the shared batch changes no quantities")
+end
+
+-- Cancelling the modal prompt resolves NO: one cancel press returns to
+-- browsing without mutation instead of reopening the action menu.
+function T.modal_cancel_resolves_no_and_returns_to_browsing()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  control:updateFixed({ { type = "cancel" } })
+  Assert.equal(control:status().state, "browsing", "one modal cancel returns to browsing")
+  Assert.equal(bag:revision(), revision, "the modal cancel mutates nothing")
 end
 
 return { tests = T }

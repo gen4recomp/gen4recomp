@@ -400,6 +400,15 @@ local function bagManifest()
             { kind = "text", value = "?" },
           },
         },
+        tossResult = {
+          segments = {
+            { kind = "text", value = "Threw away " },
+            { kind = "quantity" },
+            { kind = "text", value = " " },
+            { kind = "item" },
+            { kind = "text", value = "." },
+          },
+        },
       },
       overlays = {
         actionMenu = {
@@ -440,6 +449,7 @@ local function bagManifest()
           cancelHitRect = bagRect(178, 168, 78, 24),
         },
         descriptionFallback = { frame = bagRect(0, 144, 256, 48), textRect = bagRect(20, 144, 228, 40) },
+        tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
       },
     },
   }

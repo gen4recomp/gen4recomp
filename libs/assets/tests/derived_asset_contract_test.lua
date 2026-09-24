@@ -118,7 +118,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     bag = {
       cacheFormat = "bag-cache-v2",
-      schema = "g4-bag-assets-v10",
+      schema = "g4-bag-assets-v11",
     },
     audio = {
       cacheFormat = "g4-audio-cache-v1",

@@ -33,6 +33,7 @@ BagScreenState.__index = BagScreenState
 ---@field service HgssBagService the live bag service
 ---@field cursor BagCursor the borrowed runtime-only field cursor
 ---@field manifest table<string, unknown> the validated bag presentation manifest
+---@field uiManifest table<string, unknown> the validated field-UI manifest carrying the prompt section
 ---@field monCatalog table<string, unknown> the borrowed compiled mon catalog
 ---@field heroGender "male"|"female" the profile-selected hero backdrop
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
@@ -51,6 +52,18 @@ function BagScreenState.new(opts)
   assert(type(cursor.currentPocket) == "function", "the bag screen requires the cursor pocket")
   assert(type(cursor.setPocket) == "function", "the bag screen requires pocket switching")
   local manifest = assert(opts.manifest, "the bag screen requires the bag presentation manifest")
+  -- The modal toss confirmation binds the generated prompt shape with the
+  -- bag's semantic placement; either missing definition fails the open
+  -- instead of falling back to action slots.
+  local uiManifest = assert(opts.uiManifest, "the bag screen requires the field-UI manifest")
+  local promptSection = assert(uiManifest.yesNoPrompt, "the field-UI manifest carries the prompt section")
+  assert(type(promptSection) == "table", "the field-UI manifest carries the prompt section")
+  local promptShapes = assert(promptSection.shapes, "the prompt section carries its shape map")
+  local promptShape = assert(promptShapes.compact, "the field-UI manifest carries the compact prompt shape")
+  local overlays = assert(manifest.interactive, "the bag manifest carries its interactive pane")
+  assert(type(overlays) == "table", "the bag manifest carries its interactive pane")
+  local bagOverlays = assert(overlays.overlays, "the bag manifest carries its overlay geometry")
+  local tossPrompt = assert(bagOverlays.tossPrompt, "the bag manifest carries its toss prompt placement")
   local monCatalog = assert(opts.monCatalog, "the bag screen requires the mon catalog")
   assert(
     type(monCatalog) == "table" and type(monCatalog.moveByNativeId) == "function",
@@ -100,6 +113,8 @@ function BagScreenState.new(opts)
       model = { refresh = refreshModel },
       cursor = cursor,
       resolveLayout = resolveLayout,
+      promptShape = promptShape,
+      tossPrompt = tossPrompt,
       commands = {
         toss = tossItem,
         move = moveItem,

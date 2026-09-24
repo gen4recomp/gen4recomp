@@ -129,6 +129,22 @@ local function commands(bag)
   }
 end
 
+local function promptShape()
+  local visual = function()
+    return {}
+  end
+  return {
+    width = 48,
+    height = 32,
+    yes = { normal = visual(), selected = visual() },
+    no = { normal = visual(), selected = visual() },
+  }
+end
+
+local function tossPrompt()
+  return { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
+end
+
 ---@param bag HgssBagService
 ---@param cursor BagCursor
 ---@param layoutManifest table<string, unknown>?
@@ -146,6 +162,8 @@ local function controller(bag, cursor, layoutManifest)
     },
     cursor = cursor,
     resolveLayout = resolveLayout,
+    promptShape = promptShape(),
+    tossPrompt = tossPrompt(),
     commands = commands(bag),
     resolveActions = BagActionPolicy.forService(bag),
   })
@@ -380,11 +398,17 @@ function T.confirmed_toss_removes_once_and_returns_to_browsing()
   view = control:status()
   Assert.equal(view.state, "toss_confirm", "confirming a quantity must ask for confirmation")
   Assert.equal(view.quantity, 2, "the confirmation carries the picked quantity")
+  Assert.equal(bag:revision(), revision, "entering confirmation never mutates")
   control:updateFixed({ confirmEvent() })
   view = control:status()
-  Assert.equal(view.state, "browsing", "a committed toss returns to browsing")
+  Assert.equal(view.state, "toss_ack", "accepting YES waits for a later acknowledgement")
+  Assert.equal(bag:quantity("POTION"), 5, "accepting YES changes no quantities")
+  Assert.equal(bag:revision(), revision, "accepting YES bumps no revision")
+  control:updateFixed({ confirmEvent() })
+  view = control:status()
+  Assert.equal(view.state, "browsing", "the acknowledgement returns to browsing")
   Assert.equal(bag:quantity("POTION"), 3, "the toss must remove exactly the confirmed quantity")
-  Assert.equal(bag:revision(), revision + 1, "one confirmation mutates the live service exactly once")
+  Assert.equal(bag:revision(), revision + 1, "one acknowledgement mutates the live service exactly once")
 end
 
 function T.toss_quantity_clamps_to_the_owned_bounds()
@@ -439,6 +463,8 @@ function T.failing_service_call_never_fakes_success()
     },
     cursor = cursor,
     resolveLayout = resolveLayout,
+    promptShape = promptShape(),
+    tossPrompt = tossPrompt(),
     commands = {
       toss = function(_, _)
         return false
@@ -459,6 +485,9 @@ function T.failing_service_call_never_fakes_success()
   openActionMenu(control)
   chooseAction(control, "toss")
   control:updateFixed({ confirmEvent() })
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  control:updateFixed({ confirmEvent() })
+  Assert.equal(control:status().state, "toss_ack", "accepting YES waits for a later acknowledgement")
   control:updateFixed({ confirmEvent() })
   local view = control:status()
   Assert.equal(view.state, "browsing", "a failed toss still leaves the menu")
@@ -566,7 +595,7 @@ function T.pointer_button_tap_matches_the_keyboard_choice()
   local revision = bag:revision()
   tap(control, layout, 220, 176)
   view = control:status()
-  Assert.equal(view.state, "action_menu", "tapping cancel pops one level like the cancel key")
+  Assert.equal(view.state, "browsing", "tapping cancel leaves the picker like the cancel key")
   Assert.equal(bag:revision(), revision, "pointer navigation never mutates")
   backToBrowsing(control)
   Assert.equal(bag:quantity("POTION"), 5, "pointer navigation changes no quantities")
@@ -611,10 +640,15 @@ local function tapButton(control, layout, layoutManifest, buttonIndex)
       or buttonIndex == 2 and controls[3].hitRect
       or buttonIndex == 3 and overlay.quantity.confirm.hitRect
   elseif view.state == "toss_confirm" then
-    -- The confirmation screen draws YES in the bottom-left action slot,
-    -- so pointer confirmation taps that slot instead of the
-    -- quantity-picker confirm rectangle used by the previous state.
-    geometry = assert(overlay.actionMenu.slots[3], "the confirmation slot must be generated").hitRect
+    -- The modal prompt owns its rows: the third button taps YES and any
+    -- other button taps NO, both through prompt geometry the Bag layout
+    -- never names.
+    if buttonIndex == 3 then
+      tap(control, layout, 224, 64)
+    else
+      tap(control, layout, 224, 96)
+    end
+    return
   elseif view.state == "action_menu" then
     local action = assert(view.actions[buttonIndex], "the tapped dynamic action must be present")
     geometry = assert(overlay.actionMenu.slots[action.slot + 1], "the action slot must be generated").hitRect
@@ -679,9 +713,14 @@ function T.pointer_only_toss_picks_confirms_once_without_early_mutation()
   Assert.equal(bag:quantity("POTION"), 5, "entering confirmation changes no quantities")
   tapButton(control, layout, layoutManifest, 3)
   view = control:status()
-  Assert.equal(view.state, "browsing", "a committed toss returns to browsing")
+  Assert.equal(view.state, "toss_ack", "the YES row acknowledges without mutating")
+  Assert.equal(bag:quantity("POTION"), 5, "the acknowledgement changes no quantities yet")
+  Assert.equal(bag:revision(), revision, "the acknowledgement bumps no revision yet")
+  control:updateFixed({ confirmEvent() })
+  view = control:status()
+  Assert.equal(view.state, "browsing", "a later acknowledgement returns to browsing")
   Assert.equal(bag:quantity("POTION"), 2, "the toss must remove exactly the confirmed quantity")
-  Assert.equal(bag:revision(), revision + 1, "one pointer confirmation mutates the live service exactly once")
+  Assert.equal(bag:revision(), revision + 1, "one pointer acknowledgement mutates the live service exactly once")
   tapButton(control, layout, layoutManifest, 3)
   Assert.equal(bag:quantity("POTION"), 2, "a further tap where confirm was mutates nothing")
   Assert.equal(bag:revision(), revision + 1, "a further tap bumps no service revision")
@@ -703,21 +742,19 @@ function T.pointer_only_toss_cancellation_returns_one_level_without_mutation()
   Assert.equal(control:status().quantity, 2, "setup picks two copies")
   tapCancel(control, layout, layoutManifest)
   local view = control:status()
-  Assert.equal(view.state, "action_menu", "cancelling the quantity picker returns to the menu by pointer alone")
+  Assert.equal(view.state, "browsing", "cancelling the quantity picker returns to browsing by pointer alone")
   Assert.equal(bag:revision(), revision, "cancelling the quantity picker mutates nothing")
   Assert.equal(bag:quantity("POTION"), 5, "cancelling the quantity picker changes no quantities")
+  openMenuByPointer(control, layout, 0)
   tapButton(control, layout, layoutManifest, 1)
-  Assert.equal(control:status().state, "toss_quantity", "the menu still offers toss after cancellation")
+  Assert.equal(control:status().state, "toss_quantity", "the reopened menu still offers toss after cancellation")
   tapButton(control, layout, layoutManifest, 3)
   Assert.equal(control:status().state, "toss_confirm", "setup reaches confirmation")
-  tapCancel(control, layout, layoutManifest)
+  tapButton(control, layout, layoutManifest, 2)
   view = control:status()
-  Assert.equal(view.state, "action_menu", "cancelling the confirmation returns to the menu by pointer alone")
-  Assert.equal(bag:revision(), revision, "cancelling the confirmation mutates nothing")
-  Assert.equal(bag:quantity("POTION"), 5, "cancelling the confirmation changes no quantities")
-  tapCancel(control, layout, layoutManifest)
-  Assert.equal(control:status().state, "browsing", "cancelling the menu returns to browsing")
-  Assert.equal(bag:revision(), revision, "the whole cancelled journey mutates nothing")
+  Assert.equal(view.state, "browsing", "the NO row returns to browsing by pointer alone")
+  Assert.equal(bag:revision(), revision, "the NO row mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "the NO row changes no quantities")
 end
 
 function T.pointer_quantity_controls_match_press_and_release_targets()

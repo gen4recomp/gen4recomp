@@ -2,22 +2,28 @@
 -- action states. Browsing keeps the six-cell grid navigation over the
 -- injected view model, pocket switching with per-pocket cursor memory, and
 -- the constrained-topology description overlay. Confirming an item opens the
--- action menu built by the injected policy projection; nested toss quantity,
--- toss confirmation, and manual move-target states mutate only through the
--- injected semantic commands, exactly once per confirmation, with a
+-- action menu built by the injected policy projection; the nested toss
+-- quantity picker, the modal two-row confirmation prompt, its post-choice
+-- acknowledgement, and manual move-target states mutate only through the
+-- injected semantic commands, exactly once per acknowledgement, with a
 -- stale-selection check after every refresh so an external revision can
--- never redirect a pending mutation onto a different item. Every nested
--- cancel pops one level without mutation, and closing returns to the menu.
+-- never redirect a pending mutation onto a different item. Cancelling the
+-- picker or rejecting the prompt returns straight to browsing without
+-- mutation, and closing returns to the menu.
 -- Occupied selection and scroll live in the borrowed field cursor through
 -- its API only; browse focus is a private semantic node (a grid cell, a
 -- pocket tab, or cancel) resolved through the shared focus graph, so empty
 -- cells can own focus without inventing an item selection. Pointer
 -- press/release capture shares the keyboard confirm path, so a drag or a
--- layout change can never activate a moved target. Results are one-shot
+-- layout change can never activate a moved target. Modal confirmation input
+-- belongs to the owned two-row prompt controller and its source geometry;
+-- the Bag layout never names YES/NO targets. Results are one-shot
 -- ({kind="closed"}) with no renderer state and no love dependency.
 
 local BagSave = require("libs.hgss.src.save.BagSave")
+local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local FocusGraph = require("libs.ui.src.FocusGraph")
+local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 ---@class BagControllerCommands semantic mutations bound to the live inventory service
 ---@field toss fun(itemKey: string, quantity: integer): boolean remove owned copies
@@ -36,7 +42,10 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field _focusNode string the private semantic browse focus node
 ---@field _lastSlot integer the most recent grid-cell focus, for tab/cancel return
 ---@field _overlay boolean
----@field _state "browsing"|"action_menu"|"toss_quantity"|"toss_confirm"|"move_select"
+---@field _state "browsing"|"action_menu"|"toss_quantity"|"toss_confirm"|"toss_ack"|"move_select"
+---@field _prompt YesNoPromptController the owned modal prompt for toss confirmation
+---@field _tossPrompt { x: integer, y: integer, shape: string, initialSelection: string } the generated semantic prompt placement
+---@field _ackArmed boolean whether the acknowledgement state accepts its commit input yet
 ---@field _actions table<string, unknown>[]
 ---@field _actionNode integer
 ---@field _actionItemKey string?
@@ -59,6 +68,8 @@ BagController.__index = BagController
 ---@field model { refresh: fun(): table<string, unknown> } the injected view projection
 ---@field cursor BagCursor the borrowed runtime-only field cursor
 ---@field resolveLayout fun(): table<string, unknown> the injected layout resolver
+---@field promptShape { width: integer, height: integer, yes: table<string, unknown>, no: table<string, unknown> } the validated compact prompt shape
+---@field tossPrompt { x: integer, y: integer, shape: string, initialSelection: string } the generated semantic prompt placement
 ---@field commands BagControllerCommands semantic mutations bound to the live inventory service
 ---@field resolveActions fun(view: table<string, unknown>): table<string, unknown>[] the injected inventory-local menu projection over the refreshed view
 
@@ -157,6 +168,15 @@ function BagController.new(opts)
   assert(type(opts.commands.register) == "function", "the bag controller needs its register command")
   assert(type(opts.commands.unregister) == "function", "the bag controller needs its unregister command")
   assert(type(opts.resolveActions) == "function", "the bag controller needs its action policy")
+  assert(type(opts.promptShape) == "table", "the bag controller needs its modal prompt shape")
+  assert(type(opts.tossPrompt) == "table", "the bag controller needs its toss prompt template")
+  -- The modal prompt is bound once and owned for the controller lifetime:
+  -- opening the supplied template here proves a malformed placement fails
+  -- construction instead of falling back to action slots, and disposing
+  -- leaves no active prompt behind.
+  local prompt = YesNoPromptController.new(opts.promptShape)
+  prompt:open(opts.tossPrompt)
+  prompt:dispose()
   local self = setmetatable({
     _model = opts.model,
     _cursor = opts.cursor,
@@ -182,6 +202,9 @@ function BagController.new(opts)
     _pressCapture = nil,
     _quantityPressedControl = nil,
     _quantityPressedTicks = 0,
+    _prompt = prompt,
+    _tossPrompt = opts.tossPrompt,
+    _ackArmed = false,
   }, BagController)
   self._view = self:_refresh()
   self:_reconcile()
@@ -451,8 +474,12 @@ function BagController:_focusedOccupiedAbsolute()
 end
 
 -- Drops every nested action frame and returns to plain browsing. Mutations
--- never ride this path: callers refresh first and commit explicitly.
+-- never ride this path: callers refresh first and commit explicitly. The
+-- owned prompt resets with the menu, so no capture or result survives the
+-- return.
 function BagController:_toBrowsing()
+  self._prompt:dispose()
+  self._ackArmed = false
   self._state = "browsing"
   self._actions = {}
   self._actionNode = 4
@@ -518,15 +545,6 @@ function BagController:_openActionMenu()
   self._state = "action_menu"
 end
 
--- Returns to the action menu with freshly resolved actions, keeping the
--- previous menu position when the list still covers it.
-function BagController:_toActionMenu()
-  self._actions = self:_currentActions()
-  assert(self._actionNode >= 0 and self._actionNode <= 4, "action focus is a physical node")
-  self:_clearQuantityPress()
-  self._state = "action_menu"
-end
-
 ---@param node integer physical action node
 function BagController:_chooseActionNode(node)
   assert(node >= 0 and node <= 4 and node % 1 == 0, "action focus is a physical node")
@@ -572,7 +590,9 @@ function BagController:_moveAction(direction)
 end
 
 -- Enters the quantity picker for the snapshotted item, preselecting one
--- copy. The range always ends at the freshly observed owned quantity.
+-- copy. The range always ends at the freshly observed owned quantity. A
+-- lone owned copy skips the picker and confirms through the modal prompt
+-- directly.
 function BagController:_enterQuantity()
   self:_refresh()
   if not self:_selectionMatchesAction() then
@@ -583,6 +603,10 @@ function BagController:_enterQuantity()
   local owned = checkQuantity(selected.quantity, "selected slots carry a quantity")
   self._quantityMax = owned
   self._quantity = 1
+  if owned == 1 then
+    self:_enterTossConfirm()
+    return
+  end
   self._state = "toss_quantity"
 end
 
@@ -627,9 +651,10 @@ function BagController:_pressQuantityControl(controlIndex)
   self._quantityPressedTicks = ticks
 end
 
--- Confirms the picked quantity into the confirmation state, clamping to
--- whatever the latest refresh still observes. A vanished selection aborts
--- instead of carrying a stale quantity forward.
+-- Confirms the picked quantity into the modal confirmation state, clamping
+-- to whatever the latest refresh still observes. A vanished selection
+-- aborts instead of carrying a stale quantity forward. Opening the owned
+-- prompt through the generated template starts it with YES selected.
 function BagController:_enterTossConfirm()
   self:_refresh()
   if not self:_selectionMatchesAction() then
@@ -641,7 +666,26 @@ function BagController:_enterTossConfirm()
   self._quantityMax = owned
   self._quantity = math.min(self._quantity, owned)
   self:_clearQuantityPress()
+  self._prompt:open(self._tossPrompt)
   self._state = "toss_confirm"
+end
+
+-- Consumes one modal prompt result after a delegated confirmation input:
+-- NO returns straight to browsing, YES waits for a later acknowledgement
+-- in the post-choice state. Accepting YES never mutates; only the
+-- acknowledgement input commits.
+function BagController:_resolveTossPrompt()
+  local result = self._prompt:takeResult()
+  if result == nil then
+    return
+  end
+  if result == "no" then
+    self:_toBrowsing()
+  elseif result == "yes" then
+    self._prompt:dispose()
+    self._state = "toss_ack"
+    self._ackArmed = false
+  end
 end
 
 -- The single toss commit: exactly one service call for one confirmation.
@@ -829,7 +873,12 @@ function BagController:_confirm()
   elseif self._state == "toss_quantity" then
     self:_enterTossConfirm()
   elseif self._state == "toss_confirm" then
-    self:_commitToss()
+    self._prompt:updateFixed({ { type = "confirm" } })
+    self:_resolveTossPrompt()
+  elseif self._state == "toss_ack" then
+    if self._ackArmed then
+      self:_commitToss()
+    end
   elseif self._state == "move_select" then
     self:_commitMove()
   elseif self._focusNode == CANCEL_NODE then
@@ -853,8 +902,15 @@ function BagController:_cancel()
   end
   if self._state == "action_menu" then
     self:_toBrowsing()
-  elseif self._state == "toss_quantity" or self._state == "toss_confirm" then
-    self:_toActionMenu()
+  elseif self._state == "toss_quantity" then
+    self:_toBrowsing()
+  elseif self._state == "toss_confirm" then
+    self._prompt:updateFixed({ { type = "cancel" } })
+    self:_resolveTossPrompt()
+  elseif self._state == "toss_ack" then
+    if self._ackArmed then
+      self:_commitToss()
+    end
   elseif self._state == "move_select" then
     self:_cancelMove()
   else
@@ -965,14 +1021,6 @@ function BagController:_activate(target)
     end
     return
   end
-  if state == "toss_confirm" then
-    if target.kind == "confirm" then
-      self:_commitToss()
-    elseif target.kind == "cancel" then
-      self:_cancel()
-    end
-    return
-  end
   if state == "move_select" then
     if target.kind == "item" then
       assert(type(target.visibleIndex) == "number", "item targets name their cell")
@@ -1022,8 +1070,32 @@ function BagController:_activate(target)
   end
 end
 
+-- A fresh press inside the interaction pane acknowledges the post-choice
+-- state; anything outside it is not an acknowledgement.
+---@param event table<string, unknown>
+---@return boolean
+local function pressInsidePane(event)
+  return type(event.x) == "number"
+    and type(event.y) == "number"
+    and event.x >= 0
+    and event.x < BagLayout.PANE_WIDTH
+    and event.y >= 0
+    and event.y < BagLayout.PANE_HEIGHT
+end
+
 ---@param event table<string, unknown>
 function BagController:_pointerDown(event)
+  if self._state == "toss_confirm" then
+    self._prompt:updateFixed({ event })
+    self:_resolveTossPrompt()
+    return
+  end
+  if self._state == "toss_ack" then
+    if self._ackArmed and pressInsidePane(event) then
+      self:_commitToss()
+    end
+    return
+  end
   if self._pressId ~= nil then
     return
   end
@@ -1068,6 +1140,14 @@ end
 
 ---@param event table<string, unknown>
 function BagController:_pointerUp(event)
+  if self._state == "toss_confirm" then
+    self._prompt:updateFixed({ event })
+    self:_resolveTossPrompt()
+    return
+  end
+  if self._state == "toss_ack" then
+    return
+  end
   if event.pointerId ~= self._pressId then
     return
   end
@@ -1088,6 +1168,11 @@ end
 ---@param event table<string, unknown>
 function BagController:_handleNavigate(event)
   if self._overlay then
+    return
+  end
+  if self._state == "toss_confirm" then
+    self._prompt:updateFixed({ event })
+    self:_resolveTossPrompt()
     return
   end
   if self._state == "action_menu" then
@@ -1157,6 +1242,12 @@ function BagController:updateFixed(uiInput)
       error("unknown bag event type " .. tostring(event.type), 2)
     end
   end
+  -- The acknowledgement only accepts input from a later update: arming it
+  -- here keeps the YES-producing batch from doubling as its own
+  -- acknowledgement.
+  if self._state == "toss_ack" then
+    self._ackArmed = true
+  end
 end
 
 ---@return table<string, unknown>
@@ -1220,11 +1311,17 @@ function BagController:status()
   if self._state == "action_menu" and not self._overlay then
     record.actions = self._actions
     record.actionNode = self._actionNode
-  elseif (self._state == "toss_quantity" or self._state == "toss_confirm") and not self._overlay then
+  elseif
+    (self._state == "toss_quantity" or self._state == "toss_confirm" or self._state == "toss_ack")
+    and not self._overlay
+  then
     record.quantity = self._quantity
     record.quantityMax = self._quantityMax
     if self._state == "toss_quantity" and self._quantityPressedTicks > 0 then
       record.quantityPressedControl = self._quantityPressedControl
+    end
+    if self._state == "toss_confirm" then
+      record.yesNoPrompt = self._prompt:status()
     end
   elseif self._state == "move_select" and not self._overlay then
     record.moveTarget = self._moveTarget
@@ -1244,15 +1341,19 @@ end
 
 function BagController:dispose()
   self:_clearQuantityPress()
+  self._prompt:dispose()
   self._result = nil
   self._closed = true
 end
 
 -- A press held across a layout change must not activate a different
 -- post-layout target, so placement changes cancel the pointer capture.
+-- A modal prompt capture clears with it, so a stale release never
+-- resolves a choice the layout change already abandoned.
 function BagController:cancelPointerCapture()
   self._pressId = nil
   self._pressCapture = nil
+  self._prompt:cancelPointerCapture()
 end
 
 return BagController
