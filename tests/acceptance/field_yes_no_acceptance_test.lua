@@ -176,4 +176,31 @@ function T.tests.message_bearing_field_yes_no_prints_before_opening_choice()
   end)
 end
 
+function T.tests.cancelling_message_bearing_field_yes_no_releases_owned_dialogue()
+  withGame(singleDisplay(640, 480), function(game)
+    game:waitForFieldEntry()
+    local dialogueHost = game.runtime.scripts.dialogueHost
+    local scheduler = game.runtime.scripts.scheduler
+
+    local function cancelMessageBearingChoice(label, predicate)
+      game:startScript("acceptance.field_yes_no_message")
+      game:advanceUntil(label, predicate, 480)
+      local environmentId =
+        assert(scheduler:foregroundEnvironmentId(), "the message-bearing choice script owns the foreground")
+      scheduler:cancelEnvironment(environmentId, "acceptance owned dialogue cleanup")
+
+      Assert.isNil(dialogueHost:yesNoPresentation(), "cancelling removes the choice surface")
+      Assert.isFalse(dialogueHost:isOpen(), "cancelling closes the task-owned ordinary dialogue")
+      Assert.isFalse(game:snapshot().dialogue.modal, "the task-owned dialogue is no longer modal")
+    end
+
+    cancelMessageBearingChoice("message-bearing Yes/No starts printing", function()
+      return dialogueHost:isOpen() and dialogueHost:yesNoPresentation() == nil
+    end)
+    cancelMessageBearingChoice("message-bearing Yes/No opens its choice", function()
+      return dialogueHost:yesNoPresentation() ~= nil
+    end)
+  end)
+end
+
 return T

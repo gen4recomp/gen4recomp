@@ -11,7 +11,7 @@ local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 local AskYesNoTask = {}
 
 AskYesNoTask.type = "ask_yes_no"
-AskYesNoTask.version = 1
+AskYesNoTask.version = 2
 
 ---@param spec table<string, unknown>
 ---@param ctx table<string, unknown>
@@ -30,11 +30,13 @@ function AskYesNoTask.create(spec, ctx)
     return {
       message = message,
       bindings = bindings,
+      ownsMessage = true,
       phase = "printing_message",
       phaseReadyInTicks = 0,
     }
   end
   return {
+    ownsMessage = false,
     phase = "opening",
     phaseReadyInTicks = 1,
   }
@@ -95,8 +97,14 @@ function AskYesNoTask.cancel(state, reason, ctx)
   state.cancelled = reason
   local services = ctx and ctx.services
   local host = type(services) == "table" and services.dialogue or nil
+  if ctx ~= nil then
+    host = assert(host, "ask_yes_no cancellation requires the dialogue host")
+  end
   if host then
     host:closeYesNo()
+    if state.ownsMessage then
+      host:close(true)
+    end
   end
 end
 
@@ -106,6 +114,7 @@ function AskYesNoTask.validate(state)
   if
     type(state) ~= "table"
     or (state.phase ~= "printing_message" and state.phase ~= "opening" and state.phase ~= "waiting_selection")
+    or type(state.ownsMessage) ~= "boolean"
   then
     local context = { state = state }
     ---@cast context Errors.Context

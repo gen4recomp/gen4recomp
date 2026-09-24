@@ -57,7 +57,7 @@ local function harness(opts)
   taskRegistry:register("wait_input", 1, WaitInputTask)
   taskRegistry:register("wait_input_or_ticks", 1, WaitInputOrTicksTask)
   taskRegistry:register("dialogue", DialogueTask.version, DialogueTask)
-  taskRegistry:register("ask_yes_no", 1, AskYesNoTask)
+  taskRegistry:register("ask_yes_no", AskYesNoTask.version, AskYesNoTask)
   local recorder = Diagnostics.newTraceRecorder()
   local scheduler = Scheduler.new({
     semantics = require("libs.hgss.src.script.RuntimeValues"),
@@ -351,6 +351,7 @@ T["askYesNo prints its optional message before opening the choice"] = function()
   Assert.equal(h.host.calls[2].args[2], bindings)
   Assert.equal(h.host.calls[2].args[3], textArgs)
   Assert.equal(state.phase, "printing_message")
+  Assert.isTrue(state.ownsMessage)
 
   local context = { services = h.services, instance = instance }
   Assert.isFalse(AskYesNoTask.poll(state, context).complete)
@@ -375,7 +376,48 @@ T["askYesNo without a message does not open ordinary dialogue"] = function()
   AskYesNoTask.poll(state, { services = { dialogue = host } })
   Assert.isFalse(host:isOpen(), "the choice-only fake must not invent ordinary dialogue")
   Assert.equal(host.calls[1].name, "askYesNo")
+  Assert.isFalse(state.ownsMessage)
   Assert.notNil(AskYesNoTask.validate({ phase = "unknown" }))
+end
+
+T["askYesNo cancellation closes only dialogue it opened"] = function()
+  local h = harness({ printTicks = 2 })
+  local ownedState = AskYesNoTask.create({ node = { message = "msg.question" } }, {
+    services = h.services,
+    instance = { textArgs = {} },
+  })
+  AskYesNoTask.cancel(ownedState, "cancelled", { services = h.services })
+  Assert.isFalse(h.host:isOpen(), "cancelling while printing closes the owned dialogue")
+  Assert.equal(h.host.calls[#h.host.calls - 1].name, "closeYesNo")
+  Assert.equal(h.host.calls[#h.host.calls].name, "close")
+
+  local waitingState = AskYesNoTask.create({ node = { message = "msg.question" } }, {
+    services = h.services,
+    instance = { textArgs = {} },
+  })
+  h.host:advance()
+  AskYesNoTask.poll(waitingState, { services = h.services })
+  h.host:advance()
+  AskYesNoTask.poll(waitingState, { services = h.services })
+  AskYesNoTask.poll(waitingState, { services = h.services })
+  Assert.equal(waitingState.phase, "waiting_selection")
+  AskYesNoTask.cancel(waitingState, "cancelled", { services = h.services })
+  Assert.isFalse(h.host:isOpen(), "cancelling an open choice closes the owned dialogue")
+
+  local borrowedHost = FakeDialogueHost.new()
+  borrowedHost:openMessage({})
+  local borrowedState = AskYesNoTask.create({ node = {} }, {})
+  AskYesNoTask.cancel(borrowedState, "cancelled", { services = { dialogue = borrowedHost } })
+  Assert.isTrue(borrowedHost:isOpen(), "cancelling a current-box choice preserves borrowed dialogue")
+end
+
+T["askYesNo version 2 requires a boolean message ownership bit"] = function()
+  Assert.equal(AskYesNoTask.version, 2)
+  Assert.isNil(AskYesNoTask.validate({ phase = "opening", phaseReadyInTicks = 1, ownsMessage = false }))
+  Assert.notNil(AskYesNoTask.validate({ phase = "opening", phaseReadyInTicks = 1 }))
+  Assert.notNil(AskYesNoTask.validate({ phase = "opening", phaseReadyInTicks = 1, ownsMessage = "yes" }))
+  local h = harness()
+  Assert.equal(h.taskRegistry:resolveCurrent("ask_yes_no"), AskYesNoTask)
 end
 
 local function directYesNoResult(inputs)
@@ -411,10 +453,11 @@ end
 
 T["cancelling active askYesNo closes only the choice surface"] = function()
   local h = harness({ printTicks = 1 })
+  h.host:openMessage({})
   startForeground(
     h,
     script("test.cancel_yesno", {
-      S.askYesNo({ message = "msg.question", result = S.var("VAR_AFTER") }),
+      S.askYesNo({ result = S.var("VAR_AFTER") }),
       S.stop(),
     }),
     100
