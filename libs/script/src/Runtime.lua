@@ -656,6 +656,12 @@ local function handleChooseStarter(node, run)
   return blockOnTask(run, "choose_starter", { node = node })
 end
 
+local function handlePokemonNicknameInput(node, run)
+  requireForeground(run, "pokemon_nickname_input")
+  monsFor(run)
+  return blockOnTask(run, "pokemon_nickname_input", { slot = evalField(node, run, "slot") }, node.result)
+end
+
 local function handleReturnLoanMon(node, run)
   monsFor(run):returnLoanMon(evalField(node, run, "slot"))
   if node.result ~= nil then
@@ -1642,6 +1648,7 @@ HANDLERS.sub_local = handleSubLocal
 HANDLERS.buffer_text = handleBufferText
 HANDLERS.give_mon = handleGiveMon
 HANDLERS.choose_starter = handleChooseStarter
+HANDLERS.pokemon_nickname_input = handlePokemonNicknameInput
 HANDLERS.return_loan_mon = handleReturnLoanMon
 HANDLERS.set_mon_move = handleSetMonMove
 HANDLERS.mon_has_move = handleMonHasMove

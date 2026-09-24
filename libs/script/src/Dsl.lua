@@ -808,6 +808,9 @@ end
 function M.partySelectResult(spec)
   return op("party_select_result", spec)
 end
+function M.pokemonNicknameInput(spec)
+  return op("pokemon_nickname_input", spec)
+end
 
 -- Bag and item constructors. Each takes the single canonical spec table
 -- named by the schema fields; item operands hold native item identities.

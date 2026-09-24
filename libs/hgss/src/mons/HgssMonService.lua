@@ -853,6 +853,14 @@ function HgssMonService:setMonForm(slot0, form)
   self:_store(slot0, mon)
 end
 
+---@param slot0 integer
+---@param nickname string
+function HgssMonService:setNickname(slot0, nickname)
+  local mon = self:_liveMon(slot0)
+  mon.nickname = nickname
+  self:_store(slot0, mon)
+end
+
 ---@param item string|integer
 ---@return boolean
 function HgssMonService:partyHasHeldItem(item)

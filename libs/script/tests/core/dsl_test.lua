@@ -1347,4 +1347,15 @@ function T.constructor_output_has_no_metatables()
   assertNoMetatables(S.script({ api = 1, id = "x", steps = { S.stop() } }), "script")
 end
 
+function T.pokemon_nickname_input_has_a_validated_slot_and_result_shape()
+  local node = S.pokemonNicknameInput({ slot = S.var("VAR_PARTY_SLOT"), result = S.var("VAR_NO_INPUT") })
+  Assert.deepEqual(node, {
+    op = "pokemon_nickname_input",
+    slot = { value = "var", id = "VAR_PARTY_SLOT" },
+    result = { value = "var", id = "VAR_NO_INPUT" },
+  })
+  local script = S.script({ api = 1, id = "test.nickname", steps = { node, S.stop() } })
+  Assert.equal(S.validate(script), true, "the nickname command carries its source result ref")
+end
+
 return { tests = T }

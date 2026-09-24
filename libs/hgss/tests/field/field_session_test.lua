@@ -2967,6 +2967,61 @@ function T.a_successful_open_consumes_the_tick_without_stepping_the_world()
   Assert.equal(session.tick, 1)
 end
 
+function T.pokemon_naming_owns_normalized_ui_input_and_balances_capture_lifetime()
+  local active = false
+  local captured, cleared = 0, 0
+  ---@type table<string, unknown>|nil
+  local forwarded = nil
+  local input = idleInput()
+  function input:uiSnapshot()
+    return { { type = "confirm" } }
+  end
+  function input:beginUi()
+    captured = captured + 1
+  end
+  function input:clearUi()
+    cleared = cleared + 1
+  end
+  local naming = {
+    isActive = function()
+      return active
+    end,
+  }
+  local scheduler = baseOptions({}).scriptScheduler
+  scheduler.step = function(_, tick, inputSnapshot)
+    if tick == 1 then
+      active = true
+    elseif tick == 2 then
+      forwarded = inputSnapshot
+      active = false
+    end
+  end
+  local session = FieldSession.new(baseOptions({ input = input, pokemonNaming = naming, scriptScheduler = scheduler }))
+  session:updateFixed({ actionPressed = "a", cancelPressed = "b", pressedDirection = "north" })
+  Assert.equal(captured, 1, "opening the naming modal begins UI capture once")
+  session:updateFixed({ actionPressed = "a", cancelPressed = "b", pressedDirection = "north" })
+  local routed = assert(forwarded, "the active modal receives its scheduler snapshot")
+  Assert.deepEqual(routed.uiEvents, { { type = "confirm" } }, "the active modal receives normalized events")
+  Assert.isNil(routed.pressedAction)
+  Assert.isNil(routed.pressedCancel)
+  Assert.isNil(routed.pressedDirection)
+  Assert.equal(cleared, 1, "closing the naming modal clears UI capture once")
+end
+
+function T.script_owned_field_modals_cannot_be_active_together()
+  local active = {
+    isActive = function()
+      return true
+    end,
+  }
+  local session = FieldSession.new(baseOptions({ starterChoice = active, pokemonNaming = active }))
+  local ok, err = pcall(function()
+    session:updateFixed({})
+  end)
+  Assert.isFalse(ok)
+  Assert.isTrue(tostring(err):find("mutually exclusive", 1, true) ~= nil)
+end
+
 -- The ordinary field-audio event is the completed step: only a committing
 -- tick advances the soundplate selection (not every fixed tick, and not the
 -- modal early-return ticks). While movement is stalled or locked the tick

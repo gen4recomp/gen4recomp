@@ -208,6 +208,7 @@ end
 ---@field itemCatalog table<string, unknown>|nil the shared item catalog for item/pocket/TM/berry text (absent -> SCRIPT_UNSUPPORTED_REACHABLE on use)
 ---@field starterProvider table<string, unknown>|nil the default starter roster for the blocking starter task (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterChoice table<string, unknown>|nil the modal starter-choice surface the blocking task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field pokemonNaming table<string, unknown>|nil the script-owned Pokemon Naming Screen host
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -393,6 +394,7 @@ function FieldScripts.new(opts)
       items = opts.items,
       starterProvider = opts.starterProvider,
       starterChoice = opts.starterChoice,
+      pokemonNaming = opts.pokemonNaming,
       followingMon = opts.followingMon,
       followerTransition = opts.followerTransition,
       starterBalls = opts.starterBalls,

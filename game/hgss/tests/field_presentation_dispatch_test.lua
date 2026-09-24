@@ -30,6 +30,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.hgss.src.ui.StartMenuRenderer",
   "libs.hgss.src.ui.TrainerCardRenderer",
   "libs.hgss.src.ui.PartyScreenRenderer",
+  "libs.hgss.src.ui.NamingScreenRenderer",
   "libs.hgss.src.presentation.MonIconAssetProvider",
   "libs.hgss.src.presentation.ItemIconAssetProvider",
   "libs.hgss.src.presentation.FollowingMonTransitionRenderer",
@@ -183,9 +184,34 @@ local function buildDoubles(sink, calls)
         return party
       end,
     },
+    ["libs.hgss.src.ui.NamingScreenRenderer"] = {
+      new = function(options)
+        calls.namingDrawSubject = options.drawSubject
+        return {
+          dispose = function(_)
+            calls.namingDisposed = (calls.namingDisposed or 0) + 1
+            calls.iconProviderReleasedDuringNamingDispose = calls.icons
+            calls.namingImageReleased = (calls.namingImageReleased or 0) + 1
+          end,
+        }
+      end,
+    },
     ["libs.hgss.src.presentation.MonIconAssetProvider"] = {
       new = function(_)
-        return releasable(calls, "icons")
+        local provider = releasable(calls, "icons")
+        function provider:dimensions(iconKey)
+          calls.iconDimensions = iconKey
+          return { width = 24, height = 24 }
+        end
+        function provider:image()
+          calls.iconImage = (calls.iconImage or 0) + 1
+          return "borrowed-icon-image"
+        end
+        function provider:quadFor(iconKey)
+          calls.iconQuad = iconKey
+          return "borrowed-icon-quad"
+        end
+        return provider
       end,
     },
     ["libs.hgss.src.presentation.ItemIconAssetProvider"] = {
@@ -304,6 +330,35 @@ function T.pokemon_routes_only_to_the_party_presenter()
   if not ok then
     error(err, 0)
   end
+end
+
+function T.pokemon_naming_renderer_borrows_the_shared_mon_icons_and_owns_its_images()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    resources:pokemonNamingRenderer()
+    local drawCalls = {}
+    calls.namingDrawSubject({
+      draw = function(image, quad, x, y, rotation, scaleX, scaleY)
+        drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
+      end,
+    }, { iconKey = "species:1:form:0" }, { x = 10, y = 20, width = 48, height = 24 })
+    Assert.equal(calls.iconDimensions, "species:1:form:0", "the naming subject resolves through shared mon icons")
+    Assert.equal(calls.iconImage, 1, "the naming subject draws the shared provider image")
+    Assert.equal(calls.iconQuad, "species:1:form:0", "the naming subject draws the shared provider quad")
+    Assert.equal(#drawCalls, 1, "the naming subject draws one borrowed icon")
+    Assert.equal(drawCalls[1][1], "borrowed-icon-image", "the icon image comes from the shared provider")
+    Assert.equal(drawCalls[1][2], "borrowed-icon-quad", "the icon quad comes from the shared provider")
+    Assert.isNil(calls.icons, "using the naming renderer never releases the borrowed icon provider")
+
+    resources:dispose()
+    Assert.equal(calls.namingDisposed, 1, "field resources dispose their naming renderer once")
+    Assert.equal(calls.namingImageReleased, 1, "naming disposal releases its owned image")
+    Assert.isNil(
+      calls.iconProviderReleasedDuringNamingDispose,
+      "naming renderer disposal leaves its borrowed icon provider to the field owner"
+    )
+    Assert.equal(calls.icons, 1, "field resources release the borrowed icon provider once")
+  end)
 end
 
 function T.trainer_card_routes_only_to_the_card_presenter()

@@ -26,6 +26,7 @@ local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
+local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
@@ -40,6 +41,8 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 ---@field followingMonTransition FollowingMonTransitionController?
 
 ---@class FieldPresentationResources
+---@field cacheFs CacheFs generated asset filesystem
+---@field uiManifest table<string, unknown> validated field UI manifest
 ---@field renderer FieldRenderer?
 ---@field windowRenderer FieldWindowRenderer? the one shared frame-strip atlas owner lent to dialogue rendering
 ---@field applicationFrameIndex integer? the snapshotted player-owned frame choice for application borders
@@ -51,6 +54,7 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
+---@field namingRenderer NamingScreenRenderer? lazily owned script naming renderer
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
@@ -158,7 +162,7 @@ end
 ---@param runtime FieldPresentationResourcesRuntime
 ---@return FieldPresentationResources
 function FieldPresentationResources.new(runtime)
-  local self = setmetatable({}, FieldPresentationResources)
+  local self = setmetatable({ cacheFs = runtime.cacheFs, uiManifest = runtime.uiManifest }, FieldPresentationResources)
   local ok, err = pcall(function()
     self.renderer = FieldRenderer.new({
       clearColor = { 0, 0, 0, 1 },
@@ -269,6 +273,42 @@ function FieldPresentationResources.new(runtime)
   return self
 end
 
+---@return NamingScreenRenderer the lazily created naming renderer
+function FieldPresentationResources:pokemonNamingRenderer()
+  if self.namingRenderer ~= nil then
+    return self.namingRenderer
+  end
+  local graphics = assert(love and love.graphics, "Pokemon naming renderer requires graphics")
+  local cacheFs = assert(self.cacheFs, "field presentation owns its cache filesystem")
+  local function drawSubject(hostGraphics, subject, rect)
+    local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
+    local icons = assert(self.monIconProvider, "field presentation owns the mon icon provider")
+    local dimensions = icons:dimensions(iconKey)
+    local scale = math.min(rect.width / dimensions.width, rect.height / dimensions.height)
+    hostGraphics.draw(
+      icons:image(),
+      icons:quadFor(iconKey),
+      rect.x + (rect.width - dimensions.width * scale) / 2,
+      rect.y + (rect.height - dimensions.height * scale) / 2,
+      0,
+      scale,
+      scale
+    )
+  end
+  local function imageLoader(path)
+    local bytes = assert(cacheFs:read(path), "missing generated naming image " .. path)
+    return graphics.newImage(love.filesystem.newFileData(bytes, path))
+  end
+  self.namingRenderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = assert(self.textRenderer, "field text renderer is unavailable"),
+    drawSubject = drawSubject,
+    manifest = assert(self.uiManifest, "field UI manifest is unavailable"),
+    imageLoader = imageLoader,
+  })
+  return self.namingRenderer
+end
+
 -- Draws the current application through its registered presenter. The map is
 -- built once per instance alongside the renderers it borrows; a draw never
 -- acquires resources. An application id without a presenter is a composition
@@ -332,6 +372,10 @@ function FieldPresentationResources:dispose()
   if self.trainerCardRenderer then
     self.trainerCardRenderer:release()
     self.trainerCardRenderer = nil
+  end
+  if self.namingRenderer then
+    self.namingRenderer:dispose()
+    self.namingRenderer = nil
   end
   if self.monIconProvider then
     self.monIconProvider:release()

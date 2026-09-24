@@ -605,6 +605,14 @@ function FieldState:draw()
       )
     end
   end
+  local pokemonNaming = self.runtime.pokemonNaming
+  assert(
+    starter == nil or not starter:isActive() or pokemonNaming == nil or not pokemonNaming:isActive(),
+    "script-owned field modals are mutually exclusive"
+  )
+  if pokemonNaming ~= nil and pokemonNaming:isActive() then
+    pokemonNaming:drawPresentation(resources:pokemonNamingRenderer())
+  end
   if self.development and self._developmentOverlayVisible then
     self._fpsFrames = self._fpsFrames + 1
     self:_drawHud()

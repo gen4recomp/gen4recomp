@@ -363,12 +363,48 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
 
     -- The field script, not the application, owns story continuation: the
     -- source sets its own starter flag and releases the field only after
-    -- presentation is restored. The resumed tail runs 605/608, the nickname
-    -- menu (declined deterministically through the contextual cancel edge,
-    -- the source no-nickname branch), follower movements, and the closing
-    -- scene updates, so the driver must answer the context menu the same
-    -- way instead of pumping dialogue alone.
+    -- presentation is restored. The resumed tail runs 605/608, then exercises
+    -- both retail nickname outcomes: unchanged input must reopen the retry
+    -- prompt, and changed input must resume the source script to completion.
     local continued = (function()
+      local function namingActive()
+        local naming = game.runtime.pokemonNaming
+        return naming ~= nil and naming:isActive()
+      end
+
+      local function waitForNaming()
+        for _ = 1, 1500 do
+          if game.runtime.errorText then
+            error("starter script faulted before Pokemon Naming Screen activation: " .. game.runtime.errorText)
+          end
+          if namingActive() then
+            return
+          end
+          if game:snapshot().dialogue.modal then
+            game.runtime:pressAction()
+            game:step()
+            game.runtime:releaseAction()
+          else
+            game:step()
+          end
+        end
+        error("starter script did not activate the production Pokemon Naming Screen")
+      end
+
+      local function submitAtOk()
+        -- The production keyboard opens focused on K (row 2, column 1).
+        -- Move through the source control row to OK using ordinary field UI
+        -- input; no controller or result state is injected by the test.
+        game:move("north")
+        for _ = 1, 4 do
+          game:move("east")
+        end
+        game:pressAction()
+        game:advanceUntil("Pokemon Naming Screen closes after source OK", function()
+          return not namingActive()
+        end, 120)
+      end
+
       local function starterEnded()
         for _, record in ipairs(recordsNamed(game, "script.ended")) do
           if record.payload.scriptId == STARTER_SCRIPT then
@@ -393,9 +429,41 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
           return { stopped = true }
         end
         if game:contextChoiceStatus() ~= nil then
-          game.runtime:pressCancel()
-          game:step()
-          game.runtime:releaseCancel()
+          if game.runtime.monService:partyMon(0).nickname ~= nil then
+            game:pressAction()
+          else
+            Assert.equal(
+              game.runtime.monService:partyMon(0).nickname,
+              nil,
+              "starter begins without a materialized nickname"
+            )
+            game:pressAction()
+            waitForNaming()
+
+            -- Submit the initial species display name unchanged. Source result
+            -- 1 is observed through the retail retry prompt and no party write.
+            submitAtOk()
+            Assert.equal(game.runtime.monService:partyMon(0).nickname, nil, "unchanged input leaves nickname nil")
+            game:advanceUntil("unchanged nickname returns to the source retry prompt", function()
+              return game:contextChoiceStatus() ~= nil and not namingActive()
+            end, 120)
+            Assert.equal(
+              game.runtime.monService:partyMon(0).nickname,
+              nil,
+              "retry prompt does not materialize a nickname"
+            )
+
+            game:move("east")
+            game:pressAction()
+            waitForNaming()
+            -- B deletes the final glyph; move one cell right and accept the
+            -- adjacent glyph so the submitted nickname differs from the source.
+            game.runtime:pressCancel()
+            game:move("east")
+            game:pressAction()
+            submitAtOk()
+            Assert.notNil(game.runtime.monService:partyMon(0).nickname, "changed input commits through MonService")
+          end
         elseif snapshot.dialogue.modal then
           game.runtime:pressAction()
           game:step()

@@ -1023,6 +1023,12 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  pokemon_nickname_input = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
   -- Follower operations. Every node routes to the one field following
   -- controller through the injected collaborator; boolean results write 1
   -- or 0, and the movement mode carries one semantic mode string.
@@ -1767,6 +1773,11 @@ Schema.CONSTRUCTORS = {
         signature = "S.partySelectResult(spec)",
         canonical = "op=party_select_result",
         notes = "spec={result}; copies the slot or 255 on cancel.",
+      },
+      {
+        signature = "S.pokemonNicknameInput(spec)",
+        canonical = "op=pokemon_nickname_input",
+        notes = "spec={slot,result}; blocks on the field Pokemon Naming Screen.",
       },
     },
   },

@@ -48,6 +48,7 @@ local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryContro
 ---@field menuHost FieldMenuHost
 ---@field contextChoice ContextChoiceProvider
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
+---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field fieldEntranceIndicator FieldEntranceIndicator
@@ -80,6 +81,7 @@ local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryContro
 ---@field menuHost FieldMenuHost
 ---@field contextChoice ContextChoiceProvider
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
+---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController the fixed-tick signpost controller (save-gate interrogation only; the scheduler steps it)
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field fieldEntranceIndicator FieldEntranceIndicator
@@ -292,6 +294,7 @@ function FieldSession.new(options)
     menuHost = options.menuHost,
     contextChoice = options.contextChoice,
     starterChoice = options.starterChoice,
+    pokemonNaming = options.pokemonNaming,
     signpost = options.signpost,
     applicationHost = options.applicationHost,
     fieldEntranceIndicator = options.fieldEntranceIndicator,
@@ -582,7 +585,11 @@ local function runScriptPhase(self, inputSnapshot)
   -- suppresses the raw field edges for that tick.
   local starterChoice = self.starterChoice
   local starterChoiceModal = starterChoice ~= nil and starterChoice:isActive()
-  if menuModal or contextChoiceModal or starterChoiceModal then
+  local pokemonNaming = self.pokemonNaming
+  local pokemonNamingModal = pokemonNaming ~= nil and pokemonNaming:isActive()
+  assert(not (starterChoiceModal and pokemonNamingModal), "script-owned field modals are mutually exclusive")
+  local scriptModal = starterChoiceModal or pokemonNamingModal
+  if menuModal or contextChoiceModal or scriptModal then
     local uiEvents = self.input:uiSnapshot(self.tick + 1)
     if menuModal then
       schedulerInput.menuEvents = self.menuHost:inputEvents(uiEvents)
@@ -602,9 +609,12 @@ local function runScriptPhase(self, inputSnapshot)
     self.input:clearUi()
   end
   local starterChoiceNowModal = starterChoice ~= nil and starterChoice:isActive()
-  if not starterChoiceModal and starterChoiceNowModal then
+  local pokemonNamingNowModal = pokemonNaming ~= nil and pokemonNaming:isActive()
+  assert(not (starterChoiceNowModal and pokemonNamingNowModal), "script-owned field modals are mutually exclusive")
+  local scriptModalNow = starterChoiceNowModal or pokemonNamingNowModal
+  if not scriptModal and scriptModalNow then
     self.input:beginUi(self.tick + 1)
-  elseif starterChoiceModal and not starterChoiceNowModal then
+  elseif scriptModal and not scriptModalNow then
     self.input:clearUi()
   end
   return playerInputOwnedAtTickStart

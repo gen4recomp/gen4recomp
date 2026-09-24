@@ -18,7 +18,7 @@ local function openService(catalog, seed, opts)
   opts = opts or {}
   return HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint()),
+    bucket = opts.bucket or MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), catalog:fingerprint()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -75,6 +75,18 @@ function T.counts_observe_the_live_party()
   Assert.equal(service:partyCountAtOrBelowLevel(4), 0)
   Assert.equal(service:countSpecies("CHIKORITA"), 1)
   Assert.equal(service:countSpecies("EEVEE"), 0)
+end
+
+function T.nickname_mutation_publishes_one_slot_and_survives_capture()
+  local catalog, service = twoMonService()
+  local revision = service:partyRevision()
+  local untouched = service:partyMon(1)
+  service:setNickname(0, "LEAF")
+  Assert.equal(service:partyRevision(), revision + 1)
+  Assert.equal(service:partyMon(0).nickname, "LEAF")
+  Assert.deepEqual(service:partyMon(1), untouched)
+  local restored = openService(catalog, 0xAAAAAAAA, { bucket = service:capture() })
+  Assert.equal(restored:partyMon(0).nickname, "LEAF")
 end
 
 function T.searches_report_zero_based_slots_or_nothing()

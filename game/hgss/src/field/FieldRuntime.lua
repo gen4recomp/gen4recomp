@@ -160,6 +160,7 @@ end
 ---@field contextChoiceProvider ContextChoiceProvider?
 ---@field starterProvider table<string, unknown> the hand-editable default starter roster, injected into the starter task
 ---@field starterChoice StarterChoiceState? the modal starter-choice surface the blocking task opens and closes
+---@field pokemonNaming PokemonNamingState the script-owned Pokemon Naming Screen host
 ---@field menuHost FieldMenuHost?
 ---@field actionKeys table<string, boolean>?
 ---@field cancelKeys table<string, boolean>?
@@ -922,6 +923,12 @@ function FieldRuntime:_load()
       measureDisplay = starterMeasureDisplay,
       overrides = starterOverrides,
     })
+    local namingOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.naming_screen or nil
+    self.pokemonNaming = require("game.hgss.src.field.PokemonNamingState").new({
+      charmap = fontDef.charmap,
+      measureDisplay = starterMeasureDisplay,
+      overrides = namingOverrides,
+    })
     self.actionKeys = HgssInputBindings.actionKeys()
     self.cancelKeys = HgssInputBindings.cancelKeys()
     self.menuKeys = HgssInputBindings.menuKeys()
@@ -1069,6 +1076,7 @@ function FieldRuntime:_load()
       itemCatalog = self.itemCatalog,
       starterProvider = self.starterProvider,
       starterChoice = self.starterChoice,
+      pokemonNaming = self.pokemonNaming,
       followingMon = self.followingMon,
       followerTransition = self.followingMonTransition,
       starterBalls = self.starterBalls,
@@ -1157,6 +1165,7 @@ function FieldRuntime:_load()
       menuHost = self.menuHost,
       contextChoice = self.contextChoiceProvider,
       starterChoice = self.starterChoice,
+      pokemonNaming = self.pokemonNaming,
       signpost = self.signpost,
       applicationHost = self.applicationHost,
       -- The session's fixed-tick audio collaborator is the production
@@ -1921,7 +1930,7 @@ function FieldRuntime:_releaseAll()
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.itemCatalog = nil
-  self.starterProvider, self.starterChoice = nil, nil
+  self.starterProvider, self.starterChoice, self.pokemonNaming = nil, nil, nil
 end
 
 -- End the state's lifetime: persist the field session if one is live, then
@@ -1952,6 +1961,9 @@ function FieldRuntime:dispose()
   -- the task owns.
   if self.starterChoice then
     self.starterChoice:dispose()
+  end
+  if self.pokemonNaming then
+    self.pokemonNaming:dispose()
   end
   self:_releaseAll()
 end
