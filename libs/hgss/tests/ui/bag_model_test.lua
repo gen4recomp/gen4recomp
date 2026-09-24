@@ -30,6 +30,7 @@ local SLOT_KEYS = {
   "item",
   "nativeId",
   "name",
+  "namePlural",
   "quantity",
   "description",
   "icon",
@@ -98,6 +99,7 @@ function T.slots_join_catalog_display_and_service_quantities()
   Assert.equal(slot.item, "POTION")
   Assert.equal(slot.nativeId, 17)
   Assert.equal(slot.name, "Potion")
+  Assert.equal(slot.namePlural, "Potions", "the projection carries the catalog plural display fact")
   Assert.equal(slot.quantity, 5)
   Assert.equal(slot.description, "Potion description")
   Assert.equal(slot.icon, "POTION")

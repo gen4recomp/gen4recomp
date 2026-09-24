@@ -57,14 +57,14 @@ end
 
 -- Formats one generated prompt template over display facts the controller
 -- already projected. Text segments contribute their generated literal, item
--- segments the selected display name, and quantity segments the validated
--- decimal amount. The closed three-kind vocabulary keeps bag prompts free
--- of a general control-code interpreter.
+-- segments the resolved display name the caller selected, and quantity
+-- segments the validated decimal amount. The closed three-kind vocabulary
+-- keeps bag prompts free of a general control-code interpreter.
 ---@param template table<string, unknown>
----@param selected table<string, unknown>
+---@param itemName string
 ---@param quantity integer?
 ---@return string
-local function formatBagTemplate(template, selected, quantity)
+local function formatBagTemplate(template, itemName, quantity)
   assert(type(template) == "table", "the bag prompt needs its generated template")
   local segments = assert(template.segments, "the bag prompt template carries its segments")
   assert(type(segments) == "table" and #segments >= 1, "the bag prompt template carries its segments")
@@ -75,9 +75,8 @@ local function formatBagTemplate(template, selected, quantity)
       assert(type(segment.value) == "string" and segment.value ~= "", "text segments carry a literal")
       parts[#parts + 1] = segment.value
     elseif segment.kind == "item" then
-      local name = assert(selected.name, "item segments need the selected display name")
-      assert(type(name) == "string" and name ~= "", "item segments need the selected display name")
-      parts[#parts + 1] = name
+      assert(type(itemName) == "string" and itemName ~= "", "item segments need the selected display name")
+      parts[#parts + 1] = itemName
     elseif segment.kind == "quantity" then
       assert(type(quantity) == "number", "quantity segments need the picked amount")
       assert(
@@ -105,24 +104,33 @@ local function promptText(presentation, manifest)
   local generated = assert(interactive.text, "the bag manifest must carry its semantic text")
   if state == "move_select" then
     local selected = assert(presentation.selected, "the move prompt needs its selected item")
-    return formatBagTemplate(assert(generated.movePrompt, "the bag manifest carries its move prompt"), selected)
+    local name = assert(selected.name, "the move prompt needs its selected display name")
+    return formatBagTemplate(assert(generated.movePrompt, "the bag manifest carries its move prompt"), name)
   elseif state == "toss_quantity" then
     local selected = assert(presentation.selected, "the toss prompt needs its selected item")
-    return formatBagTemplate(assert(generated.tossQuantity, "the bag manifest carries its toss prompt"), selected)
+    local name = assert(selected.name, "the toss prompt needs its selected display name")
+    return formatBagTemplate(assert(generated.tossQuantity, "the bag manifest carries its toss prompt"), name)
   elseif state == "toss_confirm" then
     local selected = assert(presentation.selected, "the toss prompt needs its selected item")
+    local name = assert(selected.name, "the confirmation prompt needs its selected display name")
     local quantity = assert(presentation.quantity, "the confirmation prompt carries its amount")
     return formatBagTemplate(
       assert(generated.tossConfirm, "the bag manifest carries its confirmation prompt"),
-      selected,
+      name,
       quantity
     )
   elseif state == "toss_ack" then
     local selected = assert(presentation.selected, "the toss prompt needs its selected item")
     local quantity = assert(presentation.quantity, "the acknowledgement carries its amount")
+    local name = assert(selected.name, "the acknowledgement needs its singular display name")
+    local plural = assert(selected.namePlural, "the acknowledgement needs its plural display name")
+    local itemName = name
+    if quantity ~= 1 then
+      itemName = plural
+    end
     return formatBagTemplate(
       assert(generated.tossResult, "the bag manifest carries its result text"),
-      selected,
+      itemName,
       quantity
     )
   end

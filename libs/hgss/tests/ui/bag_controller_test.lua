@@ -172,6 +172,16 @@ local function navigate(direction)
   return { type = "navigate", direction = direction }
 end
 
+-- Runs one latched modal choice through its full confirmation interval:
+-- eight waiting updates hold confirmation, and the terminal update
+-- publishes the latched result.
+---@param control table
+local function settlePromptChoice(control)
+  for _ = 1, 9 do
+    control:updateFixed({})
+  end
+end
+
 local function selectedKey(status)
   local selected = status.selected
   if selected == nil then
@@ -678,13 +688,17 @@ function T.pointer_quantity_steps_confirm_and_nested_cancel_hold_across_updates(
   tap(control, layout, 144, 176)
   Assert.equal(control:status().state, "toss_confirm", "the confirm affordance asks for confirmation")
   -- Toss confirmation is a modal Yes/No prompt, not a Bag action slot: the
-  -- YES row acknowledges into a post-choice state without mutating, and only
-  -- a later acknowledgement commits.
+  -- YES row latches through the prompt interval into a post-choice state
+  -- without mutating, and only a later acknowledgement commits.
   tap(control, layout, 224, 64)
+  settlePromptChoice(control)
   local acknowledged = control:status()
   Assert.equal(acknowledged.state, "toss_ack", "tapping the YES row acknowledges without mutating")
   Assert.equal(bag:quantity("POTION"), 5, "the YES tap changes no quantities")
   Assert.equal(bag:revision(), revision, "the YES tap bumps no service revision")
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_ack", "the acknowledgement waits for a later input")
+  Assert.equal(bag:revision(), revision, "arming the acknowledgement mutates nothing")
   control:updateFixed({ { type = "confirm" } })
   local status = control:status()
   Assert.equal(status.state, "browsing", "the later acknowledgement returns to browsing")
@@ -1215,6 +1229,7 @@ function T.down_then_confirm_rejects_the_toss()
   local prompt = assert(control:status().yesNoPrompt, "the confirmation exposes its modal prompt")
   Assert.equal(prompt.selected, "no", "down toggles YES to NO")
   control:updateFixed({ { type = "confirm" } })
+  settlePromptChoice(control)
   local status = control:status()
   Assert.equal(status.state, "browsing", "accepting NO returns to browsing")
   Assert.equal(bag:revision(), revision, "a rejected toss mutates nothing")
@@ -1243,6 +1258,7 @@ function T.pointer_rows_resolve_the_choice_and_retired_controls_resolve_nothing(
   Assert.equal(control:status().state, "toss_confirm", "the retired cancel coordinate never cancels")
   Assert.equal(bag:revision(), revision, "the retired cancel coordinate mutates nothing")
   tap(control, layout, 224, 96)
+  settlePromptChoice(control)
   Assert.equal(control:status().state, "browsing", "the NO row returns to browsing")
   Assert.equal(bag:revision(), revision, "the NO row mutates nothing")
   Assert.equal(bag:quantity("POTION"), 5, "the NO row changes no quantities")
@@ -1251,6 +1267,7 @@ function T.pointer_rows_resolve_the_choice_and_retired_controls_resolve_nothing(
   control:updateFixed({ { type = "confirm" } })
   Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation again")
   tap(control, layout, 224, 64)
+  settlePromptChoice(control)
   local acknowledged = control:status()
   Assert.equal(acknowledged.state, "toss_ack", "the YES row acknowledges without mutating")
   Assert.isNil(acknowledged.yesNoPrompt, "the prompt closes once YES is accepted")
@@ -1273,10 +1290,13 @@ function T.yes_then_a_later_acknowledgement_commits_exactly_once()
   tap(control, layout, 144, 144)
   control:updateFixed({ { type = "confirm" } })
   control:updateFixed({ { type = "confirm" } })
+  settlePromptChoice(control)
   local acknowledged = control:status()
   Assert.equal(acknowledged.state, "toss_ack", "accepting YES enters the acknowledgement state")
   Assert.equal(acknowledged.quantity, 1, "the acknowledgement carries the picked amount")
   Assert.equal(bag:revision(), revision, "entering the acknowledgement mutates nothing")
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_ack", "the acknowledgement waits for a later input")
   control:updateFixed({ { type = "confirm" } })
   local committed = control:status()
   Assert.equal(committed.state, "browsing", "the acknowledgement returns to browsing")
@@ -1303,6 +1323,7 @@ function T.yes_and_acknowledgement_cannot_share_one_input_batch()
   control:updateFixed({ { type = "confirm" } })
   Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
   control:updateFixed({ { type = "confirm" }, { type = "confirm" } })
+  settlePromptChoice(control)
   Assert.equal(control:status().state, "toss_ack", "the batch edge after YES still waits for a later input")
   Assert.equal(bag:revision(), revision, "the shared batch mutates nothing")
   Assert.equal(bag:quantity("POTION"), 5, "the shared batch changes no quantities")
@@ -1323,8 +1344,118 @@ function T.modal_cancel_resolves_no_and_returns_to_browsing()
   control:updateFixed({ { type = "confirm" } })
   Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
   control:updateFixed({ { type = "cancel" } })
+  settlePromptChoice(control)
   Assert.equal(control:status().state, "browsing", "one modal cancel returns to browsing")
   Assert.equal(bag:revision(), revision, "the modal cancel mutates nothing")
+end
+
+-- Accepting YES only latches the modal choice: the controller stays in
+-- the confirmation state through every later prompt update, mirrors the
+-- prompt highlight phase, and only the terminal prompt update acknowledges
+-- into the post-choice state without mutating. A later acknowledgement
+-- still commits exactly once.
+function T.toss_acceptance_waits_through_the_prompt_interval_before_acknowledging()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  control:updateFixed({ { type = "confirm" } })
+  local latched = control:status()
+  Assert.equal(latched.state, "toss_confirm", "the choice input latches without leaving confirmation")
+  local prompt = assert(latched.yesNoPrompt, "the confirmation exposes its modal prompt")
+  Assert.equal(prompt.selected, "yes", "the choice input keeps the YES row")
+  Assert.isTrue(prompt.selectionHighlighted, "the choice input leaves the row highlighted")
+  Assert.equal(bag:revision(), revision, "latching the choice mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "latching the choice changes no quantities")
+  local phases = { true, true, false, false, true, true, false, false }
+  for index, phase in ipairs(phases) do
+    control:updateFixed({})
+    local waiting = control:status()
+    Assert.equal(waiting.state, "toss_confirm", "interval update " .. index .. " stays in confirmation")
+    local waitingPrompt = assert(waiting.yesNoPrompt, "interval update " .. index .. " keeps its prompt")
+    Assert.equal(waitingPrompt.selected, "yes", "interval update " .. index .. " keeps the YES row")
+    if phase then
+      Assert.isTrue(waitingPrompt.selectionHighlighted, "interval update " .. index .. " shows the blink phase")
+    else
+      Assert.isFalse(waitingPrompt.selectionHighlighted, "interval update " .. index .. " shows the blink phase")
+    end
+    Assert.equal(bag:revision(), revision, "interval update " .. index .. " mutates nothing")
+  end
+  Assert.equal(bag:quantity("POTION"), 5, "the whole interval changes no quantities")
+  control:updateFixed({ { type = "confirm" } })
+  local acknowledged = control:status()
+  Assert.equal(acknowledged.state, "toss_ack", "the terminal prompt update acknowledges the choice")
+  Assert.isNil(acknowledged.yesNoPrompt, "the prompt closes once YES is accepted")
+  Assert.equal(bag:revision(), revision, "the terminal update mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "the terminal update changes no quantities")
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_ack", "the acknowledgement waits for a later input")
+  Assert.equal(bag:revision(), revision, "arming the acknowledgement mutates nothing")
+  control:updateFixed({ { type = "confirm" } })
+  local committed = control:status()
+  Assert.equal(committed.state, "browsing", "the later acknowledgement returns to browsing")
+  Assert.equal(bag:quantity("POTION"), 4, "the acknowledgement removes the picked copies")
+  Assert.equal(bag:revision(), revision + 1, "the acknowledgement mutates exactly once")
+end
+
+-- Rejecting through NO follows the same delayed interval: toggling to NO
+-- then confirming latches without leaving confirmation, every later prompt
+-- update stays without mutation, and only the terminal update returns to
+-- browsing with the inventory untouched and the terminal input unreplayed.
+function T.toss_rejection_waits_through_the_prompt_interval_before_browsing()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  Assert.equal(control:status().state, "toss_quantity", "setup enters the quantity picker")
+  tap(control, layout, 80, 144)
+  Assert.equal(control:status().quantity, 2, "setup picks two copies")
+  tap(control, layout, 144, 176)
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  Assert.equal(control:status().quantity, 2, "the confirmation carries the picked amount")
+  control:updateFixed({ navigate("down") })
+  local toggled = control:status()
+  Assert.equal(toggled.state, "toss_confirm", "toggling to NO stays in confirmation")
+  Assert.equal(assert(toggled.yesNoPrompt, "toggling keeps the prompt").selected, "no", "down toggles YES to NO")
+  Assert.equal(bag:revision(), revision, "toggling mutates nothing")
+  control:updateFixed({ { type = "confirm" } })
+  local latched = control:status()
+  Assert.equal(latched.state, "toss_confirm", "confirming NO latches without leaving confirmation")
+  Assert.equal(assert(latched.yesNoPrompt, "latching keeps the prompt").selected, "no", "latching keeps NO")
+  Assert.equal(bag:revision(), revision, "latching NO mutates nothing")
+  local phases = { true, true, false, false, true, true, false, false }
+  for index, phase in ipairs(phases) do
+    control:updateFixed({})
+    local waiting = control:status()
+    Assert.equal(waiting.state, "toss_confirm", "interval update " .. index .. " stays in confirmation")
+    local waitingPrompt = assert(waiting.yesNoPrompt, "interval update " .. index .. " keeps its prompt")
+    Assert.equal(waitingPrompt.selected, "no", "interval update " .. index .. " keeps NO")
+    if phase then
+      Assert.isTrue(waitingPrompt.selectionHighlighted, "interval update " .. index .. " shows the blink phase")
+    else
+      Assert.isFalse(waitingPrompt.selectionHighlighted, "interval update " .. index .. " shows the blink phase")
+    end
+    Assert.equal(bag:revision(), revision, "interval update " .. index .. " mutates nothing")
+  end
+  Assert.equal(bag:quantity("POTION"), 5, "the whole interval changes no quantities")
+  control:updateFixed({ { type = "confirm" } })
+  local rejected = control:status()
+  Assert.equal(rejected.state, "browsing", "the terminal prompt update returns to browsing")
+  Assert.isNil(control:takeResult(), "the terminal update closes nothing")
+  Assert.equal(bag:revision(), revision, "a rejected toss mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "a rejected toss changes no quantities")
 end
 
 return { tests = T }

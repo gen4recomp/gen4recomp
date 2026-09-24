@@ -258,8 +258,18 @@ local function chooseAction(control, id)
   error("the action menu never selects " .. id, 0)
 end
 
+-- Runs one latched modal choice through its full confirmation interval:
+-- eight waiting updates hold confirmation, and the terminal update
+-- publishes the latched result.
+local function settlePromptChoice(control)
+  for _ = 1, 9 do
+    control:updateFixed({})
+  end
+end
+
 -- Return to plain browsing from any nested action state through bounded
--- cancel presses.
+-- cancel presses. A cancel inside confirmation only latches the refusal,
+-- so the prompt interval settles before unwinding continues.
 local function backToBrowsing(control)
   for _ = 1, 6 do
     local view = control:status()
@@ -267,6 +277,9 @@ local function backToBrowsing(control)
       return view
     end
     control:updateFixed({ cancelEvent() })
+    if control:status().state == "toss_confirm" then
+      settlePromptChoice(control)
+    end
   end
   error("cancel never returns the bag to browsing", 0)
 end
@@ -400,10 +413,13 @@ function T.confirmed_toss_removes_once_and_returns_to_browsing()
   Assert.equal(view.quantity, 2, "the confirmation carries the picked quantity")
   Assert.equal(bag:revision(), revision, "entering confirmation never mutates")
   control:updateFixed({ confirmEvent() })
+  settlePromptChoice(control)
   view = control:status()
   Assert.equal(view.state, "toss_ack", "accepting YES waits for a later acknowledgement")
   Assert.equal(bag:quantity("POTION"), 5, "accepting YES changes no quantities")
   Assert.equal(bag:revision(), revision, "accepting YES bumps no revision")
+  control:updateFixed({ confirmEvent() })
+  Assert.equal(control:status().state, "toss_ack", "the acknowledgement waits for a later input")
   control:updateFixed({ confirmEvent() })
   view = control:status()
   Assert.equal(view.state, "browsing", "the acknowledgement returns to browsing")
@@ -487,7 +503,10 @@ function T.failing_service_call_never_fakes_success()
   control:updateFixed({ confirmEvent() })
   Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
   control:updateFixed({ confirmEvent() })
+  settlePromptChoice(control)
   Assert.equal(control:status().state, "toss_ack", "accepting YES waits for a later acknowledgement")
+  control:updateFixed({ confirmEvent() })
+  Assert.equal(control:status().state, "toss_ack", "the acknowledgement waits for a later input")
   control:updateFixed({ confirmEvent() })
   local view = control:status()
   Assert.equal(view.state, "browsing", "a failed toss still leaves the menu")
@@ -712,10 +731,13 @@ function T.pointer_only_toss_picks_confirms_once_without_early_mutation()
   Assert.equal(bag:revision(), revision, "entering confirmation never mutates the inventory")
   Assert.equal(bag:quantity("POTION"), 5, "entering confirmation changes no quantities")
   tapButton(control, layout, layoutManifest, 3)
+  settlePromptChoice(control)
   view = control:status()
   Assert.equal(view.state, "toss_ack", "the YES row acknowledges without mutating")
   Assert.equal(bag:quantity("POTION"), 5, "the acknowledgement changes no quantities yet")
   Assert.equal(bag:revision(), revision, "the acknowledgement bumps no revision yet")
+  control:updateFixed({ confirmEvent() })
+  Assert.equal(control:status().state, "toss_ack", "the acknowledgement waits for a later input")
   control:updateFixed({ confirmEvent() })
   view = control:status()
   Assert.equal(view.state, "browsing", "a later acknowledgement returns to browsing")
@@ -751,6 +773,7 @@ function T.pointer_only_toss_cancellation_returns_one_level_without_mutation()
   tapButton(control, layout, layoutManifest, 3)
   Assert.equal(control:status().state, "toss_confirm", "setup reaches confirmation")
   tapButton(control, layout, layoutManifest, 2)
+  settlePromptChoice(control)
   view = control:status()
   Assert.equal(view.state, "browsing", "the NO row returns to browsing by pointer alone")
   Assert.equal(bag:revision(), revision, "the NO row mutates nothing")

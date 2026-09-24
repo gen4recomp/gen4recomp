@@ -238,8 +238,13 @@ function T.toss_flow_mutates_once_through_the_live_service()
   Assert.equal(state:status().state, "toss_confirm", "confirming a quantity asks for confirmation")
   Assert.equal(bag:revision(), revision, "entering confirmation never mutates")
   state:updateFixed({ { type = "confirm" } })
+  for _ = 1, 9 do
+    state:updateFixed({})
+  end
   Assert.equal(state:status().state, "toss_ack", "accepting YES waits for a later acknowledgement")
   Assert.equal(bag:quantity("POTION"), 5, "accepting YES changes no quantities")
+  state:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:status().state, "toss_ack", "the acknowledgement waits for a later input")
   state:updateFixed({ { type = "confirm" } })
   local status = state:status()
   Assert.equal(status.state, "browsing", "the acknowledgement returns to browsing")

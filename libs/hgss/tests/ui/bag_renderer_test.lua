@@ -501,9 +501,22 @@ local function slot(item, quantity)
     item = item,
     nativeId = 1,
     name = item,
+    namePlural = item .. "s",
     quantity = quantity or 1,
     description = item .. " description",
     icon = item,
+  }
+end
+
+local function ackSelected(name, namePlural, quantity)
+  return {
+    item = "POTION",
+    nativeId = 1,
+    name = name,
+    namePlural = namePlural,
+    quantity = quantity,
+    description = "POTION description",
+    icon = "POTION",
   }
 end
 
@@ -2643,7 +2656,8 @@ end
 
 -- The acknowledgement state presents the generated post-choice text:
 -- the picked amount and item expand through the result template while the
--- modal prompt draws nothing more.
+-- modal prompt draws nothing more. A multi-copy toss names the catalog
+-- plural; a single copy keeps the singular.
 function T.toss_ack_presents_the_generated_result_text()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
@@ -2656,11 +2670,12 @@ function T.toss_ack_presents_the_generated_result_text()
     heroRenderer = heroSpy(nil),
   })
   local record = status({ state = "toss_ack", quantity = 2, quantityMax = 5 })
+  record.selected = ackSelected("POTION", "POTIONS", 2)
   draw:draw(record, plan(true), { icons = icons() })
   local joined = joinedText(content)
   Assert.isTrue(
-    joined:find("Threw away 2 POTION.", 1, true) ~= nil,
-    "the acknowledgement expands the generated result template"
+    joined:find("Threw away 2 POTIONS.", 1, true) ~= nil,
+    "the acknowledgement names the plural for several copies"
   )
   local rows = 0
   for _, entry in ipairs(graphics.draws) do
@@ -2670,6 +2685,31 @@ function T.toss_ack_presents_the_generated_result_text()
     end
   end
   Assert.equal(rows, 0, "the acknowledgement draws no prompt rows")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+-- A single tossed copy keeps the singular item name in the same generated
+-- result template.
+function T.toss_ack_keeps_the_singular_name_for_one_copy()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local record = status({ state = "toss_ack", quantity = 1, quantityMax = 5 })
+  record.selected = ackSelected("POTION", "POTIONS", 1)
+  draw:draw(record, plan(true), { icons = icons() })
+  local joined = joinedText(content)
+  Assert.isTrue(
+    joined:find("Threw away 1 POTION.", 1, true) ~= nil,
+    "the acknowledgement names the singular for one copy"
+  )
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
 end

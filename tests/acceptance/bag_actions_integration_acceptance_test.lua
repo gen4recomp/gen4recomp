@@ -640,12 +640,21 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     Assert.equal(view.state, "toss_confirm", "confirming a quantity must ask for confirmation")
     Assert.equal(bag:revision(), revision, "entering confirmation must not mutate")
     confirm(game)
-    game:step()
+    Assert.equal(bagView(game).state, "toss_confirm", "the choice input must latch without leaving confirmation")
+    for _ = 1, 8 do
+      game:step()
+      Assert.equal(bagView(game).state, "toss_confirm", "each later prompt update must stay in confirmation")
+    end
     game:step()
     view = bagView(game)
     Assert.equal(view.state, "toss_ack", "accepting YES must wait for a later acknowledgement")
     Assert.equal(bag:quantity(SECOND_KEY), 5, "accepting YES must change no quantities")
     Assert.equal(bag:revision(), revision, "accepting YES must bump no revision")
+    confirm(game)
+    game:step()
+    game:step()
+    Assert.equal(bagView(game).state, "toss_ack", "the acknowledgement must wait for a later input")
+    Assert.equal(bag:revision(), revision, "arming the acknowledgement must bump no revision")
     confirm(game)
     game:step()
     game:step()
@@ -790,9 +799,16 @@ function T.tests.toss_rejection_and_delayed_commit_safety()
     Assert.equal(bagView(game).state, "toss_confirm", "confirming a quantity must ask for confirmation")
     tapDirection(game, state, "s")
     confirm(game)
+    Assert.equal(bagView(game).state, "toss_confirm", "the choice input must latch without leaving confirmation")
+    Assert.equal(bag:quantity(SECOND_KEY), 5, "latching the choice must change no quantities")
+    for _ = 1, 8 do
+      game:step()
+      Assert.equal(bagView(game).state, "toss_confirm", "each later prompt update must stay in confirmation")
+      Assert.equal(bag:quantity(SECOND_KEY), 5, "the confirmation interval must change no quantities")
+      Assert.equal(bag:revision(), revision, "the confirmation interval must bump no revision")
+    end
     game:step()
-    game:step()
-    Assert.equal(bagView(game).state, "browsing", "down plus confirm must reject back to browsing")
+    Assert.equal(bagView(game).state, "browsing", "only the terminal prompt update must reject back to browsing")
     Assert.equal(bag:quantity(SECOND_KEY), 5, "a rejected toss must change no quantities")
     Assert.equal(bag:revision(), revision, "a rejected toss must bump no revision")
 
@@ -807,11 +823,43 @@ function T.tests.toss_rejection_and_delayed_commit_safety()
     Assert.equal(view.quantity, 1, "the skipped picker must carry the one owned copy")
     Assert.equal(bag:revision(), revision, "skipping the picker must not mutate")
     confirm(game)
+    local latched = bagView(game)
+    Assert.equal(latched.state, "toss_confirm", "the choice input must latch without leaving confirmation")
+    Assert.isTrue(
+      assert(latched.yesNoPrompt, "the confirmation must expose its modal prompt").selectionHighlighted,
+      "the choice input must leave the row highlighted"
+    )
+    for _ = 1, 4 do
+      game:step()
+      Assert.equal(bagView(game).state, "toss_confirm", "each later prompt update must stay in confirmation")
+    end
+    Assert.isFalse(
+      assert(bagView(game).yesNoPrompt, "the interval must keep its modal prompt").selectionHighlighted,
+      "the interval must alternate the row to its normal art"
+    )
+    for _ = 1, 2 do
+      game:step()
+      Assert.equal(bagView(game).state, "toss_confirm", "each later prompt update must stay in confirmation")
+    end
+    Assert.isTrue(
+      assert(bagView(game).yesNoPrompt, "the interval must keep its modal prompt").selectionHighlighted,
+      "the interval must return the row to its selected art"
+    )
+    for _ = 1, 2 do
+      game:step()
+      Assert.equal(bagView(game).state, "toss_confirm", "each later prompt update must stay in confirmation")
+      Assert.equal(bag:quantity(GRANTED_KEY), 1, "the confirmation interval must change no quantities")
+      Assert.equal(bag:revision(), revision, "the confirmation interval must bump no revision")
+    end
     game:step()
-    game:step()
-    Assert.equal(bagView(game).state, "toss_ack", "accepting YES must wait for a later acknowledgement")
+    Assert.equal(bagView(game).state, "toss_ack", "only the terminal prompt update must acknowledge")
     Assert.equal(bag:quantity(GRANTED_KEY), 1, "accepting YES must change no quantities")
     Assert.equal(bag:revision(), revision, "accepting YES must bump no revision")
+    confirm(game)
+    game:step()
+    game:step()
+    Assert.equal(bagView(game).state, "toss_ack", "the acknowledgement must wait for a later input")
+    Assert.equal(bag:revision(), revision, "arming the acknowledgement must bump no revision")
     confirm(game)
     game:step()
     game:step()

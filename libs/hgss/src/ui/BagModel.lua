@@ -58,6 +58,7 @@ local function projectSlot(service, registrationSlot, itemKey, quantity, monCata
     item = itemKey,
     nativeId = definition.nativeId,
     name = definition.name,
+    namePlural = definition.namePlural,
     quantity = quantity,
     description = definition.description,
     icon = definition.icon,

@@ -670,7 +670,7 @@ function BagController:_enterTossConfirm()
   self._state = "toss_confirm"
 end
 
--- Consumes one modal prompt result after a delegated confirmation input:
+-- Consumes one modal prompt result after the tick-owned prompt step:
 -- NO returns straight to browsing, YES waits for a later acknowledgement
 -- in the post-choice state. Accepting YES never mutates; only the
 -- acknowledgement input commits.
@@ -873,8 +873,9 @@ function BagController:_confirm()
   elseif self._state == "toss_quantity" then
     self:_enterTossConfirm()
   elseif self._state == "toss_confirm" then
-    self._prompt:updateFixed({ { type = "confirm" } })
-    self:_resolveTossPrompt()
+    -- The modal prompt owns its fixed ticks; input from a batch that
+    -- opens it here waits for the next update instead of reusing it.
+    return
   elseif self._state == "toss_ack" then
     if self._ackArmed then
       self:_commitToss()
@@ -905,8 +906,9 @@ function BagController:_cancel()
   elseif self._state == "toss_quantity" then
     self:_toBrowsing()
   elseif self._state == "toss_confirm" then
-    self._prompt:updateFixed({ { type = "cancel" } })
-    self:_resolveTossPrompt()
+    -- The modal prompt owns its fixed ticks; input from a batch that
+    -- opens it here waits for the next update instead of reusing it.
+    return
   elseif self._state == "toss_ack" then
     if self._ackArmed then
       self:_commitToss()
@@ -1086,8 +1088,8 @@ end
 ---@param event table<string, unknown>
 function BagController:_pointerDown(event)
   if self._state == "toss_confirm" then
-    self._prompt:updateFixed({ event })
-    self:_resolveTossPrompt()
+    -- The modal prompt owns its fixed ticks; input from a batch that
+    -- opens it here waits for the next update instead of reusing it.
     return
   end
   if self._state == "toss_ack" then
@@ -1141,8 +1143,8 @@ end
 ---@param event table<string, unknown>
 function BagController:_pointerUp(event)
   if self._state == "toss_confirm" then
-    self._prompt:updateFixed({ event })
-    self:_resolveTossPrompt()
+    -- The modal prompt owns its fixed ticks; input from a batch that
+    -- opens it here waits for the next update instead of reusing it.
     return
   end
   if self._state == "toss_ack" then
@@ -1171,8 +1173,8 @@ function BagController:_handleNavigate(event)
     return
   end
   if self._state == "toss_confirm" then
-    self._prompt:updateFixed({ event })
-    self:_resolveTossPrompt()
+    -- The modal prompt owns its fixed ticks; input from a batch that
+    -- opens it here waits for the next update instead of reusing it.
     return
   end
   if self._state == "action_menu" then
@@ -1184,6 +1186,26 @@ function BagController:_handleNavigate(event)
   elseif self._state == "browsing" then
     self:_move(event.direction)
   end
+end
+
+-- Owns one fixed tick that begins with the modal prompt active: terminal
+-- dismissal closes the bag without touching the prompt, otherwise the
+-- tick advances the prompt exactly once and resolves its published result
+-- once. This branch returns before the ordinary event loop, so opening
+-- and terminal ticks never reuse their input as browse or acknowledgement
+-- input.
+---@param uiInput table[]
+function BagController:_stepTossPrompt(uiInput)
+  for _, event in ipairs(uiInput) do
+    assert(type(event) == "table" and type(event.type) == "string", "bag events need a type")
+    if event.type == "dismiss" then
+      self._result = { kind = "closed" }
+      self._closed = true
+      return
+    end
+  end
+  self._prompt:updateFixed(uiInput)
+  self:_resolveTossPrompt()
 end
 
 ---@param uiInput table[]
@@ -1206,6 +1228,10 @@ function BagController:updateFixed(uiInput)
   self:_normalizeFocus()
   self:_reconcileBrowseSelection()
   if not self:_syncNested() then
+    return
+  end
+  if self._state == "toss_confirm" then
+    self:_stepTossPrompt(uiInput)
     return
   end
   for _, event in ipairs(uiInput) do

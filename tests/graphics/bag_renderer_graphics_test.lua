@@ -142,6 +142,7 @@ local function makeSlot(item, name, icon, quantity, registrationSlot)
     item = item,
     nativeId = 1,
     name = name,
+    namePlural = name .. "s",
     quantity = quantity,
     description = name .. " restores vigor",
     icon = icon,
@@ -617,6 +618,7 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
         yesNoPrompt = {
           active = true,
           selected = "yes",
+          selectionHighlighted = true,
           buttons = {
             yes = { x = 200, y = 48, width = 48, height = 32 },
             no = { x = 200, y = 80, width = 48, height = 32 },
