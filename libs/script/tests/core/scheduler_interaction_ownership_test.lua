@@ -234,6 +234,34 @@ function T.map_init_lifecycle_waits_for_nonblocking_movement_started_by_root()
   Assert.isTrue(h.client:isInitLifecycleSettled(), "readiness follows the movement commit")
 end
 
+function T.map_init_lifecycle_settlement_tracks_each_sequential_identity()
+  local h = harness()
+  install(h, script("test.map_init_first", { S.stop() }))
+  install(
+    h,
+    script("test.map_init_second", {
+      S.waitTicks({ ticks = 2 }),
+      S.stop(),
+    })
+  )
+
+  Assert.isTrue(h.client:startInitScript("test.map_init_first", 375))
+  h.scheduler:step(376, nil)
+  Assert.isTrue(h.client:isInitLifecycleSettled(), "the first lifecycle settles")
+
+  Assert.isTrue(h.client:startInitScript("test.map_init_second", 377))
+  Assert.isFalse(h.client:isInitLifecycleSettled(), "a previous settlement must not ready the new lifecycle")
+  h.scheduler:step(378, nil)
+  Assert.isFalse(h.client:isInitLifecycleSettled(), "the second lifecycle remains active while waiting")
+  for tick = 379, 385 do
+    h.scheduler:step(tick, nil)
+    if h.client:isInitLifecycleSettled() then
+      break
+    end
+  end
+  Assert.isTrue(h.client:isInitLifecycleSettled(), "the second lifecycle becomes ready after its own settlement")
+end
+
 function T.map_init_lifecycle_retains_common_child_movement_owner()
   local h = harness()
   h.services.actors:add("elm", { fieldX = 4, fieldZ = 6, facing = "north" })

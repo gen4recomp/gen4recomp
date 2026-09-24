@@ -48,7 +48,7 @@ local ScriptTask = require("libs.script.src.ScriptTask")
 ---@field private _nextEnvironmentId integer
 ---@field private _nextInstanceId integer
 ---@field private _nextTaskId integer
----@field private _settledInitLifecycles table<string, boolean>
+---@field private _settledInitLifecycleInstanceId string|nil
 local Scheduler = {}
 Scheduler.__index = Scheduler
 
@@ -80,7 +80,7 @@ function Scheduler.new(opts)
     _nextEnvironmentId = 0,
     _nextInstanceId = 0,
     _nextTaskId = 0,
-    _settledInitLifecycles = {},
+    _settledInitLifecycleInstanceId = nil,
   }, Scheduler)
 end
 
@@ -538,9 +538,6 @@ function Scheduler:_handlePollResult(task, impl, owner, ctx, result, tick)
       owner.readyAtTick = tick + 1
       owner.taskResult = result.result
     end
-    if owner.status == ScriptInstance.STATUSES.completed then
-      self:_archiveInstance(owner)
-    end
     -- A completing child_script task read the child's outcome it needed:
     -- drop the archived record now that its last observer ended.
     self:_pruneArchivedInstances()
@@ -942,7 +939,7 @@ function Scheduler:_finishInstanceInEnvironment(instance, reason)
       return
     end
     if self:_isCompletedMapInitRoot(environment, instance) then
-      self._settledInitLifecycles[instance.instanceId] = true
+      self._settledInitLifecycleInstanceId = instance.instanceId
     end
     self:_teardownEnvironment(environment, reason)
   end
@@ -963,7 +960,7 @@ function Scheduler:_settleCompletedInitEnvironments()
   for _, environment in ipairs(self:_orderedEnvironments()) do
     local root = self._instances[environment.rootInstanceId]
     if self:_isCompletedMapInitRoot(environment, root) and not environment:hasOutstandingMovement() then
-      self._settledInitLifecycles[root.instanceId] = true
+      self._settledInitLifecycleInstanceId = root.instanceId
       self:_teardownEnvironment(environment, "completed")
     end
   end
@@ -1322,7 +1319,7 @@ end
 ---@param instanceId string
 ---@return boolean
 function Scheduler:isInitLifecycleSettled(instanceId)
-  return self._settledInitLifecycles[instanceId] == true
+  return self._settledInitLifecycleInstanceId == instanceId
 end
 
 ---@param taskId string
