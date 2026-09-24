@@ -3,8 +3,8 @@
 -- strict metadata sections, binary assets (PNG atlases) under the UI asset
 -- root, and a completion marker written last with the ROM SHA-1 and producer
 -- dependency hash. The manifest is the single mod-facing contract for
--- dialogue frames, signposts, the Start Menu, the Trainer Card, and the
--- normal naming chrome; it never
+-- dialogue frames, signposts, the Start Menu, the Trainer Card, the normal
+-- naming chrome, and the two-row choice prompt; it never
 -- carries NARC/member ids. A UI class is ready only when the marker matches
 -- exactly and every indexed file exists. Paths are cache-relative; all IO
 -- goes through a CacheFs.
@@ -19,9 +19,27 @@ local FieldUiAssetCache = {}
 ---@field width integer
 ---@field height integer
 
+---@class FieldUiAssetCache.PromptVisual
+---@field asset string
+---@field rect { x: integer, y: integer, width: integer, height: integer }
+
+---@class FieldUiAssetCache.PromptRow
+---@field normal FieldUiAssetCache.PromptVisual
+---@field selected FieldUiAssetCache.PromptVisual
+
+---@class FieldUiAssetCache.PromptShape
+---@field width integer
+---@field height integer
+---@field yes FieldUiAssetCache.PromptRow
+---@field no FieldUiAssetCache.PromptRow
+
+---@class FieldUiAssetCache.PromptSection
+---@field shapes { compact: FieldUiAssetCache.PromptShape }
+
 ---@class FieldUiAssetCache.Manifest
 ---@field schema string
 ---@field assets table<string, FieldUiAssetCache.Asset>
+---@field yesNoPrompt FieldUiAssetCache.PromptSection
 ---@field [string] table<string, unknown>
 
 FieldUiAssetCache.FORMAT = Contract.fieldUi.cacheFormat
@@ -33,8 +51,9 @@ FieldUiAssetCache.SCHEMA = Contract.fieldUi.schema
 -- persisted as a precomposed 48x32 final surface (6 columns x 4 rows).
 -- The producer arranges the raw 24 tiles into that surface at build time;
 -- runtime draws a single rect. The validator enforces the final 48x32
--- shape. The producer and validator consume these numbers from this one
--- protocol owner.
+-- shape. The two-row choice prompt buttons are the same 6x4-tile compact
+-- geometry: one 48x32 surface per button state. The producer and validator
+-- consume these numbers from this one protocol owner.
 FieldUiAssetCache.GEOMETRY = {
   FRAME_TILES = 18,
   WAYFINDING_TILES = 24,
@@ -42,6 +61,8 @@ FieldUiAssetCache.GEOMETRY = {
   WAYFINDING_ROWS = 4,
   WAYFINDING_WIDTH = 48,
   WAYFINDING_HEIGHT = 32,
+  PROMPT_BUTTON_WIDTH = 48,
+  PROMPT_BUTTON_HEIGHT = 32,
 }
 
 -- The generated field-UI asset protocol ids: one constant table so the
@@ -85,6 +106,10 @@ FieldUiAssetCache.ASSET = {
   NAMING_SCREEN_SLOT_SELECTED = "hgss.naming_screen.slot_selected",
   NAMING_SCREEN_SUBJECT_MALE = "hgss.naming_screen.subject_male",
   NAMING_SCREEN_SUBJECT_FEMALE = "hgss.naming_screen.subject_female",
+  YES_NO_PROMPT_YES_NORMAL = "hgss.yes_no_prompt.yes_normal",
+  YES_NO_PROMPT_YES_SELECTED = "hgss.yes_no_prompt.yes_selected",
+  YES_NO_PROMPT_NO_NORMAL = "hgss.yes_no_prompt.no_normal",
+  YES_NO_PROMPT_NO_SELECTED = "hgss.yes_no_prompt.no_selected",
 }
 
 -- One error code for every malformed generated class: the manifest is the
@@ -1251,6 +1276,108 @@ function FieldUiAssetCache.validateManifest(manifest)
   end)
   if not namingOk then
     return false, namingErr
+  end
+
+  -- The two-row choice prompt: exactly the compact shape, one 48x32 button
+  -- per row with a normal and a selected visual each. Every visual resolves
+  -- through the shared asset index by semantic id; the section carries no
+  -- source archive, member, tile, palette, or background identities.
+  local promptOk, promptErr = section("yesNoPrompt", function(s)
+    if type(s.shapes) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "yesNoPrompt.shapes must be a table", {})
+    end
+    local shapeCount = 0
+    for _ in pairs(s.shapes) do
+      shapeCount = shapeCount + 1
+    end
+    if shapeCount ~= 1 or type(s.shapes.compact) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "yesNoPrompt.shapes must carry exactly the compact shape", {})
+    end
+    local compact = s.shapes.compact
+    if compact.width ~= FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_WIDTH then
+      return false, Errors.new(MANIFEST_INVALID, "the compact prompt width must be 48", {})
+    end
+    if compact.height ~= FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_HEIGHT then
+      return false, Errors.new(MANIFEST_INVALID, "the compact prompt height must be 32", {})
+    end
+    for _, row in ipairs({ "yes", "no" }) do
+      local states = compact[row]
+      if type(states) ~= "table" then
+        return false,
+          Errors.new(MANIFEST_INVALID, "the compact prompt " .. row .. " row must be a table", { row = row })
+      end
+      for _, state in ipairs({ "normal", "selected" }) do
+        local visual = states[state]
+        if type(visual) ~= "table" then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "the compact prompt " .. row .. " row must carry its " .. state .. " visual",
+              { row = row, state = state }
+            )
+        end
+        if type(visual.asset) ~= "string" or atlasSizes[visual.asset] == nil then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "the compact prompt " .. row .. " " .. state .. " visual must reference an indexed asset",
+              { row = row, state = state }
+            )
+        end
+        local rectOk, rectErr =
+          rectInAtlas(visual.rect, visual.asset, "the compact prompt " .. row .. " " .. state .. " rect")
+        if not rectOk then
+          return false, rectErr
+        end
+        if
+          visual.rect.width ~= FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_WIDTH
+          or visual.rect.height ~= FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_HEIGHT
+        then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "the compact prompt " .. row .. " " .. state .. " rect must be the 48x32 button surface",
+              { row = row, state = state }
+            )
+        end
+      end
+    end
+    local forbidden = {
+      member = true,
+      memberId = true,
+      narc = true,
+      narcId = true,
+      alias = true,
+      fileId = true,
+      bgId = true,
+      tileStart = true,
+      plttSlot = true,
+      paletteSlot = true,
+      sourcePath = true,
+    }
+    local function scan(value)
+      if type(value) ~= "table" then
+        return nil
+      end
+      for key, nested in pairs(value) do
+        if type(key) == "string" and forbidden[key] then
+          return key
+        end
+        local leaked = scan(nested)
+        if leaked ~= nil then
+          return leaked
+        end
+      end
+      return nil
+    end
+    local leaked = scan(s)
+    if leaked ~= nil then
+      return false, Errors.new(MANIFEST_INVALID, "the two-row prompt manifest leaks source detail", { field = leaked })
+    end
+    return true
+  end)
+  if not promptOk then
+    return false, promptErr
   end
 
   return true

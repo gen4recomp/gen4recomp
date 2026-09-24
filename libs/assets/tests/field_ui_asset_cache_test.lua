@@ -102,6 +102,26 @@ local function validManifest()
         width = 256,
         height = 112,
       },
+      ["hgss.yes_no_prompt.yes_normal"] = {
+        image = "assets/generated/field/ui/yes-no-prompt-yes-normal.png",
+        width = 48,
+        height = 32,
+      },
+      ["hgss.yes_no_prompt.yes_selected"] = {
+        image = "assets/generated/field/ui/yes-no-prompt-yes-selected.png",
+        width = 48,
+        height = 32,
+      },
+      ["hgss.yes_no_prompt.no_normal"] = {
+        image = "assets/generated/field/ui/yes-no-prompt-no-normal.png",
+        width = 48,
+        height = 32,
+      },
+      ["hgss.yes_no_prompt.no_selected"] = {
+        image = "assets/generated/field/ui/yes-no-prompt-no-selected.png",
+        width = 48,
+        height = 32,
+      },
     },
     dialogueFrames = {
       count = 20,
@@ -246,6 +266,27 @@ local function validManifest()
       },
       placement = { x = 11, y = 80, width = 256, height = 112 },
     },
+    yesNoPrompt = (function()
+      local function visual(asset)
+        return { asset = asset, rect = { x = 0, y = 0, width = 48, height = 32 } }
+      end
+      return {
+        shapes = {
+          compact = {
+            width = 48,
+            height = 32,
+            yes = {
+              normal = visual("hgss.yes_no_prompt.yes_normal"),
+              selected = visual("hgss.yes_no_prompt.yes_selected"),
+            },
+            no = {
+              normal = visual("hgss.yes_no_prompt.no_normal"),
+              selected = visual("hgss.yes_no_prompt.no_selected"),
+            },
+          },
+        },
+      }
+    end)(),
   }
   return FieldUiFixture.addNamingSemantics(built)
 end
@@ -722,6 +763,142 @@ function T.start_menu_label_palette_roles_are_required_with_transparent_backgrou
   }
   local okOpaque, _ = FieldUiAssetCache.validateManifest(opaque)
   Assert.isFalse(okOpaque, "an opaque label background would repaint chrome and must be rejected")
+end
+
+-- The two-row choice prompt section: one 48x32 button per row with a
+-- normal and a selected visual each, every visual resolved through the
+-- shared asset index by semantic id. The prompt artwork is a required
+-- generated record: a manifest without it is stale and must fail.
+local function promptAssets(manifest)
+  manifest.assets["hgss.yes_no_prompt.yes_normal"] =
+    { image = "assets/generated/field/ui/yes-no-prompt-yes-normal.png", width = 48, height = 32 }
+  manifest.assets["hgss.yes_no_prompt.yes_selected"] =
+    { image = "assets/generated/field/ui/yes-no-prompt-yes-selected.png", width = 48, height = 32 }
+  manifest.assets["hgss.yes_no_prompt.no_normal"] =
+    { image = "assets/generated/field/ui/yes-no-prompt-no-normal.png", width = 48, height = 32 }
+  manifest.assets["hgss.yes_no_prompt.no_selected"] =
+    { image = "assets/generated/field/ui/yes-no-prompt-no-selected.png", width = 48, height = 32 }
+end
+
+local function promptSection()
+  local function visual(asset)
+    return { asset = asset, rect = { x = 0, y = 0, width = 48, height = 32 } }
+  end
+  return {
+    shapes = {
+      compact = {
+        width = 48,
+        height = 32,
+        yes = {
+          normal = visual("hgss.yes_no_prompt.yes_normal"),
+          selected = visual("hgss.yes_no_prompt.yes_selected"),
+        },
+        no = {
+          normal = visual("hgss.yes_no_prompt.no_normal"),
+          selected = visual("hgss.yes_no_prompt.no_selected"),
+        },
+      },
+    },
+  }
+end
+
+local function manifestWithPrompt()
+  local manifest = validManifest()
+  promptAssets(manifest)
+  manifest.yesNoPrompt = promptSection()
+  return manifest
+end
+
+function T.two_row_prompt_section_is_required()
+  Assert.isTrue(
+    FieldUiAssetCache.validateManifest(manifestWithPrompt()),
+    "a manifest carrying the four 48x32 prompt states validates"
+  )
+  reject(function(m)
+    m.yesNoPrompt = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+end
+
+function T.stale_prompt_less_manifest_schema_is_rejected()
+  local manifest = validManifest()
+  manifest.schema = "g4-field-ui-v14"
+  local ok, _ = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(ok, "a manifest on the previous schema without the prompt section is stale")
+end
+
+function T.prompt_section_rejects_wrong_dimensions()
+  local cases = {
+    function(s)
+      s.shapes.compact.width = 64
+    end,
+    function(s)
+      s.shapes.compact.height = 16
+    end,
+    function(s)
+      s.shapes.compact.yes.normal.rect = { x = 0, y = 0, width = 47, height = 32 }
+    end,
+    function(s)
+      s.shapes.compact.no.selected.rect = { x = 8, y = 0, width = 48, height = 32 }
+    end,
+  }
+  for index, mutate in ipairs(cases) do
+    local manifest = manifestWithPrompt()
+    mutate(manifest.yesNoPrompt)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok, "prompt dimension case " .. index .. " must be rejected: " .. tostring(err))
+  end
+end
+
+function T.prompt_section_rejects_missing_or_unindexed_states()
+  local cases = {
+    function(s)
+      s.shapes.compact.yes.selected = nil
+    end,
+    function(s)
+      s.shapes.compact.no = nil
+    end,
+    function(s)
+      s.shapes.compact.yes.normal.asset = "hgss.yes_no_prompt.missing"
+    end,
+    function(s)
+      s.shapes.compact = nil
+    end,
+  }
+  for index, mutate in ipairs(cases) do
+    local manifest = manifestWithPrompt()
+    mutate(manifest.yesNoPrompt)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok, "prompt state case " .. index .. " must be rejected: " .. tostring(err))
+  end
+end
+
+function T.prompt_section_rejects_extra_shapes_and_source_identities()
+  local cases = {
+    function(s)
+      s.shapes.wide = s.shapes.compact
+    end,
+    function(s)
+      s.shapes.compact.yes.normal.member = 2
+    end,
+    function(s)
+      s.shapes.compact.no.selected.narc = "touch_subwindow"
+    end,
+    function(s)
+      s.shapes.compact.yes.selected.plttSlot = 9
+    end,
+    function(s)
+      s.shapes.compact.no.normal.bgId = 5
+    end,
+    function(s)
+      s.shapes.compact.yes.normal.tileStart = 0x81
+    end,
+  }
+  for index, mutate in ipairs(cases) do
+    local manifest = manifestWithPrompt()
+    mutate(manifest.yesNoPrompt)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok, "prompt contract case " .. index .. " must be rejected: " .. tostring(err))
+  end
 end
 
 return { tests = T }

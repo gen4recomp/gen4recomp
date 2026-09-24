@@ -87,9 +87,16 @@ function T.resolves_map_asset_aliases()
   end
 end
 
+function T.touch_subwindow_aliases_the_prompt_art_archive()
+  local e = HgssArchives.resolve("touch_subwindow")
+  Assert.equal(e.symbol, "NARC_system_touch_subwindow")
+  Assert.equal(e.narcId, 152)
+  Assert.equal(e.path, "a/1/5/2")
+end
+
 function T.alias_list_is_complete_and_deterministic()
   local list = HgssArchives.aliasList()
-  Assert.equal(#list, 42)
+  Assert.equal(#list, 43)
   -- Sorted ascending by narcId, with deterministic alias ordering for shared roles.
   for i = 2, #list do
     local previous = list[i - 1]

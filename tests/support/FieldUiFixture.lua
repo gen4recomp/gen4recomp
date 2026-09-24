@@ -34,6 +34,11 @@ FieldUiFixture.START_MENU_BACKGROUND_PATH = "assets/generated/field/ui/start-men
 FieldUiFixture.START_MENU_CURSOR_PATH = "assets/generated/field/ui/start-menu-cursor.png"
 FieldUiFixture.TRAINER_CARD_PATH = "assets/generated/field/ui/trainer-card.png"
 
+FieldUiFixture.PROMPT_YES_NORMAL_PATH = "assets/generated/field/ui/yes-no-prompt-yes-normal.png"
+FieldUiFixture.PROMPT_YES_SELECTED_PATH = "assets/generated/field/ui/yes-no-prompt-yes-selected.png"
+FieldUiFixture.PROMPT_NO_NORMAL_PATH = "assets/generated/field/ui/yes-no-prompt-no-normal.png"
+FieldUiFixture.PROMPT_NO_SELECTED_PATH = "assets/generated/field/ui/yes-no-prompt-no-selected.png"
+
 -- Every signpost source type the real scr_seq corpus uses (opcodes 55/56),
 -- the set pinned by the producer configuration; types 0/1 reserve the
 -- wayfinding graphic.
@@ -205,6 +210,60 @@ function FieldUiFixture.wayfindingBytes()
       FieldUiFixture.wayfindingSurfacePixels(96),
     })
   )
+end
+
+-- The two-row choice prompt button art: each of the four button states is
+-- its own solid 48x32 surface with a distinct color, so sampling the wrong
+-- state (or a wrong placement) is a pixel mismatch in the goldens.
+---@param kind string one of "yes_normal", "yes_selected", "no_normal", "no_selected"
+---@return integer, integer, integer
+function FieldUiFixture.promptButtonColor(kind)
+  if kind == "yes_normal" then
+    return 40, 180, 80
+  elseif kind == "yes_selected" then
+    return 120, 230, 130
+  elseif kind == "no_normal" then
+    return 180, 60, 60
+  elseif kind == "no_selected" then
+    return 230, 130, 130
+  end
+  error("unknown prompt button kind: " .. tostring(kind)) -- luacheck: ignore
+end
+
+---@param kind string one of "yes_normal", "yes_selected", "no_normal", "no_selected"
+---@return string png
+function FieldUiFixture.promptButtonBytes(kind)
+  local r, g, b = FieldUiFixture.promptButtonColor(kind)
+  return PngWriter.encode(48, 32, string.rep(string.char(r, g, b, 255), 48 * 32))
+end
+
+-- The compact two-row choice prompt section in the generated manifest
+-- shape: one 48x32 button per row, the confirmation row stacked directly
+-- above the rejection row. Every visual resolves through the shared asset
+-- index by semantic id with a 48x32 rect; the section carries no source
+-- archive, member, tile, palette, or background identities. Returns a
+-- fresh table per call so tests never share mutable manifest state.
+---@return table
+function FieldUiFixture.promptCompactSection()
+  local function visual(assetId)
+    return { asset = assetId, rect = { x = 0, y = 0, width = 48, height = 32 } }
+  end
+  return {
+    shapes = {
+      compact = {
+        width = 48,
+        height = 32,
+        yes = {
+          normal = visual("hgss.yes_no_prompt.yes_normal"),
+          selected = visual("hgss.yes_no_prompt.yes_selected"),
+        },
+        no = {
+          normal = visual("hgss.yes_no_prompt.no_normal"),
+          selected = visual("hgss.yes_no_prompt.no_selected"),
+        },
+      },
+    },
+  }
 end
 
 -- The canonical Start Menu logical action-slot grid (the manifest's own
@@ -501,6 +560,7 @@ end
 function FieldUiFixture.manifest()
   return {
     schema = FieldUiAssetCache.SCHEMA,
+    reference = { width = 256, height = 192 },
     assets = {
       [FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES] = {
         image = FieldUiFixture.STRIP_PATH,
@@ -536,6 +596,26 @@ function FieldUiFixture.manifest()
         image = FieldUiFixture.TRAINER_CARD_PATH,
         width = 256,
         height = 256,
+      },
+      ["hgss.yes_no_prompt.yes_normal"] = {
+        image = FieldUiFixture.PROMPT_YES_NORMAL_PATH,
+        width = 48,
+        height = 32,
+      },
+      ["hgss.yes_no_prompt.yes_selected"] = {
+        image = FieldUiFixture.PROMPT_YES_SELECTED_PATH,
+        width = 48,
+        height = 32,
+      },
+      ["hgss.yes_no_prompt.no_normal"] = {
+        image = FieldUiFixture.PROMPT_NO_NORMAL_PATH,
+        width = 48,
+        height = 32,
+      },
+      ["hgss.yes_no_prompt.no_selected"] = {
+        image = FieldUiFixture.PROMPT_NO_SELECTED_PATH,
+        width = 48,
+        height = 32,
       },
     },
     dialogueFrames = {
@@ -590,6 +670,7 @@ function FieldUiFixture.manifest()
     trainerCard = {
       front = { x = 0, y = 0, width = 256, height = 256 },
     },
+    yesNoPrompt = FieldUiFixture.promptCompactSection(),
   }
 end
 
@@ -603,6 +684,10 @@ function FieldUiFixture.cacheWithFontAndFrames()
   cache:write(FieldUiFixture.WAYFINDING_PATH, FieldUiFixture.wayfindingBytes())
   cache:write(FieldUiFixture.START_MENU_BACKGROUND_PATH, FieldUiFixture.startMenuBackgroundBytes())
   cache:write(FieldUiFixture.START_MENU_CURSOR_PATH, FieldUiFixture.startMenuCursorBytes())
+  cache:write(FieldUiFixture.PROMPT_YES_NORMAL_PATH, FieldUiFixture.promptButtonBytes("yes_normal"))
+  cache:write(FieldUiFixture.PROMPT_YES_SELECTED_PATH, FieldUiFixture.promptButtonBytes("yes_selected"))
+  cache:write(FieldUiFixture.PROMPT_NO_NORMAL_PATH, FieldUiFixture.promptButtonBytes("no_normal"))
+  cache:write(FieldUiFixture.PROMPT_NO_SELECTED_PATH, FieldUiFixture.promptButtonBytes("no_selected"))
   return cache
 end
 
@@ -620,6 +705,10 @@ function FieldUiFixture.trainerCardCache(fontDef)
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
   cache:write(FieldUiFixture.TRAINER_CARD_PATH, FieldUiFixture.cardBytes())
   cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
+  cache:write(FieldUiFixture.PROMPT_YES_NORMAL_PATH, FieldUiFixture.promptButtonBytes("yes_normal"))
+  cache:write(FieldUiFixture.PROMPT_YES_SELECTED_PATH, FieldUiFixture.promptButtonBytes("yes_selected"))
+  cache:write(FieldUiFixture.PROMPT_NO_NORMAL_PATH, FieldUiFixture.promptButtonBytes("no_normal"))
+  cache:write(FieldUiFixture.PROMPT_NO_SELECTED_PATH, FieldUiFixture.promptButtonBytes("no_selected"))
   return cache
 end
 
@@ -633,6 +722,10 @@ function FieldUiFixture.startMenuCache()
   cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
   cache:write(FieldUiFixture.START_MENU_BACKGROUND_PATH, FieldUiFixture.startMenuBackgroundBytes())
   cache:write(FieldUiFixture.START_MENU_CURSOR_PATH, FieldUiFixture.startMenuCursorBytes())
+  cache:write(FieldUiFixture.PROMPT_YES_NORMAL_PATH, FieldUiFixture.promptButtonBytes("yes_normal"))
+  cache:write(FieldUiFixture.PROMPT_YES_SELECTED_PATH, FieldUiFixture.promptButtonBytes("yes_selected"))
+  cache:write(FieldUiFixture.PROMPT_NO_NORMAL_PATH, FieldUiFixture.promptButtonBytes("no_normal"))
+  cache:write(FieldUiFixture.PROMPT_NO_SELECTED_PATH, FieldUiFixture.promptButtonBytes("no_selected"))
   return cache
 end
 

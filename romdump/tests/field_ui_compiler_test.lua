@@ -240,6 +240,21 @@ local function palette16()
   return paletteData(colors)
 end
 
+-- The two-row prompt palette fixture: bank 0 carries the shared 16-color
+-- ramp while bank 1 uses a distinct family, so a state rendered through
+-- the wrong bank is a visibly wrong color instead of a coincidentally
+-- matching one.
+local function promptPaletteData()
+  local colors = {}
+  for i = 1, 16 do
+    colors[i] = i * 0x39B
+  end
+  for i = 17, 32 do
+    colors[i] = 0x4000 + (i - 16) * 0x123
+  end
+  return paletteData(colors)
+end
+
 -- A fixture palette: explicit color arrays (for under-sized palette tests)
 -- or the full 16-color ramp.
 local function paletteOr16(colors)
@@ -458,6 +473,24 @@ local function fixture(opts)
   namein[9] = lz10Wrap(namingScreenData(256, 112, 4))
   namingObjMembers(namein)
 
+  -- The synthetic two-row prompt archive: palette member 0 (two 16-color
+  -- banks), the shared char bank member 1, and one 48x32 (6x4-tile) screen
+  -- per button state (members 2..5), each screen referencing its own tile
+  -- so the four states decode to distinct pixels.
+  local prompt = {}
+  for i = 1, 6 do
+    prompt[i] = string.rep("\0", 4)
+  end
+  prompt[1] = promptPaletteData()
+  prompt[2] = charData(8)
+  for member = 2, 5 do
+    local entries = {}
+    for i = 1, 24 do
+      entries[i] = member
+    end
+    prompt[member + 1] = screenDataWH(48, 32, entries)
+  end
+
   local function narcFile(alias)
     local members
     if alias == "start_menu" then
@@ -478,6 +511,8 @@ local function fixture(opts)
       members = signposts
     elseif alias == "naming_screen" then
       members = namein
+    elseif alias == "touch_subwindow" then
+      members = prompt
     else
       members = card
     end
@@ -510,6 +545,13 @@ local function fixture(opts)
       symbol = "NARC_data_namein",
       alias = "naming_screen",
     },
+    touch_subwindow = {
+      fileId = 15,
+      narcId = 99,
+      path = "a/9/9/9",
+      symbol = "NARC_a_9_9_9",
+      alias = "touch_subwindow",
+    },
   }
   local romFs = {
     resolvedNarc = function(_, alias)
@@ -530,6 +572,9 @@ local function fixture(opts)
       end
       if fileId == 14 then
         return narcFile("naming_screen")
+      end
+      if fileId == 15 then
+        return narcFile("touch_subwindow")
       end
       Assert.fail("unexpected read " .. tostring(fileId))
     end,
@@ -576,8 +621,8 @@ function T.compiles_the_manifest_and_all_assets()
   -- naming OBJ visuals (six controls, keyboard cursor, five home cursor
   -- variants, two entry slots, two player subjects) plus the six cursor
   -- pulse-mask atlases, plus the single dialogue frame strip beside the
-  -- continuation cursor.
-  Assert.equal(assetCount, 36)
+  -- continuation cursor, plus the four two-row prompt button states.
+  Assert.equal(assetCount, 40)
   for path, bytes in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
     Assert.isTrue(#bytes > 0)
@@ -2167,6 +2212,146 @@ function T.compiled_dialogue_frames_publish_no_application_record()
       "no generated payload is an application frame strip"
     )
   end
+end
+
+-- The two-row prompt producer contract: the selected prompt members
+-- decode into four semantic 48x32 button states published without source
+-- archive/member identities. The test installs its own prompt member
+-- selection around compilation (mirroring the signpost test-config patch),
+-- so the production member-selection shape is exercised without freezing
+-- unrelated producer internals. Frozen test-side selection field names are
+-- alias, paletteMember, charMember, yesNormalScreen, yesSelectedScreen,
+-- noNormalScreen, and noSelectedScreen.
+local function compileWithPromptSelection(romFs, sha1hex, hashLua)
+  local manifestConfig = require("romdump.src.config.FieldUiAssets")
+  local savedSourceTypes = manifestConfig.signposts.sourceTypes
+  local savedWayfinding = manifestConfig.signposts.wayfinding
+  local savedPrompt = manifestConfig.yesNoPrompt
+  manifestConfig.signposts.sourceTypes = { 0, 1, 2, 3 }
+  manifestConfig.signposts.wayfinding = {
+    [0] = { memberBase = 0x21, maps = { 0, 1, 20 } },
+    [1] = { memberBase = 2, maps = { 0, 21 } },
+  }
+  manifestConfig.yesNoPrompt = {
+    alias = "touch_subwindow",
+    paletteMember = 0,
+    charMember = 1,
+    yesNormalScreen = 2,
+    yesSelectedScreen = 3,
+    noNormalScreen = 4,
+    noSelectedScreen = 5,
+  }
+  -- xpcall forwards every return value of a successful call; capture both
+  -- `compile`'s bundle and its typed nil,err failure return so callers see
+  -- the real error instead of a silently dropped second value.
+  local ok, bundle, err = xpcall(FieldUiCompiler.compile, debug.traceback, romFs, sha1hex, hashLua)
+  manifestConfig.signposts.sourceTypes = savedSourceTypes
+  manifestConfig.signposts.wayfinding = savedWayfinding
+  manifestConfig.yesNoPrompt = savedPrompt
+  if ok then
+    return bundle, err
+  end
+  error(bundle, 0)
+end
+
+function T.two_row_prompt_compiles_four_semantic_button_states()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithPromptSelection(romFs, sha1, hashLua))
+  local prompt = assert(bundle.manifest.yesNoPrompt, "the compiled field UI must publish the two-row prompt") --[[@as FieldUiAssetCache.PromptSection]]
+  local compact = assert(prompt.shapes ~= nil and prompt.shapes.compact, "the prompt carries its compact shape record") --[[@as FieldUiAssetCache.PromptShape]]
+  Assert.equal(compact.width, 48)
+  Assert.equal(compact.height, 32)
+  local states = { compact.yes.normal, compact.yes.selected, compact.no.normal, compact.no.selected }
+  local pixels = {}
+  for index, state in ipairs(states) do
+    Assert.equal(type(state.asset), "string", "prompt state " .. index .. " resolves through a semantic asset")
+    local entry = assert(bundle.manifest.assets[state.asset], "prompt state " .. index .. " asset is indexed")
+    local rect = assert(state.rect, "prompt state " .. index .. " carries its visual rect")
+    Assert.equal(rect.width, 48, "prompt state " .. index .. " rect width")
+    Assert.equal(rect.height, 32, "prompt state " .. index .. " rect height")
+    Assert.isTrue(
+      rect.x + rect.width <= entry.width and rect.y + rect.height <= entry.height,
+      "prompt state " .. index .. " rect stays inside its indexed image"
+    )
+    local bytes = assert(bundle.assets[entry.image], "prompt state " .. index .. " image has payload")
+    local width, height, rgba = PngReader.rgba(bytes)
+    Assert.equal(width, entry.width, "prompt state " .. index .. " png width")
+    Assert.equal(height, entry.height, "prompt state " .. index .. " png height")
+    pixels[#pixels + 1] = rgba
+  end
+  for i = 1, #pixels do
+    for j = i + 1, #pixels do
+      Assert.isTrue(pixels[i] ~= pixels[j], "prompt states " .. i .. " and " .. j .. " are distinct art")
+    end
+  end
+  local forbiddenKeys = {
+    member = true,
+    memberId = true,
+    narc = true,
+    narcId = true,
+    alias = true,
+    fileId = true,
+    bgId = true,
+    tileStart = true,
+    plttSlot = true,
+    paletteSlot = true,
+    sourcePath = true,
+  }
+  local function scan(value, path)
+    if type(value) ~= "table" then
+      return
+    end
+    for k, v in pairs(value) do
+      if type(k) == "string" and forbiddenKeys[k] then
+        Assert.fail("the prompt manifest leaks source detail '" .. k .. "' at " .. path)
+      end
+      scan(v, path .. "." .. tostring(k))
+    end
+  end
+  scan(prompt, "yesNoPrompt")
+  local second = assert(compileWithPromptSelection(romFs, sha1, hashLua))
+  Assert.equal(second.marker, bundle.marker, "the prompt publication is deterministic")
+  Assert.equal(LuaWriter.encode(second.manifest), LuaWriter.encode(bundle.manifest))
+end
+
+-- The confirmation row renders through the first prompt palette bank and
+-- the rejection row through the second: the fixture banks are distinct
+-- families, so a state rendered through the wrong bank is a visibly wrong
+-- color, never a coincidentally matching one.
+function T.prompt_rows_render_through_their_own_palette_banks()
+  local Rgb555 = require("libs.codec.src.Rgb555")
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithPromptSelection(romFs, sha1, hashLua))
+  local prompt = assert(bundle.manifest.yesNoPrompt, "the compiled field UI must publish the two-row prompt") --[[@as FieldUiAssetCache.PromptSection]]
+  local compact = assert(prompt.shapes ~= nil and prompt.shapes.compact) --[[@as FieldUiAssetCache.PromptShape]]
+  local function topLeftPixel(state)
+    local entry = assert(bundle.manifest.assets[assert(state.asset)])
+    local width, _, rgba = PngReader.rgba(assert(bundle.assets[entry.image]))
+    local rect = assert(state.rect)
+    return PngReader.pixel(rgba, width, rect.x, rect.y)
+  end
+  -- The fixture char tiles carry value ((tile + 0) % 15) + 1: the YES
+  -- normal screen references tile 2 (value 3) and the NO normal screen
+  -- references tile 4 (value 5). Value v selects bank slot v, which is
+  -- colors[bank * 16 + v + 1] in the 1-based decoded array, so value 3
+  -- through bank 0 is the fourth palette word and value 5 through bank 1
+  -- is the twenty-second palette word.
+  local expectedYes = Rgb555.decode(4 * 0x39B)
+  local rYes, gYes, bYes, aYes = topLeftPixel(compact.yes.normal)
+  Assert.equal(aYes, 255)
+  Assert.deepEqual(
+    { rYes, gYes, bYes },
+    { expectedYes.r, expectedYes.g, expectedYes.b },
+    "the YES row renders through the first palette bank"
+  )
+  local expectedNo = Rgb555.decode(0x4000 + 6 * 0x123)
+  local rNo, gNo, bNo, aNo = topLeftPixel(compact.no.normal)
+  Assert.equal(aNo, 255)
+  Assert.deepEqual(
+    { rNo, gNo, bNo },
+    { expectedNo.r, expectedNo.g, expectedNo.b },
+    "the NO row renders through the second palette bank"
+  )
 end
 
 return { tests = T }

@@ -60,6 +60,7 @@ return {
       { path = "asm/render_window.s" },
       { path = "src/overlay_trainer_card_main.s" },
       { path = "src/naming_screen.c" },
+      { path = "src/yes_no_prompt.c" },
     },
   },
   startMenu = {
@@ -306,5 +307,22 @@ return {
         symbols = { base = 13, alternate = 12 },
       },
     },
+  },
+  -- The compact two-row choice prompt follows src/yes_no_prompt.c: the
+  -- confirmation row renders through the first prompt palette bank and the
+  -- rejection row through the second, from the shared character bank. The
+  -- shape-0 screens are 6x4 tiles (48x32 pixels) each: YES normal/selected
+  -- are members 2/3 and NO normal/selected are members 4/5 of
+  -- NARC_system_touch_subwindow, with the palette in member 0 and the
+  -- shared char bank in member 1. Only this producer reads these member
+  -- numbers; the generated manifest carries semantic asset ids alone.
+  yesNoPrompt = {
+    alias = "touch_subwindow",
+    paletteMember = 0,
+    charMember = 1,
+    yesNormalScreen = 2,
+    yesSelectedScreen = 3,
+    noNormalScreen = 4,
+    noSelectedScreen = 5,
   },
 }

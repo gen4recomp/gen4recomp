@@ -51,6 +51,7 @@ local ALIAS_TO_SYMBOL = {
   dialogue_frames = "NARC_a_0_3_8",
   signpost_graphics = "NARC_a_0_3_6",
   trainer_card_graphics = "NARC_a_0_4_9",
+  touch_subwindow = "NARC_system_touch_subwindow",
   field_static_models = "NARC_a_1_0_3",
   -- Map-asset archives. Symbolic decomp names are not exposed
   -- for these in the pinned catalog, so they resolve through the a/G/D/F path.

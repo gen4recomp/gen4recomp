@@ -2,7 +2,8 @@
 -- contract (one shared icon atlas with normal/selected visuals, palette
 -- record, icon table, contexts, chrome, and the seven interactive position
 -- records) and cursor, the twenty user dialogue frames, the corpus
--- signpost frame and wayfinding graphics, the Trainer Card front, and the
+-- signpost frame and wayfinding graphics, the Trainer Card front, the
+-- compact two-row choice prompt buttons, and the
 -- normal naming screen chrome (one opaque base, the three transparent page
 -- overlays, static controls/slots, full generated subject/cursor animations
 -- with entry-29 pulse masks) — all as decoded PNG atlases and the strict manifest. Wayfinding members are precomposed
@@ -1133,6 +1134,128 @@ local function compileTrainerCard(romFs, sha1hex, deps, assets, manifestAssets)
   }
 end
 
+-- The compact two-row choice prompt: the four shape-0 button screens
+-- rendered from the shared char bank, the confirmation row through the
+-- first prompt palette bank and the rejection row through the second. Each
+-- state publishes its own 48x32 surface under a semantic asset id; the
+-- manifest section carries the compact shape record alone, never the source
+-- archive, member, tile, palette, or background identities.
+local function compileYesNoPrompt(romFs, sha1hex, deps, assets, manifestAssets)
+  local archive, archiveBytes = loadArchive(romFs, manifestConfig.yesNoPrompt.alias)
+  local cfg = manifestConfig.yesNoPrompt
+  local memberBytes = {}
+  local function g2d(kind, memberId, label)
+    memberBytes[memberId] = decodeMember(archive, memberId, label)
+    local decoded, err =
+      G2dDecoder[kind](memberBytes[memberId], { label = manifestConfig.yesNoPrompt.alias .. ":" .. memberId })
+    return must(decoded, err)
+  end
+  local palette = g2d("decodePalette", cfg.paletteMember, "two-row prompt palette") --[[@as FieldUiCompiler.PaletteData]]
+  local charData = g2d("decodeChar", cfg.charMember, "two-row prompt char") --[[@as FieldUiCompiler.CharData]]
+  if #palette.colors < 32 then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "the two-row prompt palette must cover both button banks",
+      { member = cfg.paletteMember, available = #palette.colors }
+    )
+  end
+  local states = {
+    {
+      key = "yes.normal",
+      member = cfg.yesNormalScreen,
+      bank = 0,
+      asset = FieldUiAssetCache.ASSET.YES_NO_PROMPT_YES_NORMAL,
+      file = "yes-no-prompt-yes-normal.png",
+    },
+    {
+      key = "yes.selected",
+      member = cfg.yesSelectedScreen,
+      bank = 0,
+      asset = FieldUiAssetCache.ASSET.YES_NO_PROMPT_YES_SELECTED,
+      file = "yes-no-prompt-yes-selected.png",
+    },
+    {
+      key = "no.normal",
+      member = cfg.noNormalScreen,
+      bank = 1,
+      asset = FieldUiAssetCache.ASSET.YES_NO_PROMPT_NO_NORMAL,
+      file = "yes-no-prompt-no-normal.png",
+    },
+    {
+      key = "no.selected",
+      member = cfg.noSelectedScreen,
+      bank = 1,
+      asset = FieldUiAssetCache.ASSET.YES_NO_PROMPT_NO_SELECTED,
+      file = "yes-no-prompt-no-selected.png",
+    },
+  }
+  local compact = {
+    width = FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_WIDTH,
+    height = FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_HEIGHT,
+    yes = {},
+    no = {},
+  }
+  for _, state in ipairs(states) do
+    local screen = g2d("decodeScreen", state.member, "two-row prompt " .. state.key) --[[@as FieldUiCompiler.ScreenData]]
+    if
+      screen.width ~= FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_WIDTH
+      or screen.height ~= FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_HEIGHT
+    then
+      Errors.raise(
+        FieldUiCompiler.ERROR.SOURCE_INVALID,
+        "the two-row prompt " .. state.key .. " screen must be the compact 48x32 surface",
+        { member = state.member, width = screen.width, height = screen.height }
+      )
+    end
+    -- The source selects the button bank per row at presentation time, so
+    -- the producer pins each screen's entries to its row bank before
+    -- rasterizing; the physical bank numbers never leave this module.
+    local entries = {}
+    for index, entry in ipairs(screen.entries) do
+      entries[index] = { tile = entry.tile, palette = state.bank, flipH = entry.flipH, flipV = entry.flipV }
+    end
+    local path = FieldUiAssetCache.assetDir() .. "/" .. state.file
+    assets[path] = renderScreen(charData, palette.colors, {
+      width = screen.width,
+      height = screen.height,
+      entries = entries,
+    }, {
+      asset = "two-row prompt " .. state.key,
+      member = state.member,
+    })
+    manifestAssets[state.asset] = { image = path, width = screen.width, height = screen.height }
+    deps[#deps + 1] = {
+      name = manifestConfig.yesNoPrompt.alias .. ":prompt:" .. state.key,
+      sha1 = sha1hex(memberBytes[state.member]),
+    }
+  end
+  deps[#deps + 1] = { name = manifestConfig.yesNoPrompt.alias .. ":narc", sha1 = sha1hex(archiveBytes) }
+  local function visual(assetId)
+    return {
+      asset = assetId,
+      rect = {
+        x = 0,
+        y = 0,
+        width = FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_WIDTH,
+        height = FieldUiAssetCache.GEOMETRY.PROMPT_BUTTON_HEIGHT,
+      },
+    }
+  end
+  compact.yes = {
+    normal = visual(FieldUiAssetCache.ASSET.YES_NO_PROMPT_YES_NORMAL),
+    selected = visual(FieldUiAssetCache.ASSET.YES_NO_PROMPT_YES_SELECTED),
+  }
+  compact.no = {
+    normal = visual(FieldUiAssetCache.ASSET.YES_NO_PROMPT_NO_NORMAL),
+    selected = visual(FieldUiAssetCache.ASSET.YES_NO_PROMPT_NO_SELECTED),
+  }
+  return {
+    shapes = {
+      compact = compact,
+    },
+  }
+end
+
 local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
   local archive, archiveBytes = loadArchive(romFs, manifestConfig.namingScreen.alias)
   local cfg = manifestConfig.namingScreen
@@ -1518,6 +1641,7 @@ local function compileAll(romFs, sha1hex, hashLua)
   local dialogueFrames = compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAssets)
   local signposts = compileSignposts(romFs, sha1hex, deps, assets, manifestAssets)
   local trainerCard = compileTrainerCard(romFs, sha1hex, deps, assets, manifestAssets)
+  local yesNoPrompt = compileYesNoPrompt(romFs, sha1hex, deps, assets, manifestAssets)
   local namingScreen = compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
 
   local manifest = {
@@ -1528,6 +1652,7 @@ local function compileAll(romFs, sha1hex, hashLua)
     signposts = signposts,
     startMenu = startMenu,
     trainerCard = trainerCard,
+    yesNoPrompt = yesNoPrompt,
     namingScreen = namingScreen,
   }
   local ok, err = FieldUiAssetCache.validateManifest(manifest)

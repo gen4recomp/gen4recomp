@@ -353,4 +353,68 @@ function T.continuation_cursor_payload_matches_the_source_preparation(romFs, _)
   end
 end
 
+-- The two-row prompt source selection compiles into the semantic button
+-- contract: the selected char, palette, and four compact screens decode,
+-- every generated state is a 48x32 visual, and the runtime section carries
+-- no source archive/member identities. The selection field names below
+-- (alias, paletteMember, charMember, yesNormalScreen, yesSelectedScreen,
+-- noNormalScreen, noSelectedScreen) are the test-side producer seam.
+function T.two_row_prompt_resources_compile_to_semantic_button_states(romFs, version)
+  local selection =
+    assert(manifestConfig.yesNoPrompt, "the field-UI source selection must name the two-row prompt archive")
+  local archive = assert(romFs:openNarc(selection.alias))
+  local function rawMember(memberId, label)
+    local bytes = assert(archive:readMember(memberId), label .. " member " .. memberId .. " is selected")
+    if string.byte(bytes, 1) == 0x10 then
+      local plain, err = Lz10.decode(bytes)
+      assert(plain, err and err.message)
+      return plain
+    end
+    return bytes
+  end
+  local palette, paletteErr = G2dDecoder.decodePalette(rawMember(selection.paletteMember, "prompt palette"))
+  assert(palette, paletteErr and paletteErr.message)
+  Assert.isTrue(#palette.colors >= 32, "the prompt palette covers both button banks")
+  local chars, charsErr = G2dDecoder.decodeChar(rawMember(selection.charMember, "prompt char"))
+  assert(chars, charsErr and charsErr.message)
+  local tileSize = chars.depth == 3 and 32 or 64
+  Assert.equal(#chars.tiles % tileSize, 0, "the prompt char bank is tile-aligned")
+  for _, key in ipairs({ "yesNormalScreen", "yesSelectedScreen", "noNormalScreen", "noSelectedScreen" }) do
+    local screen, screenErr = G2dDecoder.decodeScreen(rawMember(selection[key], "prompt " .. key))
+    assert(screen, screenErr and screenErr.message)
+    Assert.equal(screen.width, 48, "prompt " .. key .. " is the compact 6-tile width")
+    Assert.equal(screen.height, 32, "prompt " .. key .. " is the compact 4-tile height")
+  end
+
+  local bundle = assert(FieldUiCompiler.compile(romFs))
+  local prompt = assert(bundle.manifest.yesNoPrompt, "the compiled field UI must publish the two-row prompt") --[[@as FieldUiAssetCache.PromptSection]]
+  local compact = assert(prompt.shapes ~= nil and prompt.shapes.compact) --[[@as FieldUiAssetCache.PromptShape]]
+  Assert.equal(compact.width, 48)
+  Assert.equal(compact.height, 32)
+  for _, state in ipairs({ compact.yes.normal, compact.yes.selected, compact.no.normal, compact.no.selected }) do
+    local entry = assert(bundle.manifest.assets[state.asset], "every prompt state asset is indexed")
+    local bytes = assert(bundle.assets[entry.image], "every prompt state image has payload")
+    local width, height = PngReader.rgba(bytes)
+    Assert.equal(width, 48)
+    Assert.equal(height, 32)
+  end
+  local function scan(value, path)
+    if type(value) ~= "table" then
+      return
+    end
+    for k, v in pairs(value) do
+      Assert.isFalse(
+        k == "member" or k == "memberId" or k == "narcId" or k == "alias" or k == "fileId",
+        "the prompt manifest leaks source detail '" .. tostring(k) .. "' at " .. path
+      )
+      scan(v, path .. "." .. tostring(k))
+    end
+  end
+  scan(prompt, "yesNoPrompt")
+
+  local cache = CacheFs.forVersion(version)
+  FieldUiCacheWriter.write(cache, bundle)
+  Assert.isTrue(FieldUiAssetCache.isReady(cache, bundle.marker), "every prompt file is ready after publication")
+end
+
 return require("tests.rom.support.RomSuite").fromFacts(T)

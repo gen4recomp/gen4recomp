@@ -93,6 +93,12 @@
 -- fieldUi schema 14: dialogueFrames publishes each selected frame's palette
 -- because focus-indicator masks are tinted by their owning window.
 --
+-- fieldUi schema 15: the manifest carries the required two-row choice
+-- prompt section (the compact 48x32 button geometry with normal/selected
+-- visuals per row, every visual resolved through the shared asset index by
+-- semantic id), so a stale pre-change cache without that section must fail
+-- readiness.
+--
 -- fieldUi schema 3: signpost wayfinding becomes a per-(type,map) rect table
 -- (signposts.types[N].wayfinding[map]) and the manifest drops the
 -- startMenu.icons mapping (no runtime consumer remains; the icon art is
@@ -221,7 +227,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v14",
+  schema = "g4-field-ui-v15",
 }
 
 DerivedAssetContract.intro = {

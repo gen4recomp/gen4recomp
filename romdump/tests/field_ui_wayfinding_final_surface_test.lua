@@ -346,6 +346,22 @@ local function fixture(opts)
     namein[13] = namingCellBank(cells)
     namein[15] = namingAnimBank(animCells)
   end
+  -- The synthetic two-row prompt archive the current field-UI class
+  -- requires: palette member 0, the shared char bank member 1, and one
+  -- 48x32 screen per button state (members 2..5).
+  local prompt = {}
+  for i = 1, 6 do
+    prompt[i] = string.rep("\0", 4)
+  end
+  prompt[1] = palette16()
+  prompt[2] = charData(8)
+  for member = 2, 5 do
+    local entries = {}
+    for i = 1, 24 do
+      entries[i] = member
+    end
+    prompt[member + 1] = screenDataWH(48, 32, entries)
+  end
   local function narcFile(alias)
     local members
     if alias == "start_menu" then
@@ -368,6 +384,8 @@ local function fixture(opts)
       members = signposts
     elseif alias == "naming_screen" then
       members = namein
+    elseif alias == "touch_subwindow" then
+      members = prompt
     else
       members = card
     end
@@ -400,6 +418,13 @@ local function fixture(opts)
       symbol = "NARC_data_namein",
       alias = "naming_screen",
     },
+    touch_subwindow = {
+      fileId = 15,
+      narcId = 99,
+      path = "a/9/9/9",
+      symbol = "NARC_a_9_9_9",
+      alias = "touch_subwindow",
+    },
   }
   local romFs = {
     resolvedNarc = function(_, alias)
@@ -420,6 +445,9 @@ local function fixture(opts)
       end
       if fileId == 14 then
         return narcFile("naming_screen")
+      end
+      if fileId == 15 then
+        return narcFile("touch_subwindow")
       end
       Assert.fail("unexpected read " .. tostring(fileId))
     end,

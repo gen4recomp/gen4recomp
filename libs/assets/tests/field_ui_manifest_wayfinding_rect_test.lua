@@ -83,6 +83,26 @@ local function baseManifest()
         width = 256,
         height = 112,
       },
+      ["hgss.yes_no_prompt.yes_normal"] = {
+        image = "assets/generated/field/ui/yes-no-prompt-yes-normal.png",
+        width = 48,
+        height = 32,
+      },
+      ["hgss.yes_no_prompt.yes_selected"] = {
+        image = "assets/generated/field/ui/yes-no-prompt-yes-selected.png",
+        width = 48,
+        height = 32,
+      },
+      ["hgss.yes_no_prompt.no_normal"] = {
+        image = "assets/generated/field/ui/yes-no-prompt-no-normal.png",
+        width = 48,
+        height = 32,
+      },
+      ["hgss.yes_no_prompt.no_selected"] = {
+        image = "assets/generated/field/ui/yes-no-prompt-no-selected.png",
+        width = 48,
+        height = 32,
+      },
     },
     dialogueFrames = {
       count = 20,
@@ -193,6 +213,34 @@ local function baseManifest()
       labelPalette = FieldUiFixture.startMenuLabelPalette(),
     },
     trainerCard = { front = { x = 0, y = 0, width = 256, height = 192 } },
+    yesNoPrompt = {
+      shapes = {
+        compact = {
+          width = 48,
+          height = 32,
+          yes = {
+            normal = {
+              asset = "hgss.yes_no_prompt.yes_normal",
+              rect = { x = 0, y = 0, width = 48, height = 32 },
+            },
+            selected = {
+              asset = "hgss.yes_no_prompt.yes_selected",
+              rect = { x = 0, y = 0, width = 48, height = 32 },
+            },
+          },
+          no = {
+            normal = {
+              asset = "hgss.yes_no_prompt.no_normal",
+              rect = { x = 0, y = 0, width = 48, height = 32 },
+            },
+            selected = {
+              asset = "hgss.yes_no_prompt.no_selected",
+              rect = { x = 0, y = 0, width = 48, height = 32 },
+            },
+          },
+        },
+      },
+    },
     namingScreen = {
       base = { asset = "hgss.naming_screen.base", width = 256, height = 192 },
       pages = {

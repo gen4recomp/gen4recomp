@@ -92,7 +92,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     fieldUi = {
       cacheFormat = "field-ui-cache-v1",
-      schema = "g4-field-ui-v14",
+      schema = "g4-field-ui-v15",
     },
     intro = {
       cacheFormat = "intro-cache-v14",
