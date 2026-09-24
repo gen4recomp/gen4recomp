@@ -23,11 +23,13 @@ local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
+local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local RawDumpContract = require("romdump.src.source.RawDumpContract")
 local Schema = require("libs.script.src.Schema")
+local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 
 local T = {}
@@ -1296,6 +1298,361 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
   activeBackend = sharedBackend
   cache = CacheFs.forVersion(versionId, activeBackend)
   context = workerContextFor(romFs, versionId, cache)
+end
+
+-- Sparse readiness census against retail metadata: the bounded runtime
+-- settles the standard list-menu bank without family summaries, and one
+-- real map's logical closure waits on a bank reachable only through its
+-- script member's published transitive closure. Selection below reads
+-- authoritative generated metadata (the published script index, the audio
+-- plan, the compiled field record) only to NAME a discriminating
+-- map/member/sequence/bank tuple; every readiness claim is observed on
+-- the real session through withheld/completed bank jobs, never on the
+-- selection computation itself.
+local function publishedScriptIndex(cache, label)
+  local active, activeErr = ScriptCache.loadActive(cache)
+  Assert.isNil(activeErr, label .. " publishes a readable script selection")
+  assert(active ~= nil, label .. " publishes a script selection")
+  return active.index
+end
+
+local function audioBankOf(index, symbol, context)
+  local sequenceId = index.sequenceBySymbol[symbol]
+  Assert.notNil(sequenceId, context .. " resolves through the audio index: " .. tostring(symbol))
+  local entry = index.sequences[sequenceId]
+  Assert.notNil(entry, context .. " names an adopted sequence: " .. tostring(symbol))
+  return assert(entry.bankId, context .. " sequence names its bank: " .. tostring(symbol))
+end
+
+local function runtimeAudioBanks()
+  local banks = {}
+  for _, member in ipairs(ArtifactJobs.fieldRuntimeJobs()) do
+    if member.kind == "audio-bank" then
+      banks[member.key] = true
+    end
+  end
+  return banks
+end
+
+local function directMapBanks(field, bankOf)
+  local banks = {}
+  local function add(symbol)
+    if symbol ~= nil then
+      banks[tostring(bankOf(symbol))] = true
+    end
+  end
+  if type(field.music) == "table" then
+    add(field.music.day)
+    add(field.music.night)
+    if type(field.music.flagOverrides) == "table" then
+      for _, override in ipairs(field.music.flagOverrides) do
+        if type(override) == "table" then
+          add(override.sequence)
+        end
+      end
+    end
+    if type(field.music.traversalOverrides) == "table" then
+      for _, override in ipairs(field.music.traversalOverrides) do
+        if type(override) == "table" then
+          add(override.sequence)
+        end
+      end
+    end
+  end
+  if type(field.soundplates) == "table" then
+    for _, plate in ipairs(field.soundplates) do
+      if type(plate) == "table" then
+        add(plate.sequence)
+      end
+    end
+  end
+  return banks
+end
+
+-- Returns { mapId, scriptMemberId, sequence, bankId } for one retail map
+-- whose script closure resolves to a bank outside its direct map banks
+-- and outside the runtime global banks. Fails loudly when no retail map
+-- discriminates script-only readiness: that would contradict the
+-- source-grounded script-audio premise, not a skippable absence. Resolved
+-- bank sets decide, never sequence names alone.
+---@param romFs table<string, unknown> borrowed read-only dump
+---@param cache table<string, unknown> owned completed-cache view
+---@return { mapId: integer, scriptMemberId: integer, sequence: string, bankId: integer }
+local function selectScriptOnlyBank(romFs, cache)
+  local audioPlan = assert(AudioCompiler.plan(romFs), "selection needs the audio plan")
+  local index = assert(audioPlan.index, "selection needs the adopted audio index")
+  assert(type(index.sequenceBySymbol) == "table", "selection needs sequence symbols")
+  assert(type(index.sequences) == "table", "selection needs sequences")
+  local scriptIndex = publishedScriptIndex(cache, "script summary publication")
+  local runtimeBanks = runtimeAudioBanks()
+  local mapCount = 0
+  for _ in MapCatalog.all() do
+    mapCount = mapCount + 1
+  end
+  local mapSession = assert(FieldMapDataCompiler.newSession(romFs), "selection needs field records")
+  local selection = nil
+  for mapId = 0, mapCount - 1 do
+    if selection ~= nil then
+      break
+    end
+    local bundle = mapSession:compile(mapId)
+    if bundle ~= nil and type(bundle.field) == "table" and type(bundle.field.scriptBankId) == "number" then
+      local field = bundle.field
+      local direct = directMapBanks(field, function(symbol)
+        return audioBankOf(index, symbol, "map " .. tostring(mapId))
+      end)
+      local closure, closureErr = ScriptCache.audioSequencesForMember(scriptIndex, field.scriptBankId)
+      Assert.isNil(
+        closureErr,
+        "map " .. tostring(mapId) .. " member " .. tostring(field.scriptBankId) .. " publishes its closure"
+      )
+      for _, symbol in ipairs(assert(closure, "closure is present")) do
+        local bankId = audioBankOf(index, symbol, "map " .. tostring(mapId) .. " script member")
+        local key = tostring(bankId)
+        if not direct[key] and not runtimeBanks[key] then
+          selection = { mapId = mapId, scriptMemberId = field.scriptBankId, sequence = symbol, bankId = bankId }
+          break
+        end
+      end
+    end
+  end
+  mapSession:close()
+  assert(selection ~= nil, "the retail corpus exposes a map with a script-only audio bank")
+  return selection
+end
+
+-- Completes one scope's jobs through the real worker path in
+-- dependency order (inventory, leaves, then their summaries), settling
+-- planning between waves so gated parents submit once children publish.
+local function completeScopeWaves(session, pool, complete)
+  local completed = 0
+  local function completeKind(kind)
+    for _, record in ipairs(pool:recordsForKind(kind)) do
+      if pool.records[record.jobKey].state == "queued" then
+        complete(record.jobKey)
+        completed = completed + 1
+      end
+    end
+  end
+  local function completeQueued(key)
+    if pool.records[key] ~= nil and pool.records[key].state == "queued" then
+      complete(key)
+      completed = completed + 1
+    end
+  end
+  completeQueued("source-plan:global")
+  settle(session, pool)
+  for _, kind in ipairs({
+    "world-catalog",
+    "field-cell-index",
+    "field-camera",
+    "field-weather",
+    "field-effects",
+    "field-emotes",
+    "field-ui",
+    "field-font",
+    "mon-catalog",
+    "items",
+    "bag",
+    "map-data",
+    "message-bank",
+    "audio-bank",
+    "script-member",
+    "actors",
+    "starter-choice",
+  }) do
+    completeKind(kind)
+  end
+  settle(session, pool)
+  for _, kind in ipairs({ "mon-layout", "audio-catalog", "script-summary" }) do
+    completeKind(kind)
+  end
+  settle(session, pool)
+end
+
+local function driveScopeToReady(session, pool, complete, request, label)
+  for _ = 1, 20 do
+    local ready, failure = request()
+    if failure ~= nil then
+      error(label .. " failed: " .. tostring(failure), 0)
+    end
+    if ready then
+      return
+    end
+    settle(session, pool)
+    local settled, settledFailure = request()
+    if settledFailure ~= nil then
+      error(label .. " failed: " .. tostring(settledFailure), 0)
+    end
+    if settled then
+      return
+    end
+    if completeScopeWaves(session, pool, complete) == 0 then
+      local stalled, stalledFailure = request()
+      if stalledFailure ~= nil then
+        error(label .. " failed: " .. tostring(stalledFailure), 0)
+      end
+      Assert.isTrue(stalled, label .. " stalls with queued work outstanding")
+      return
+    end
+  end
+  local ready, failure = request()
+  if failure ~= nil then
+    error(label .. " failed: " .. tostring(failure), 0)
+  end
+  Assert.isTrue(ready, label .. " settles through the worker path")
+end
+
+function T.field_runtime_settles_standard_menu_bank_without_family_summaries(romFs, versionId)
+  assert(activeBackend ~= nil, "the census owns its backend for the run")
+  local cache = CacheFs.forVersion(versionId, activeBackend)
+  local romSha1 = assert(romFs:metadata().sha1, "dump has no SHA-1 identity")
+  local identity = identityFor(versionId, romSha1)
+  local pool = FakePool()
+  local context = workerContextFor(romFs, versionId, cache)
+  local stageSeq = 0
+  local function complete(jobKey)
+    stageSeq = stageSeq + 1
+    return completeThroughWorker(context, pool, jobKey, "runtime-census-" .. tostring(stageSeq))
+  end
+  local session = openSession(identity, 11, pool)
+  do
+    local first, second = session:requestMilestone("field-runtime", "required")
+    checkPending(first, second, "runtime census")
+  end
+  settle(session, pool)
+  do
+    local requested = pool:requestSet()
+    Assert.notNil(
+      requested["message-bank:" .. tostring(MenuProtocol.STANDARD_MESSAGE_BANK)],
+      "field runtime enrolls the standard list-menu bank"
+    )
+    Assert.notNil(
+      requested["message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK)],
+      "field runtime keeps the start menu bank"
+    )
+    Assert.isNil(requested["message-summary:global"], "field runtime pulls no message summary")
+    Assert.isNil(requested["audio-summary:global"], "field runtime pulls no audio summary")
+  end
+  driveScopeToReady(session, pool, complete, function()
+    return session:requestMilestone("field-runtime", "required")
+  end, "field runtime")
+  session:retire()
+end
+
+function T.logical_field_waits_for_script_only_audio_bank(romFs, versionId)
+  assert(activeBackend ~= nil, "the census owns its backend for the run")
+  local cache = CacheFs.forVersion(versionId, activeBackend)
+  local romSha1 = assert(romFs:metadata().sha1, "dump has no SHA-1 identity")
+  local identity = identityFor(versionId, romSha1)
+  local pool = FakePool()
+  local context = workerContextFor(romFs, versionId, cache)
+  local stageSeq = 0
+  local function complete(jobKey)
+    stageSeq = stageSeq + 1
+    return completeThroughWorker(context, pool, jobKey, "script-audio-census-" .. tostring(stageSeq))
+  end
+  local session = openSession(identity, 12, pool)
+  do
+    local first, second = session:requestMilestone("field-runtime", "required")
+    checkPending(first, second, "script-audio census runtime")
+  end
+  driveScopeToReady(session, pool, complete, function()
+    return session:requestMilestone("field-runtime", "required")
+  end, "script-audio census runtime")
+  local selection = selectScriptOnlyBank(romFs, cache)
+  local contextLine = "map "
+    .. tostring(selection.mapId)
+    .. " member "
+    .. tostring(selection.scriptMemberId)
+    .. " sequence "
+    .. tostring(selection.sequence)
+    .. " bank "
+    .. tostring(selection.bankId)
+  local withheldKey = "audio-bank:" .. tostring(selection.bankId)
+  session:retire()
+  local logicalPool = FakePool()
+  local logicalSession = openSession(identity, 13, logicalPool)
+  local logicalContext = workerContextFor(romFs, versionId, cache)
+  local logicalStage = 0
+  local function completeLogical(jobKey)
+    logicalStage = logicalStage + 1
+    return completeThroughWorker(logicalContext, logicalPool, jobKey, "withheld-census-" .. tostring(logicalStage))
+  end
+  do
+    local first, second = logicalSession:requestLogicalField(selection.mapId, "required")
+    checkPending(first, second, "script-only logical demand")
+  end
+  settle(logicalSession, logicalPool)
+  if
+    logicalPool.records["source-plan:global"] ~= nil and logicalPool.records["source-plan:global"].state == "queued"
+  then
+    completeLogical("source-plan:global")
+  end
+  settle(logicalSession, logicalPool)
+  for _ = 1, 20 do
+    settle(logicalSession, logicalPool)
+    local progressed = false
+    for _, record in ipairs(logicalPool:recordsForKind("map-data")) do
+      if logicalPool.records[record.jobKey].state == "queued" then
+        completeLogical(record.jobKey)
+        progressed = true
+      end
+    end
+    for _, record in ipairs(logicalPool:recordsForKind("message-bank")) do
+      if logicalPool.records[record.jobKey].state == "queued" then
+        completeLogical(record.jobKey)
+        progressed = true
+      end
+    end
+    for _, record in ipairs(logicalPool:recordsForKind("script-member")) do
+      if logicalPool.records[record.jobKey].state == "queued" then
+        completeLogical(record.jobKey)
+        progressed = true
+      end
+    end
+    for _, record in ipairs(logicalPool:recordsForKind("audio-catalog")) do
+      if logicalPool.records[record.jobKey].state == "queued" then
+        completeLogical(record.jobKey)
+        progressed = true
+      end
+    end
+    for _, record in ipairs(logicalPool:recordsForKind("script-summary")) do
+      if logicalPool.records[record.jobKey].state == "queued" then
+        completeLogical(record.jobKey)
+        progressed = true
+      end
+    end
+    for _, record in ipairs(logicalPool:recordsForKind("audio-bank")) do
+      if record.jobKey ~= withheldKey and logicalPool.records[record.jobKey].state == "queued" then
+        completeLogical(record.jobKey)
+        progressed = true
+      end
+    end
+    if not progressed then
+      break
+    end
+  end
+  do
+    local pending, pendingFailure = logicalSession:requestLogicalField(selection.mapId, "required")
+    Assert.isFalse(pending, "logical field waits while its script-only bank is withheld: " .. contextLine)
+    Assert.isNil(pendingFailure, "withheld script-only bank reports no failure: " .. contextLine)
+    local withheldRecord = assert(logicalPool.records[withheldKey], "the script-only bank is enrolled: " .. contextLine)
+    Assert.equal(withheldRecord.state, "queued", "the script-only bank stays outstanding: " .. contextLine)
+    Assert.equal(
+      withheldRecord.priority,
+      ArtifactJobs.priorityFor("required"),
+      "the script-only bank enrolls at required priority: " .. contextLine
+    )
+    local requested = logicalPool:requestSet()
+    Assert.isNil(requested["audio-summary:global"], "withheld closure pulls no audio summary")
+    Assert.isNil(requested["message-summary:global"], "withheld closure pulls no message summary")
+  end
+  completeLogical(withheldKey)
+  driveScopeToReady(logicalSession, logicalPool, completeLogical, function()
+    return logicalSession:requestLogicalField(selection.mapId, "required")
+  end, "script-only logical field")
+  logicalSession:retire()
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)

@@ -295,7 +295,6 @@ function T.tests.warm_new_game_entry_reaches_the_bedroom_without_a_corpus_build(
       return ProducerFingerprint.checkoutBackend(love.filesystem.getSourceBaseDirectory())
     end
     -- Cold pass: compiles demand and records urgency/kind accounting.
-    -- Cold pass: compiles demand and records urgency/kind accounting.
     local coldRuntime, _ = runEntryPass()
     Assert.isTrue(
       #callsFor(trace.calls, "requestMilestone", "field-runtime", "required") >= 1,
@@ -315,11 +314,18 @@ function T.tests.warm_new_game_entry_reaches_the_bedroom_without_a_corpus_build(
       "warm Oak handoff to usable bedroom frame must complete in under 2.0 seconds, measured "
         .. string.format("%.2f", entrySeconds)
     )
-    Assert.equal(
-      #callsFor(trace.calls, "requestMilestone"),
-      0,
-      "the warm entry must not request the old whole-corpus milestone"
-    )
+    -- Only bounded milestones may fire on the warm path: planning,
+    -- runtime, intro, and bootstrap. Polling repeats them while it waits,
+    -- so repetition is accepted but anything outside the set fails.
+    for _, call in ipairs(trace.calls) do
+      if call.op == "requestMilestone" then
+        local name = call.arguments[1]
+        Assert.isTrue(
+          name == "field-planning" or name == "field-runtime" or name == "new-game-intro" or name == "bootstrap",
+          "no whole-corpus milestone demand may fire on the warm path: " .. tostring(name)
+        )
+      end
+    end
     local distinctMaps = distinctRequiredMapIds(trace.calls)
     Assert.isTrue(
       distinctMaps <= WARM_ENTRY_DISTINCT_MAP_BOUND,
