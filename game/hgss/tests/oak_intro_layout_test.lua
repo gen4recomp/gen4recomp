@@ -1161,11 +1161,11 @@ function T.tests.gender_cards_keep_clearance_above_dialogue_on_widescreen_hosts(
   end
 end
 
-function T.tests.name_confirmation_choices_align_to_choice_region_far_edge()
+function T.tests.name_confirmation_choices_keep_layout_gap_inside_safe_frame()
   local data = manifest()
-  for _, size in ipairs({ { 1710, 895 }, { 2560, 1440 } }) do
+  for _, size in ipairs({ { 640, 480 }, { 800, 600 }, { 390, 844 } }) do
     local label = size[1] .. "x" .. size[2]
-    local layout, _ = computeForHost(size[1], size[2], {
+    local layout, surface = computeForHost(size[1], size[2], {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -1190,10 +1190,18 @@ function T.tests.name_confirmation_choices_align_to_choice_region_far_edge()
     Assert.equal(yes.rect.width, no.rect.width)
     Assert.equal(yes.rect.height, no.rect.height)
     Assert.near((no.rect.y - (yes.rect.y + yes.rect.height)) / yes.scale, 8, 1e-6)
-    Assert.equal(
-      yes.rect.x + yes.rect.width,
-      choiceRegion.x + choiceRegion.width,
-      "name choices must align to the far edge of the choice region at " .. label
+    local preferredScale = surface.placement.scale
+    local physicalMinimum = math.min(size[1], size[2])
+    local expectedGap =
+      logicalHostMetric(math.min(8, math.max(0, math.floor(physicalMinimum * 0.02 + 0.5))), preferredScale)
+    local stackRight = yes.rect.x + yes.rect.width
+    Assert.isTrue(
+      stackRight <= layout.safeFrame.x + layout.safeFrame.width - expectedGap + 1e-9,
+      "name choices must leave the computed layout gap at the right safe edge at " .. label
+    )
+    Assert.isTrue(
+      stackRight <= choiceRegion.x + choiceRegion.width + 1e-9,
+      "name choices must stay inside the choice region at " .. label
     )
     Assert.isTrue(disjoint(yes.rect, subject), "YES must stay clear of Oak at " .. label)
     Assert.isTrue(disjoint(no.rect, subject), "NO must stay clear of Oak at " .. label)

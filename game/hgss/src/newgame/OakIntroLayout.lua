@@ -224,22 +224,30 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
   return selectedSubject, oakRegion, selectorRegion, nameChoiceRegion, selectorActive
 end
 
-local function integerConfirmationEntries(region, preferredScale, alignRight, bounds)
+local function integerConfirmationEntries(region, preferredScale, alignRight, bounds, rightInset)
   local stackWidth = TextButton.REFERENCE_WIDTH
   local stackHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
-  local scale = PixelScale.fitPreferred(region, stackWidth, stackHeight, preferredScale)
+  local fitRegion = region
+  if rightInset ~= nil then
+    local right = math.min(region.x + region.width, assert(bounds).x + bounds.width) - rightInset
+    fitRegion = {
+      x = region.x,
+      y = region.y,
+      width = right - region.x,
+      height = region.height,
+    }
+    assert(fitRegion.width > 0, "Oak name confirmation inset region must be positive")
+  end
+  local scale = PixelScale.fitPreferred(fitRegion, stackWidth, stackHeight, preferredScale)
   local width, height = stackWidth * scale, TextButton.REFERENCE_HEIGHT * scale
   -- Snap the stack origin to the logical pixel grid: fractional button
   -- edges rasterize the 1px shared rings onto pixel centers, where the
   -- later face fill wins the tie and erases the ring pixel. Name
-  -- confirmation instead hugs the far edge of its choice region so the
-  -- buttons stay maximally separated from Oak on wide hosts. The far edge
-  -- mates exactly because choice-region right edges are fractional: a
-  -- snapped origin would sit up to half a pixel past the region and break
-  -- region containment and far-edge alignment.
+  -- confirmation right-aligns within its inset fit region to preserve the
+  -- Oak separation while leaving the host-derived edge gap.
   local x
   if alignRight then
-    x = region.x + region.width - width
+    x = fitRegion.x + fitRegion.width - width
   else
     x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
   end
@@ -329,7 +337,8 @@ local function profileLayout(
   reference,
   manifest,
   nameChoiceRegion,
-  preferredScale
+  preferredScale,
+  gap
 )
   if selectorActive then
     local genderSlots = genderGroupEntries(assert(selectorRegion), reference, manifest, preferredScale)
@@ -347,7 +356,7 @@ local function profileLayout(
   end
   if view.phase == "name_confirm" and view.confirmationChoice and view.confirmationChoice.kind == "name" then
     result.confirmationButtons =
-      integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale), true, result.safeFrame)
+      integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale), true, result.safeFrame, gap)
   end
   -- The reusable Naming Screen child is placed by the parent-owned naming
   -- session, never by scene composition: OakIntroState publishes the
@@ -441,7 +450,17 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
     result.revealCanvas = canvas
     result.reveal = ordinaryReveal
   end
-  profileLayout(result, view, selectorActive, selectorRegion, reference, manifest, nameChoiceRegion, preferredScale)
+  profileLayout(
+    result,
+    view,
+    selectorActive,
+    selectorRegion,
+    reference,
+    manifest,
+    nameChoiceRegion,
+    preferredScale,
+    gap
+  )
   return result
 end
 

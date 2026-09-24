@@ -14,9 +14,10 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
 
-local function layoutFor(view, manifest)
-  view.pixelSurface = PixelScale.cover({ x = 0, y = 0, width = 800, height = 600 }, 1)
-  return OakIntroLayout.compute(800, 600, view, {}, manifest, 1)
+local function layoutFor(view, manifest, width, height)
+  local logicalWidth, logicalHeight = width or 800, height or 600
+  view.pixelSurface = PixelScale.cover({ x = 0, y = 0, width = logicalWidth, height = logicalHeight }, 1)
+  return OakIntroLayout.compute(logicalWidth, logicalHeight, view, {}, manifest, 1)
 end
 
 local function readyManifests()
@@ -95,10 +96,12 @@ local function confirmationView(kind, selected)
   }
 end
 
-local function render(scope, renderer, view, manifest)
-  view.layout = layoutFor(view, manifest)
-  local canvas = scope:own(love.graphics.newCanvas(800, 600))
+local function render(scope, renderer, view, manifest, width, height)
+  local canvasWidth, canvasHeight = width or 800, height or 600
+  view.layout = layoutFor(view, manifest, canvasWidth, canvasHeight)
+  local canvas = scope:own(love.graphics.newCanvas(canvasWidth, canvasHeight))
   love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
   renderer:draw(view)
   love.graphics.setCanvas()
   return scope:own(canvas:newImageData())
@@ -195,6 +198,33 @@ function T.name_confirmation_uses_common_side_by_side_backings(scope)
     Assert.notNil(yes.button)
     Assert.notNil(no.button)
     Assert.notNil(image)
+  end
+end
+
+function T.tall_name_confirmation_chrome_keeps_a_visible_right_margin(scope)
+  local width, height = 390, 844
+  for _, entry in ipairs(readyManifests()) do
+    local renderer = rendererFor(scope, entry)
+    local view = confirmationView("name", 0)
+    local image = render(scope, renderer, view, entry.manifest, width, height)
+    local layout = assert(view.layout)
+    local withoutChoices = confirmationView("name", 0)
+    withoutChoices.confirmationChoice = nil
+    withoutChoices.choiceLabels = nil
+    local background = render(scope, renderer, withoutChoices, entry.manifest, width, height)
+    local rightmostChromePixel
+    for y = 0, height - 1 do
+      for x = 0, width - 1 do
+        if not equalPixel(image, background, x, y) then
+          rightmostChromePixel = math.max(rightmostChromePixel or x, x)
+        end
+      end
+    end
+    Assert.notNil(rightmostChromePixel, entry.versionId .. " name buttons must change rendered pixels")
+    Assert.isTrue(
+      rightmostChromePixel < layout.safeFrame.x + layout.safeFrame.width,
+      entry.versionId .. " button chrome must leave a visible strip before the right safe edge"
+    )
   end
 end
 
