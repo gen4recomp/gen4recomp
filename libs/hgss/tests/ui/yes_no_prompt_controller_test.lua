@@ -1,5 +1,5 @@
 -- The reusable two-row choice prompt: initial selection, vertical toggle,
--- confirm/cancel result semantics, and pointer taps resolved against the two
+-- confirm/cancel result semantics, and pointer presses resolved against the two
 -- stacked button rows derived from the placement template plus the generated
 -- compact dimensions. The prompt never touches inventory, messages, or Bag
 -- state: it reports one-shot semantic results only.
@@ -111,15 +111,19 @@ function T.cancel_latches_no_through_the_same_delayed_interval()
   Assert.equal(takeTerminalResult(fromNo), "no")
 end
 
-function T.reopening_resets_selection_capture_and_result()
-  local controller = openAt(200, 48, "yes")
-  controller:updateFixed({ { type = "navigate", direction = "down" } })
+function T.reopening_resets_selection_pending_choice_and_result()
+  local controller = openAt(200, 48, "no")
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch", x = 210, y = 60 } })
+  Assert.equal(controller:status().selected, "yes", "the press resolves immediately")
   controller:open({ x = 200, y = 48, shape = "compact", initialSelection = "yes" })
   Assert.equal(controller:status().selected, "yes")
+  Assert.isTrue(controller:status().selectionHighlighted, "a reopened prompt starts highlighted")
   Assert.isNil(controller:takeResult())
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 210, y = 60 } })
-  Assert.isNil(controller:takeResult(), "the pre-reopen capture does not resolve")
+  for _ = 1, 9 do
+    controller:updateFixed({})
+    Assert.isTrue(controller:status().selectionHighlighted, "no pending choice blinks")
+    Assert.isNil(controller:takeResult(), "the discarded pending choice never publishes")
+  end
 end
 
 function T.input_while_inactive_produces_no_result()
@@ -152,22 +156,20 @@ function T.stacked_rows_come_from_the_template_and_shape_dimensions()
   Assert.deepEqual(moved:status().buttons.no, { x = 10, y = 52, width = 48, height = 32 })
 end
 
-function T.tap_inside_each_row_latches_that_row_through_the_delayed_interval()
+function T.press_inside_each_row_latches_that_row_through_the_delayed_interval()
   local yes = openAt(200, 48, "no")
   yes:updateFixed({ { type = "pointer_down", pointerId = "touch", x = 210, y = 60 } })
-  Assert.isNil(yes:takeResult(), "the press alone resolves nothing")
-  yes:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 210, y = 60 } })
-  Assert.equal(yes:status().selected, "yes")
-  Assert.isTrue(yes:status().selectionHighlighted, "the choice tick keeps the highlight")
-  Assert.isNil(yes:takeResult(), "the choice tick latches without publishing")
+  Assert.equal(yes:status().selected, "yes", "the press resolves the YES row immediately")
+  Assert.isTrue(yes:status().selectionHighlighted, "the choice press keeps the highlight")
+  Assert.isNil(yes:takeResult(), "the choice press latches without publishing")
   drainConfirmation(yes, "yes", CONFIRMATION_HIGHLIGHTS)
   Assert.equal(takeTerminalResult(yes), "yes")
 
   local no = openAt(200, 48, "yes")
   no:updateFixed({ { type = "pointer_down", pointerId = "touch", x = 247, y = 111 } })
-  no:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 247, y = 111 } })
-  Assert.equal(no:status().selected, "no")
-  Assert.isNil(no:takeResult(), "the choice tick latches without publishing")
+  Assert.equal(no:status().selected, "no", "the press resolves the NO row immediately")
+  Assert.isTrue(no:status().selectionHighlighted, "the choice press keeps the highlight")
+  Assert.isNil(no:takeResult(), "the choice press latches without publishing")
   drainConfirmation(no, "no", CONFIRMATION_HIGHLIGHTS)
   Assert.equal(takeTerminalResult(no), "no")
 end
@@ -197,22 +199,34 @@ function T.input_while_confirmation_is_pending_cannot_change_the_latched_choice(
   Assert.equal(takeTerminalResult(controller), "yes")
 end
 
-function T.a_stale_pointer_press_before_latching_cannot_resolve_afterwards()
+-- Once a press resolves the source hitbox, later gesture events are
+-- irrelevant: releases elsewhere, dragged or clean releases over the other
+-- row, and cancellation all leave the resolved row and its delayed result
+-- untouched.
+function T.later_release_drag_and_cancel_events_cannot_undo_a_latched_press()
   local controller = openAt(200, 48, "yes")
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch", x = 247, y = 111 } })
-  Assert.isNil(controller:takeResult())
-  controller:updateFixed({ { type = "confirm" } })
-  Assert.equal(controller:status().selected, "yes")
-  Assert.isNil(controller:takeResult(), "the choice tick latches without publishing")
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 247, y = 111 } })
-  Assert.equal(controller:status().selected, "yes", "the stale release cannot move the latched row")
-  Assert.isNil(controller:takeResult(), "the stale release cannot publish")
-  for step, expected in ipairs({ true, false, false, true, true, false, false }) do
+  Assert.equal(controller:status().selected, "no", "the press resolves the NO row immediately")
+  Assert.isNil(controller:takeResult(), "the choice press latches without publishing")
+  controller:updateFixed({ { type = "pointer_move", x = 10, y = 10 } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 10, y = 10 } })
+  Assert.equal(controller:status().selected, "no", "a release outside cannot move the latched row")
+  controller:updateFixed({ { type = "pointer_down", pointerId = "other", x = 210, y = 60 } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "other", x = 210, y = 60, dragged = true } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "other", x = 210, y = 60, dragged = false } })
+  Assert.equal(controller:status().selected, "no", "a later release over YES cannot move the latched row")
+  controller:updateFixed({ { type = "pointer_cancel" } })
+  Assert.equal(controller:status().selected, "no", "cancellation cannot move the latched row")
+  Assert.isNil(controller:takeResult(), "gesture events cannot publish early")
+  -- The six gesture updates above each consumed one interval step, so the
+  -- final two steps close the same cadence from its seventh step on.
+  for step, expected in ipairs({ false, false }) do
     controller:updateFixed({})
-    Assert.equal(controller:status().selectionHighlighted, expected, "the confirmation blink at step " .. step + 1)
+    Assert.equal(controller:status().selected, "no")
+    Assert.equal(controller:status().selectionHighlighted, expected, "the confirmation blink at step " .. step + 6)
     Assert.isNil(controller:takeResult())
   end
-  Assert.equal(takeTerminalResult(controller), "yes")
+  Assert.equal(takeTerminalResult(controller), "no")
 end
 
 function T.reopening_or_disposing_during_confirmation_discards_the_pending_choice()
@@ -238,30 +252,38 @@ function T.reopening_or_disposing_during_confirmation_discards_the_pending_choic
   Assert.isNil(disposed:takeResult(), "a disposed prompt publishes nothing")
 end
 
-function T.mismatched_press_release_and_outside_taps_resolve_nothing()
-  local across = openAt(200, 48, "yes")
-  across:updateFixed({ { type = "pointer_down", pointerId = "touch", x = 210, y = 60 } })
-  across:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 210, y = 90 } })
-  Assert.isNil(across:takeResult())
-
-  local dragged = openAt(200, 48, "yes")
-  dragged:updateFixed({ { type = "pointer_down", pointerId = "touch", x = 210, y = 60 } })
-  dragged:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 210, y = 60, dragged = true } })
-  Assert.isNil(dragged:takeResult())
-
+function T.press_outside_both_rows_and_idle_gestures_resolve_nothing()
   local outside = openAt(200, 48, "yes")
   outside:updateFixed({ { type = "pointer_down", pointerId = "touch", x = 10, y = 10 } })
-  outside:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 10, y = 10 } })
+  Assert.equal(outside:status().selected, "yes", "an outside press keeps the selection")
   Assert.isNil(outside:takeResult())
+  outside:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 10, y = 10 } })
+  Assert.equal(outside:status().selected, "yes", "an outside release keeps the selection")
+  Assert.isNil(outside:takeResult(), "outside gestures publish nothing")
+
+  local idle = openAt(200, 48, "yes")
+  idle:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 210, y = 60 } })
+  idle:updateFixed({ { type = "pointer_cancel" } })
+  Assert.equal(idle:status().selected, "yes", "an idle release or cancel keeps the selection")
+  Assert.isNil(idle:takeResult(), "idle gestures publish nothing")
 end
 
-function T.pointer_cancellation_clears_capture_without_a_result()
-  local controller = openAt(200, 48, "yes")
+function T.cancellation_after_a_latched_press_keeps_the_pending_choice()
+  local controller = openAt(200, 48, "no")
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch", x = 210, y = 60 } })
+  Assert.equal(controller:status().selected, "yes", "the press resolves immediately")
   controller:updateFixed({ { type = "pointer_cancel" } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch", x = 210, y = 60 } })
-  Assert.isNil(controller:takeResult())
-  Assert.isTrue(controller:status().active)
+  Assert.equal(controller:status().selected, "yes", "cancellation cannot undo the resolved row")
+  Assert.isNil(controller:takeResult(), "cancellation publishes nothing")
+  -- The cancellation update consumed the first interval step, so the
+  -- remaining seven follow the same cadence from its second step on.
+  for step, expected in ipairs({ true, false, false, true, true, false, false }) do
+    controller:updateFixed({})
+    Assert.equal(controller:status().selected, "yes")
+    Assert.equal(controller:status().selectionHighlighted, expected, "the confirmation blink at step " .. step + 1)
+    Assert.isNil(controller:takeResult())
+  end
+  Assert.equal(takeTerminalResult(controller), "yes")
 end
 
 function T.construction_rejects_a_shape_without_both_button_states()

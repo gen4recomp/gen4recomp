@@ -731,7 +731,11 @@ function T.pointer_only_toss_picks_confirms_once_without_early_mutation()
   Assert.equal(bag:revision(), revision, "entering confirmation never mutates the inventory")
   Assert.equal(bag:quantity("POTION"), 5, "entering confirmation changes no quantities")
   tapButton(control, layout, layoutManifest, 3)
-  settlePromptChoice(control)
+  -- The press latched immediately, so the release half of the tap already
+  -- consumed one confirmation step; eight further updates close the interval.
+  for _ = 1, 8 do
+    control:updateFixed({})
+  end
   view = control:status()
   Assert.equal(view.state, "toss_ack", "the YES row acknowledges without mutating")
   Assert.equal(bag:quantity("POTION"), 5, "the acknowledgement changes no quantities yet")

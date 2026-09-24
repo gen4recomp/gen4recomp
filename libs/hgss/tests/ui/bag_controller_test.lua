@@ -691,7 +691,11 @@ function T.pointer_quantity_steps_confirm_and_nested_cancel_hold_across_updates(
   -- YES row latches through the prompt interval into a post-choice state
   -- without mutating, and only a later acknowledgement commits.
   tap(control, layout, 224, 64)
-  settlePromptChoice(control)
+  -- The press latched immediately, so the release half of the tap already
+  -- consumed one confirmation step; eight further updates close the interval.
+  for _ = 1, 8 do
+    control:updateFixed({})
+  end
   local acknowledged = control:status()
   Assert.equal(acknowledged.state, "toss_ack", "tapping the YES row acknowledges without mutating")
   Assert.equal(bag:quantity("POTION"), 5, "the YES tap changes no quantities")
@@ -1456,6 +1460,33 @@ function T.toss_rejection_waits_through_the_prompt_interval_before_browsing()
   Assert.isNil(control:takeResult(), "the terminal update closes nothing")
   Assert.equal(bag:revision(), revision, "a rejected toss mutates nothing")
   Assert.equal(bag:quantity("POTION"), 5, "a rejected toss changes no quantities")
+end
+
+-- A layout change after the modal prompt resolved its row cannot undo the
+-- choice: clearing Bag capture leaves the pending confirmation running
+-- until the terminal update acknowledges into the post-choice state.
+function T.cancelling_capture_after_a_modal_press_keeps_the_pending_choice()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = 224, y = 64 } })
+  local prompt = assert(control:status().yesNoPrompt, "the modal press keeps the prompt")
+  Assert.equal(prompt.selected, "yes", "the press resolves the YES row")
+  control:cancelPointerCapture()
+  settlePromptChoice(control)
+  local acknowledged = control:status()
+  Assert.equal(acknowledged.state, "toss_ack", "the resolved choice survives capture cancellation")
+  Assert.isNil(acknowledged.yesNoPrompt, "the prompt closes once YES is accepted")
+  Assert.equal(bag:revision(), revision, "the cancelled capture mutates nothing")
+  Assert.equal(bag:quantity("POTION"), 5, "the cancelled capture changes no quantities")
 end
 
 return { tests = T }

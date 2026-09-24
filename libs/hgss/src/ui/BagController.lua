@@ -1374,12 +1374,9 @@ end
 
 -- A press held across a layout change must not activate a different
 -- post-layout target, so placement changes cancel the pointer capture.
--- A modal prompt capture clears with it, so a stale release never
--- resolves a choice the layout change already abandoned.
 function BagController:cancelPointerCapture()
   self._pressId = nil
   self._pressCapture = nil
-  self._prompt:cancelPointerCapture()
 end
 
 return BagController

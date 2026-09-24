@@ -4,8 +4,8 @@
 -- messages, or consumer state. A latched choice stays unpublished through a
 -- short confirmation blink before its result becomes visible. Either vertical
 -- direction toggles the selection, confirm resolves the selected row, cancel
--- resolves "no", and a pointer tap resolves the tapped row when the press
--- and release land on the same row. Button geometry derives from the
+-- resolves "no", and a pointer press inside a button row resolves that row
+-- immediately on the press. Button geometry derives from the
 -- generated compact shape
 -- dimensions plus the consumer's placement template; this module carries no
 -- source archive, member, tile, palette, or background identities.
@@ -20,8 +20,6 @@
 ---@field _pending string?
 ---@field _confirmTimer integer
 ---@field _highlighted boolean
----@field _capture string?
----@field _captureId string?
 local YesNoPromptController = {}
 YesNoPromptController.__index = YesNoPromptController
 
@@ -50,8 +48,6 @@ function YesNoPromptController.new(compactShape)
     _pending = nil,
     _confirmTimer = 0,
     _highlighted = true,
-    _capture = nil,
-    _captureId = nil,
   }, YesNoPromptController)
 end
 
@@ -82,8 +78,6 @@ function YesNoPromptController:open(template)
   self._pending = nil
   self._confirmTimer = 0
   self._highlighted = true
-  self._capture = nil
-  self._captureId = nil
 end
 
 local function contains(rect, x, y)
@@ -114,8 +108,6 @@ function YesNoPromptController:_latchChoice(choice)
   self._pending = choice
   self._confirmTimer = 0
   self._highlighted = true
-  self._capture = nil
-  self._captureId = nil
 end
 
 -- Advances the confirmation blink one step. Pairs of highlighted updates
@@ -160,36 +152,12 @@ function YesNoPromptController:updateFixed(events)
     elseif event.type == "cancel" then
       self:_latchChoice("no")
     elseif event.type == "pointer_down" then
-      if self._capture == nil then
-        assert(type(event.pointerId) == "string", "pointer down needs a pointer id")
-        local row = self:_rowAt(event.x, event.y)
-        if row ~= nil then
-          self._capture = row
-          self._captureId = event.pointerId
-        end
+      local row = self:_rowAt(event.x, event.y)
+      if row ~= nil then
+        self:_latchChoice(row)
       end
-    elseif event.type == "pointer_up" then
-      -- A tap resolves only when the same pointer releases on the pressed
-      -- row without a drag; a cross-row, dragged, or foreign-pointer
-      -- release clears the press without producing a result.
-      local captured = self._capture
-      local capturedId = self._captureId
-      self._capture = nil
-      self._captureId = nil
-      if captured ~= nil and event.pointerId == capturedId and event.dragged ~= true then
-        if self:_rowAt(event.x, event.y) == captured then
-          self:_latchChoice(captured)
-        end
-      end
-    elseif event.type == "pointer_cancel" then
-      self:cancelPointerCapture()
     end
   end
-end
-
-function YesNoPromptController:cancelPointerCapture()
-  self._capture = nil
-  self._captureId = nil
 end
 
 ---@return { active: boolean, selected: string?, selectionHighlighted: boolean?, buttons: { yes: { x: integer, y: integer, width: integer, height: integer }, no: { x: integer, y: integer, width: integer, height: integer } }? }
@@ -227,8 +195,6 @@ function YesNoPromptController:dispose()
   self._pending = nil
   self._confirmTimer = 0
   self._highlighted = true
-  self._capture = nil
-  self._captureId = nil
 end
 
 return YesNoPromptController
