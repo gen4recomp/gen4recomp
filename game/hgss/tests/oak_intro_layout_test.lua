@@ -1,6 +1,7 @@
 local Assert = require("tests.support.Assert")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
+local TextButton = require("libs.ui.src.TextButton")
 
 local T = { tests = {} }
 
@@ -1194,6 +1195,14 @@ function T.tests.name_confirmation_choices_keep_layout_gap_inside_safe_frame()
     local physicalMinimum = math.min(size[1], size[2])
     local expectedGap =
       logicalHostMetric(math.min(8, math.max(0, math.floor(physicalMinimum * 0.02 + 0.5))), preferredScale)
+    for _, entry in ipairs({ yes, no }) do
+      local visual = TextButton.visualBounds(entry.button, true)
+      Assert.isTrue(inside(visual, layout.safeFrame), "selected name chrome must stay in the safe frame at " .. label)
+      Assert.isTrue(
+        visual.x + visual.width <= layout.safeFrame.x + layout.safeFrame.width - expectedGap + 1e-9,
+        "selected name chrome must preserve the right safe gap at " .. label
+      )
+    end
     local stackRight = yes.rect.x + yes.rect.width
     Assert.isTrue(
       stackRight <= layout.safeFrame.x + layout.safeFrame.width - expectedGap + 1e-9,

@@ -12,6 +12,10 @@ local TextButton = {}
 TextButton.REFERENCE_WIDTH = 120
 TextButton.REFERENCE_HEIGHT = 56
 
+local FOCUS_OUTER_WIDTH = 5
+local FOCUS_INNER_WIDTH = 3
+local FOCUS_PATH_INSET = 1
+
 local DEFAULT_COLORS = {
   border = { 66 / 255, 66 / 255, 66 / 255, 1 },
   rim = { 230 / 255, 230 / 255, 222 / 255, 1 },
@@ -129,9 +133,9 @@ local function drawFocusOutline(graphics, button, colors)
   local outlineRect = assert(button.rect, "text button rectangle is missing")
   local border = assert(button.border, "text button border is missing")
   local resolvedRadius = assert(border.cornerRadius, "text button corner radius is missing")
-  local outerWidth = 5 * scale
-  local innerWidth = 3 * scale
-  local inset = 1 * scale
+  local outerWidth = FOCUS_OUTER_WIDTH * scale
+  local innerWidth = FOCUS_INNER_WIDTH * scale
+  local inset = FOCUS_PATH_INSET * scale
   local radius = math.max(0, resolvedRadius - outerWidth / 2)
   local outer = assert(colors.focusOuter, "text button focus outer color is missing")
   local inner = assert(colors.focusInner, "text button focus inner color is missing")
@@ -157,6 +161,28 @@ local function drawFocusOutline(graphics, button, colors)
     radius,
     radius
   )
+end
+
+---@param button table<string, unknown>
+---@param selected boolean
+---@return { x: number, y: number, width: number, height: number }
+function TextButton.visualBounds(button, selected)
+  assert(type(button) == "table", "resolved text button is required")
+  assert(type(button.rect) == "table", "text button rectangle is missing")
+  assert(type(selected) == "boolean", "text button selected flag must be boolean")
+  local body = rectangle(button.rect, "text button rectangle")
+  local scale = assert(button.scale, "text button scale is missing")
+  assertFinitePositiveScale(scale)
+  if not selected then
+    return body
+  end
+  local outset = math.max(0, FOCUS_OUTER_WIDTH / 2 - FOCUS_PATH_INSET) * scale
+  return {
+    x = body.x - outset,
+    y = body.y - outset,
+    width = body.width + outset * 2,
+    height = body.height + outset * 2,
+  }
 end
 
 ---@param graphics table<string, unknown>

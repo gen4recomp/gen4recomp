@@ -229,7 +229,8 @@ local function integerConfirmationEntries(region, preferredScale, alignRight, bo
   local stackHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
   local fitRegion = region
   if rightInset ~= nil then
-    local right = math.min(region.x + region.width, assert(bounds).x + bounds.width) - rightInset
+    local bound = assert(bounds)
+    local right = math.min(region.x + region.width, bound.x + bound.width - rightInset)
     fitRegion = {
       x = region.x,
       y = region.y,
@@ -239,18 +240,88 @@ local function integerConfirmationEntries(region, preferredScale, alignRight, bo
     assert(fitRegion.width > 0, "Oak name confirmation inset region must be positive")
   end
   local scale = PixelScale.fitPreferred(fitRegion, stackWidth, stackHeight, preferredScale)
-  local width, height = stackWidth * scale, TextButton.REFERENCE_HEIGHT * scale
-  -- Snap the stack origin to the logical pixel grid: fractional button
-  -- edges rasterize the 1px shared rings onto pixel centers, where the
-  -- later face fill wins the tie and erases the ring pixel. Name
-  -- confirmation right-aligns within its inset fit region to preserve the
-  -- Oak separation while leaving the host-derived edge gap.
-  local x
   if alignRight then
-    x = fitRegion.x + fitRegion.width - width
-  else
-    x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
+    local area = fitRegion
+    if bounds ~= nil then
+      local bound = assert(bounds)
+      local left = math.max(fitRegion.x, bound.x)
+      local right = math.min(fitRegion.x + fitRegion.width, bound.x + bound.width)
+      area = { x = left, y = bound.y, width = right - left, height = bound.height }
+    end
+    assert(area.width > 0 and area.height > 0, "Oak name confirmation bounds must be positive")
+
+    local visualYes, visualNo
+    while scale >= 1 do
+      local trialWidth = stackWidth * scale
+      local trialHeight = TextButton.REFERENCE_HEIGHT * scale
+      local trialGap = 8 * scale
+      local yesButton = TextButton.resolve({
+        rect = rect(0, 0, trialWidth, trialHeight),
+        scale = scale,
+        cornerRadius = 6,
+      })
+      local noButton = TextButton.resolve({
+        rect = rect(0, trialHeight + trialGap, trialWidth, trialHeight),
+        scale = scale,
+        cornerRadius = 6,
+      })
+      local yesBounds = TextButton.visualBounds(yesButton, true)
+      local noBounds = TextButton.visualBounds(noButton, true)
+      local unionWidth = math.max(yesBounds.x + yesBounds.width, noBounds.x + noBounds.width)
+        - math.min(yesBounds.x, noBounds.x)
+      local unionHeight = math.max(yesBounds.y + yesBounds.height, noBounds.y + noBounds.height)
+        - math.min(yesBounds.y, noBounds.y)
+      if unionWidth <= area.width and unionHeight <= area.height then
+        visualYes, visualNo = yesBounds, noBounds
+        break
+      end
+      scale = scale - 1
+    end
+    assert(
+      visualYes ~= nil and visualNo ~= nil,
+      string.format("Oak name confirmation focus bounds do not fit at 1x (%s x %s)", area.width, area.height)
+    )
+    local unionLeft = math.min(visualYes.x, visualNo.x)
+    local unionTop = math.min(visualYes.y, visualNo.y)
+    local unionRight = math.max(visualYes.x + visualYes.width, visualNo.x + visualNo.width)
+    local unionBottom = math.max(visualYes.y + visualYes.height, visualNo.y + visualNo.height)
+    local x = area.x + area.width - (unionRight - unionLeft) - unionLeft
+    local visualHeight = unionBottom - unionTop
+    local desiredTop = region.y + (region.height - visualHeight) / 2
+    local visualTop = math.max(area.y, math.min(desiredTop, area.y + area.height - visualHeight))
+    local y = visualTop - unionTop
+    local width = TextButton.REFERENCE_WIDTH * scale
+    local height = TextButton.REFERENCE_HEIGHT * scale
+    local yesRect = rect(x, y, width, height)
+    local noRect = rect(x, y + height + 8 * scale, width, height)
+    local yes = {
+      key = "yes",
+      rect = yesRect,
+      scale = scale,
+      button = TextButton.resolve({ rect = yesRect, scale = scale, cornerRadius = 6 }),
+    }
+    local no = {
+      key = "no",
+      rect = noRect,
+      scale = scale,
+      button = TextButton.resolve({ rect = noRect, scale = scale, cornerRadius = 6 }),
+    }
+    for _, entry in ipairs({ yes, no }) do
+      local visual = TextButton.visualBounds(entry.button, true)
+      assert(
+        visual.x >= area.x
+          and visual.y >= area.y
+          and visual.x + visual.width <= area.x + area.width
+          and visual.y + visual.height <= area.y + area.height,
+        "Oak name confirmation focus bounds exceed the safe region"
+      )
+    end
+    return { [0] = yes, [1] = no }
   end
+  local width, height = stackWidth * scale, TextButton.REFERENCE_HEIGHT * scale
+  -- Snap the centered stack to the logical pixel grid so fractional button
+  -- edges do not erase the shared ring pixels during rasterization.
+  local x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
   local y = PixelScale.snapLogical(region.y + (region.height - (height * 2 + 8 * scale)) / 2)
   if bounds ~= nil then
     x = math.max(bounds.x, math.min(x, bounds.x + bounds.width - width))
@@ -402,7 +473,13 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
   -- else it would widen the shared column past the pinned 1120.
   if usesNameStage(view) then
     local oakPortraitWidth = widget(manifest, "oak").width
-    local minNameContentWidth = gap + math.max(oakPortraitWidth / 0.46, TextButton.REFERENCE_WIDTH / 0.54)
+    local confirmationButton = TextButton.resolve({
+      rect = rect(0, 0, TextButton.REFERENCE_WIDTH, TextButton.REFERENCE_HEIGHT),
+      scale = 1,
+      cornerRadius = 6,
+    })
+    local confirmationWidth = TextButton.visualBounds(confirmationButton, true).width
+    local minNameContentWidth = gap + math.max(oakPortraitWidth / 0.46, (confirmationWidth + gap) / 0.54)
     contentWidthCap = math.max(contentWidthCap, math.ceil(minNameContentWidth))
   end
   local dialogue = OakSceneLayout.dialogue(safeFrame, mode.reservesDialogue, preferredScale)

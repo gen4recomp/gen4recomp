@@ -20,6 +20,13 @@ local function layoutFor(view, manifest, width, height)
   return OakIntroLayout.compute(logicalWidth, logicalHeight, view, {}, manifest, 1)
 end
 
+local function productionSurface(width, height)
+  local bounds = { x = 0, y = 0, width = width, height = height }
+  local preferredScale = math.max(1, math.floor(height / 192 + 0.5))
+  local outputScale = PixelScale.fitPreferred(bounds, 256, 192, preferredScale)
+  return PixelScale.cover(bounds, outputScale)
+end
+
 local function readyManifests()
   local result = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
@@ -100,6 +107,25 @@ local function render(scope, renderer, view, manifest, width, height)
   local canvasWidth, canvasHeight = width or 800, height or 600
   view.layout = layoutFor(view, manifest, canvasWidth, canvasHeight)
   local canvas = scope:own(love.graphics.newCanvas(canvasWidth, canvasHeight))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  renderer:draw(view)
+  love.graphics.setCanvas()
+  return scope:own(canvas:newImageData())
+end
+
+local function renderProductionRoot(scope, renderer, view, manifest, width, height)
+  local surface = productionSurface(width, height)
+  view.pixelSurface = surface
+  view.layout = OakIntroLayout.compute(
+    surface.logicalViewport.width,
+    surface.logicalViewport.height,
+    view,
+    {},
+    manifest,
+    math.floor(assert(surface.placement.pixelScale))
+  )
+  local canvas = scope:own(love.graphics.newCanvas(width, height))
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0, 0, 0, 0)
   renderer:draw(view)
@@ -225,6 +251,45 @@ function T.tall_name_confirmation_chrome_keeps_a_visible_right_margin(scope)
       rightmostChromePixel < layout.safeFrame.x + layout.safeFrame.width,
       entry.versionId .. " button chrome must leave a visible strip before the right safe edge"
     )
+  end
+end
+
+function T.name_confirmation_keeps_a_final_pixel_margin_at_production_host_scales(scope)
+  local hosts = {
+    { width = 640, height = 480 },
+    { width = 1024, height = 768 },
+    { width = 390, height = 844 },
+  }
+  for _, entry in ipairs(readyManifests()) do
+    local renderer = rendererFor(scope, entry)
+    for _, host in ipairs(hosts) do
+      local backgroundView = confirmationView("name", 0)
+      backgroundView.confirmationChoice = nil
+      backgroundView.choiceLabels = nil
+      local background = renderProductionRoot(scope, renderer, backgroundView, entry.manifest, host.width, host.height)
+      local surface = assert(backgroundView.pixelSurface)
+      local layout = assert(backgroundView.layout)
+      local scale = assert(surface.placement.pixelScale)
+      local permittedRightEdge = surface.placement.origin.x + (layout.safeFrame.x + layout.safeFrame.width) * scale
+      for _, selected in ipairs({ 0, 1 }) do
+        local view = confirmationView("name", selected)
+        local image = renderProductionRoot(scope, renderer, view, entry.manifest, host.width, host.height)
+        local rightmostChangedPixel
+        for y = 0, host.height - 1 do
+          for x = 0, host.width - 1 do
+            if not equalPixel(image, background, x, y) then
+              rightmostChangedPixel = math.max(rightmostChangedPixel or x, x)
+            end
+          end
+        end
+        local label = string.format("%s %dx%d focus %d", entry.versionId, host.width, host.height, selected)
+        Assert.notNil(rightmostChangedPixel, label .. " name buttons must change final pixels")
+        Assert.isTrue(
+          rightmostChangedPixel < permittedRightEdge - 1,
+          label .. " confirmation pixels must leave a full host pixel before the permitted right edge"
+        )
+      end
+    end
   end
 end
 

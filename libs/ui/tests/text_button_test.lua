@@ -83,6 +83,37 @@ function T.reference_dimensions_are_canonical()
   Assert.equal(TextButton.REFERENCE_HEIGHT, 56)
 end
 
+function T.visual_bounds_include_only_the_selected_focus_outset()
+  local TextButton = textButtonModule()
+  for _, scale in ipairs({ 1, 2 }) do
+    local body = rect(10, 20, 120 * scale, 56 * scale)
+    local button = TextButton.resolve({ rect = body, scale = scale })
+    local plain = TextButton.visualBounds(button, false)
+    local focused = TextButton.visualBounds(button, true)
+    local outset = 1.5 * scale
+    Assert.deepEqual(plain, body)
+    Assert.deepEqual(focused, {
+      x = body.x - outset,
+      y = body.y - outset,
+      width = body.width + outset * 2,
+      height = body.height + outset * 2,
+    })
+    Assert.deepEqual(button.rect, body, "visual bounds must not inflate the hit rectangle")
+    plain.x = -100
+    focused.width = -100
+    Assert.deepEqual(button.rect, body, "returned bounds must not alias the hit rectangle")
+  end
+end
+
+function T.visual_bounds_reject_an_invalid_selection_flag()
+  local TextButton = textButtonModule()
+  local button = TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1 })
+  Assert.throws(function()
+    ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises invalid selection
+    TextButton.visualBounds(button, 1)
+  end)
+end
+
 function T.preserves_focus_and_supports_one_role_override()
   local TextButton = textButtonModule()
   local button = TextButton.resolve({ rect = rect(10, 20, 120, 56), scale = 1 })
