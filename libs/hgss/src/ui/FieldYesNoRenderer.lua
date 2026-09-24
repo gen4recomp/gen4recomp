@@ -99,8 +99,9 @@ end
 ---@param status { active: boolean, selectedIndex: integer, yesText: string, noText: string, frameIndex: integer? }
 ---@param topology ScreenTopology
 ---@param dialogueBox table<string, number>?
+---@param adaptedHost { bounds: { x: number, y: number, width: number, height: number }, preferredScale: integer }?
 ---@return table<string, unknown>
-function FieldYesNoRenderer:layout(status, topology, dialogueBox)
+function FieldYesNoRenderer:layout(status, topology, dialogueBox, adaptedHost)
   assert(type(status) == "table" and status.active == true, "yes/no layout requires an active choice")
   assert(status.selectedIndex == 0 or status.selectedIndex == 1, "yes/no selection is outside the two choices")
   assert(type(status.yesText) == "string" and type(status.noText) == "string", "yes/no labels are required")
@@ -128,26 +129,48 @@ function FieldYesNoRenderer:layout(status, topology, dialogueBox)
     }
   end
 
+  local host = assert(adaptedHost, "adapted yes/no layout requires field UI bounds")
+  local bounds = assert(host.bounds, "adapted yes/no layout requires field UI bounds")
+  assert(
+    type(bounds.x) == "number"
+      and type(bounds.y) == "number"
+      and type(bounds.width) == "number"
+      and type(bounds.height) == "number"
+      and bounds.width > 0
+      and bounds.height > 0,
+    "adapted yes/no layout requires positive field UI bounds"
+  )
+  local preferredScale = host.preferredScale
+  assert(
+    type(preferredScale) == "number" and preferredScale > 0 and preferredScale == math.floor(preferredScale),
+    "adapted yes/no layout requires a positive integer preferred scale"
+  )
   local outer = adaptedFrameBounds()
-  local scale = math.min(1, safe.width / outer.width, safe.height / outer.height)
+  local hostFit = math.min(bounds.width / outer.width, bounds.height / outer.height)
+  local scale
+  if hostFit >= 1 then
+    scale = math.min(preferredScale, math.floor(hostFit))
+  else
+    scale = hostFit
+  end
   assert(scale > 0, "yes/no adapted presentation requires a positive scale")
   local width = outer.width * scale
   local height = outer.height * scale
   local hostFrame =
-    { x = safe.x + safe.width - width, y = safe.y + safe.height - height, width = width, height = height }
+    { x = bounds.x + bounds.width - width, y = bounds.y + bounds.height - height, width = width, height = height }
   if dialogueBox then
     local candidates = {
       { x = hostFrame.x, y = dialogueBox.y + dialogueBox.height, width = width, height = height },
       { x = hostFrame.x, y = dialogueBox.y - height, width = width, height = height },
     }
     for _, candidate in ipairs(candidates) do
-      if fits(candidate, safe) then
+      if fits(candidate, bounds) then
         hostFrame = candidate
         break
       end
     end
   end
-  assert(fits(hostFrame, safe), "yes/no choice frame leaves the safe area")
+  assert(fits(hostFrame, bounds), "yes/no choice frame leaves field UI bounds")
   local hostContentOrigin = {
     x = hostFrame.x - outer.x * scale,
     y = hostFrame.y - outer.y * scale,
@@ -160,7 +183,7 @@ function FieldYesNoRenderer:layout(status, topology, dialogueBox)
       frame = hostFrame,
       origin = hostContentOrigin,
       scale = scale,
-      clipRect = safe,
+      clipRect = bounds,
     },
   }
 end

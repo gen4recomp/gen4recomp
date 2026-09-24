@@ -466,7 +466,12 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     resources.dialogueRenderer:draw(self.runtime.dialogue, presentation)
     local yesNo = self.runtime.scripts.dialogueHost:yesNoPresentation()
     if yesNo then
-      local yesNoLayout = resources.yesNoRenderer:layout(yesNo, self.runtime.screenTopology, presentation.outerRect)
+      local yesNoLayout = resources.yesNoRenderer:layout(
+        yesNo,
+        self.runtime.screenTopology,
+        presentation.outerRect,
+        { bounds = bounds, preferredScale = dialogueScale }
+      )
       resources.yesNoRenderer:draw(yesNo, yesNoLayout)
     end
   end

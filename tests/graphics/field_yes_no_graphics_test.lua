@@ -122,16 +122,21 @@ function T.single_display_choice_stays_inside_portrait_safe_area()
     role = "world",
     touch = false,
   })
-  local layout = renderer:layout(status(1, 1), topology, { x = 12, y = 300, width = 336, height = 160 })
-  local safe = topology.surfaces[1].safeRect
+  local bounds = { x = 12, y = 24, width = 336, height = 592 }
+  local layout = renderer:layout(
+    status(1, 1),
+    topology,
+    { x = 12, y = 300, width = 336, height = 160 },
+    { bounds = bounds, preferredScale = 1 }
+  )
   local hostContent = layout.placement.origin
   Assert.equal(layout.presentation, "adapted")
   Assert.deepEqual(layout.content, { x = 0, y = 0, width = 48, height = 32 })
   Assert.equal(layout.placement.scale, 1)
-  Assert.isTrue(layout.placement.frame.x >= safe.x)
-  Assert.isTrue(layout.placement.frame.y >= safe.y)
-  Assert.isTrue(layout.placement.frame.x + layout.placement.frame.width <= safe.x + safe.width)
-  Assert.isTrue(layout.placement.frame.y + layout.placement.frame.height <= safe.y + safe.height)
+  Assert.isTrue(layout.placement.frame.x >= bounds.x)
+  Assert.isTrue(layout.placement.frame.y >= bounds.y)
+  Assert.isTrue(layout.placement.frame.x + layout.placement.frame.width <= bounds.x + bounds.width)
+  Assert.isTrue(layout.placement.frame.y + layout.placement.frame.height <= bounds.y + bounds.height)
   Assert.isTrue(hostContent.x > layout.placement.frame.x, "the body remains inset inside the exterior frame")
   renderer:release()
 end
@@ -147,7 +152,9 @@ function T.single_display_choice_uses_dialogue_aware_candidate_order()
   })
   local choice = status(0, 1)
   local right = 12 + 616 - 88
-  local below = renderer:layout(choice, topology, { x = 100, y = 100, width = 200, height = 80 })
+  local bounds = { x = 12, y = 24, width = 616, height = 432 }
+  local adaptedHost = { bounds = bounds, preferredScale = 1 }
+  local below = renderer:layout(choice, topology, { x = 100, y = 100, width = 200, height = 80 }, adaptedHost)
   Assert.deepEqual(
     below.placement.frame,
     { x = right, y = 180, width = 88, height = 48 },
@@ -155,7 +162,7 @@ function T.single_display_choice_uses_dialogue_aware_candidate_order()
   )
   Assert.deepEqual(below.placement.origin, { x = right + 16, y = 188 }, "content sits inside the fitted frame")
 
-  local above = renderer:layout(choice, topology, { x = 100, y = 410, width = 200, height = 40 })
+  local above = renderer:layout(choice, topology, { x = 100, y = 410, width = 200, height = 40 }, adaptedHost)
   Assert.deepEqual(
     above.placement.frame,
     { x = right, y = 362, width = 88, height = 48 },
@@ -163,13 +170,30 @@ function T.single_display_choice_uses_dialogue_aware_candidate_order()
   )
   Assert.deepEqual(above.placement.origin, { x = right + 16, y = 370 }, "content retains its frame inset")
 
-  local fallback = renderer:layout(choice, topology, { x = 12, y = 24, width = 616, height = 432 })
+  local fallback = renderer:layout(choice, topology, bounds, adaptedHost)
   Assert.deepEqual(
     fallback.placement.frame,
     { x = right, y = 408, width = 88, height = 48 },
     "fallback fits at safe bottom-right"
   )
   Assert.deepEqual(fallback.placement.origin, { x = right + 16, y = 416 }, "fallback content remains inside the frame")
+  renderer:release()
+end
+
+function T.adapted_choice_uses_the_field_bounds_and_preferred_integer_scale()
+  local renderer = testRenderer()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    safeRect = { x = 200, y = 160, width = 100, height = 100 },
+    role = "world",
+    touch = false,
+  })
+  local bounds = { x = 10, y = 20, width = 500, height = 300 }
+  local layout = renderer:layout(status(0, 1), topology, nil, { bounds = bounds, preferredScale = 3 })
+  Assert.equal(layout.placement.scale, 3)
+  Assert.deepEqual(layout.placement.frame, { x = 246, y = 176, width = 264, height = 144 })
+  Assert.deepEqual(layout.placement.clipRect, bounds)
   renderer:release()
 end
 
@@ -224,7 +248,13 @@ function T.source_and_adapted_presentations_select_their_own_frame_contracts()
     role = "world",
     touch = false,
   })
-  renderer:draw(adapted, renderer:layout(adapted, topology, nil))
+  renderer:draw(
+    adapted,
+    renderer:layout(adapted, topology, nil, {
+      bounds = { x = 0, y = 0, width = 640, height = 480 },
+      preferredScale = 1,
+    })
+  )
   Assert.equal(calls[1].kind, "standard")
   Assert.equal(calls[2].kind, "user")
   Assert.equal(calls[2].frameIndex, 1)
@@ -310,7 +340,8 @@ function T.constrained_single_display_scale_keeps_the_complete_menu_inside_its_h
     touch = false,
   })
   local choice = status(1, 1)
-  local layout = renderer:layout(choice, topology, nil)
+  local bounds = { x = 10, y = 12, width = 24, height = 16 }
+  local layout = renderer:layout(choice, topology, nil, { bounds = bounds, preferredScale = 1 })
   Assert.equal(layout.placement.scale, 24 / 88)
   Assert.deepEqual(layout.content, { x = 0, y = 0, width = 48, height = 32 })
   Assert.deepEqual(
@@ -341,6 +372,8 @@ function T.adapted_user_frame_fits_inside_constrained_and_portrait_safe_areas()
         role = "world",
         touch = false,
       }),
+      bounds = { x = 10, y = 12, width = 24, height = 16 },
+      preferredScale = 1,
       dialogue = nil,
     },
     {
@@ -351,6 +384,8 @@ function T.adapted_user_frame_fits_inside_constrained_and_portrait_safe_areas()
         role = "world",
         touch = false,
       }),
+      bounds = { x = 12, y = 24, width = 336, height = 592 },
+      preferredScale = 1,
       dialogue = { x = 12, y = 300, width = 336, height = 160 },
     },
   }
@@ -358,18 +393,21 @@ function T.adapted_user_frame_fits_inside_constrained_and_portrait_safe_areas()
   for _, case in ipairs(cases) do
     local renderer, _, windows, texts = testRenderer()
     local choice = status(1, 1)
-    local layout = renderer:layout(choice, case.topology, case.dialogue)
+    local layout = renderer:layout(choice, case.topology, case.dialogue, {
+      bounds = case.bounds,
+      preferredScale = case.preferredScale,
+    })
     renderer:draw(choice, layout)
 
-    local safe = case.topology.surfaces[1].safeRect
+    local bounds = case.bounds
     local frame = windows[1]
     Assert.equal(frame.kind, "user")
     Assert.equal(#frame.tiles, #FieldDialogueTheme.frameTilePlacements({ x = 0, y = 0, width = 48, height = 32 }))
     for _, tile in ipairs(frame.tiles) do
-      Assert.isTrue(tile.x >= safe.x, "frame tile starts inside the safe area's left edge")
-      Assert.isTrue(tile.y >= safe.y, "frame tile starts inside the safe area's top edge")
-      Assert.isTrue(tile.x + tile.width <= safe.x + safe.width, "frame tile ends inside the safe area's right edge")
-      Assert.isTrue(tile.y + tile.height <= safe.y + safe.height, "frame tile ends inside the safe area's bottom edge")
+      Assert.isTrue(tile.x >= bounds.x, "frame tile starts inside the host's left edge")
+      Assert.isTrue(tile.y >= bounds.y, "frame tile starts inside the host's top edge")
+      Assert.isTrue(tile.x + tile.width <= bounds.x + bounds.width, "frame tile ends inside the host's right edge")
+      Assert.isTrue(tile.y + tile.height <= bounds.y + bounds.height, "frame tile ends inside the host's bottom edge")
     end
     Assert.deepEqual(texts[2].transformed, {
       frame.transformed[1] + 8 * layout.placement.scale,

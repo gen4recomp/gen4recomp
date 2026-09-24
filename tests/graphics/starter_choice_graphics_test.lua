@@ -343,10 +343,6 @@ local function assertInfoSampleShowsArtwork(image, host, backdrop, versionId)
   Assert.isTrue(difference > 0.1, versionId .. " settled confirmation restores the info artwork")
 end
 
-local function assertSameFrame(first, second, versionId, detail)
-  Assert.equal(frameDistance(first, second, 536, 240), 0, versionId .. " " .. detail)
-end
-
 function T.source_rate_rotation_renders_intermediate_frames_without_advancing_semantics(scope, context)
   local versions = readyVersions()
   if #versions == 0 then

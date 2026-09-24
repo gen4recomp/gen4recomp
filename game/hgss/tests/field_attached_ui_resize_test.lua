@@ -358,8 +358,13 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
   local signpostScales = {}
   local presentationResources = state.presentationResources --[[@as any]]
   presentationResources.yesNoRenderer = {
-    layout = function(_, status, topology, dialogueBox)
-      yesNoLayouts[#yesNoLayouts + 1] = { status = status, topology = topology, dialogueBox = dialogueBox }
+    layout = function(_, status, topology, dialogueBox, adaptedHost)
+      yesNoLayouts[#yesNoLayouts + 1] = {
+        status = status,
+        topology = topology,
+        dialogueBox = dialogueBox,
+        adaptedHost = adaptedHost,
+      }
       return { content = { x = 0, y = 0, width = 1, height = 1 } }
     end,
     draw = function() end,
@@ -454,6 +459,16 @@ function T.dialogue_and_signpost_fit_the_640_by_480_field_view()
   Assert.equal(signpostScales[1], expectedSignpostScale, "FieldState publishes the fitted signpost scale")
   Assert.equal(dialogue.scale % 1, 0, "the dialogue scale is integral")
   Assert.equal(signpostScales[1] % 1, 0, "the signpost scale is integral")
+end
+
+function T.yes_no_receives_the_dialogue_bounds_and_fitted_scale()
+  local bounds = { x = 40, y = 30, width = 640, height = 480 }
+  local yesNoStatus = { active = true, selectedIndex = 0, yesText = "YES", noText = "NO" }
+  local fieldScale, dialogueCalls, _, yesNoLayouts = fieldStateWithCapturedUi(bounds, 0.25, 720, 540, yesNoStatus)
+  local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, fieldScale)
+  Assert.equal(#yesNoLayouts, 1)
+  Assert.deepEqual(yesNoLayouts[1].adaptedHost, { bounds = bounds, preferredScale = dialogueScale })
+  Assert.deepEqual(yesNoLayouts[1].dialogueBox, dialogueCalls[1].second.outerRect)
 end
 
 function T.roomy_dialogue_keeps_the_field_scale_bottom_centered()
