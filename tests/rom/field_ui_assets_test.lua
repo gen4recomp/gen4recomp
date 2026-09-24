@@ -2,6 +2,8 @@
 -- dump compiles the bundle (frames, signposts, Start Menu, Trainer Card),
 -- every indexed file passes FieldUiAssetCache.isReady, and the compile is
 -- deterministic. Asserts only non-copyright structural facts.
+-- Yes/No frame extraction follows pret/pokeheartgold src/scrcmd_c.c and
+-- LoadUserFrameGfx1 at commit 9d8b7591f09b65804da2fb2dfd56f320633e0d36.
 
 local Assert = require("tests.support.Assert")
 local BinaryReader = require("libs.codec.src.BinaryReader")
@@ -150,6 +152,50 @@ function T.compiled_ui_assets_are_ready_and_stable(romFs, version)
   FieldUiCacheWriter.write(cache, bundle)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, bundle.marker), "every indexed file is ready after publication")
   Assert.isFalse(FieldUiAssetCache.isReady(cache, bundle.marker .. "-stale"))
+end
+
+function T.standard_yes_no_frame_matches_its_configured_source_members(romFs, _)
+  local cfg = manifestConfig.dialogueFrames
+  local char, charErr = G2dDecoder.decodeChar(memberBytes(romFs, cfg.alias, cfg.standardFrameMember), {
+    label = "standard Yes/No frame char",
+  })
+  assert(char, charErr and charErr.message)
+  local palette, paletteErr = G2dDecoder.decodePalette(memberBytes(romFs, cfg.alias, cfg.standardPaletteMember), {
+    label = "standard Yes/No frame palette",
+  })
+  assert(palette, paletteErr and paletteErr.message)
+  Assert.equal(#char.tiles / 32, 9, "the source standard frame has nine 4bpp tiles")
+  Assert.isTrue(#palette.colors >= 16, "the source palette contains all 16 colors")
+
+  local bundle = assert(FieldUiCompiler.compile(romFs))
+  local frames = bundle.manifest.dialogueFrames
+  local standard = assert(frames.standardFrame)
+  Assert.equal(frames.count, 20, "the source frame does not alter user-frame indexing")
+  Assert.equal(standard.frameTiles.y, frames.count * 8)
+  Assert.equal(standard.frameTiles.width, 72)
+  Assert.isNil(standard.member, "source member identity stays producer-side")
+  for slot = 0, 15 do
+    Assert.deepEqual(standard.palette[slot], palette.colors[slot + 1], "palette slot " .. slot .. " matches source")
+  end
+
+  local entry = bundle.manifest.assets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES]
+  local width, height, rgba = PngReader.rgba(assert(bundle.assets[entry.image]))
+  Assert.equal(height, (frames.count + 1) * 8)
+  for y = 0, 7 do
+    for x = 0, 71 do
+      local tile = math.floor(x / 8)
+      local localX = x % 8
+      local byte = string.byte(char.tiles, tile * 32 + y * 4 + math.floor(localX / 2) + 1)
+      local value = localX % 2 == 0 and byte % 16 or math.floor(byte / 16)
+      local actual = { PngReader.pixel(rgba, width, x, standard.frameTiles.y + y) }
+      if value == 0 then
+        Assert.deepEqual(actual, { 0, 0, 0, 0 }, "source transparent pixels stay transparent")
+      else
+        local color = assert(palette.colors[value + 1])
+        Assert.deepEqual(actual, { color.r, color.g, color.b, 255 }, "source frame pixel is preserved")
+      end
+    end
+  end
 end
 
 -- The dialogue frame class must offer at least two visually distinct frame

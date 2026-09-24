@@ -371,6 +371,8 @@ local function fixture(opts)
       for i = 1, 47 do
         members[i] = string.rep("\0", 4)
       end
+      members[1] = lz10Wrap(charData(9))
+      members[26] = lz10Wrap(palette16())
       for i = 1, 20 do
         members[2 + i] = lz10Wrap(charData(18))
       end

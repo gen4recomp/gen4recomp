@@ -28,7 +28,7 @@ local function baseManifest()
       ["hgss.dialogue_frame.tiles"] = {
         image = "assets/generated/field/ui/dialogue-frame-tiles.png",
         width = 144,
-        height = 160,
+        height = 168,
       },
       ["hgss.dialogue_continue_cursor"] = {
         image = "assets/generated/field/ui/dialogue-continue-cursor.png",
@@ -107,6 +107,10 @@ local function baseManifest()
     dialogueFrames = {
       count = 20,
       frameTiles = frameTiles,
+      standardFrame = {
+        frameTiles = { x = 0, y = 160, width = 72, height = 8 },
+        palette = validPalette(),
+      },
       palettes = (function()
         local palettes = {}
         for frame = 0, 19 do

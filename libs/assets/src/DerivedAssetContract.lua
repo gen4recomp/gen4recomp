@@ -98,6 +98,8 @@
 -- visuals per row, every visual resolved through the shared asset index by
 -- semantic id), so a stale pre-change cache without that section must fail
 -- readiness.
+-- fieldUi schema 16: dialogueFrames also publishes the fixed standard
+-- Yes/No frame strip and palette independently of selectable user frames.
 --
 -- fieldUi schema 3: signpost wayfinding becomes a per-(type,map) rect table
 -- (signposts.types[N].wayfinding[map]) and the manifest drops the
@@ -227,7 +229,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v15",
+  schema = "g4-field-ui-v16",
 }
 
 DerivedAssetContract.intro = {

@@ -47,7 +47,7 @@ local function validManifest()
       ["hgss.dialogue_frame.tiles"] = {
         image = "assets/generated/field/ui/dialogue-frame-tiles.png",
         width = 144,
-        height = 160,
+        height = 168,
       },
       ["hgss.signpost.tiles"] = { image = "assets/generated/field/ui/signpost-tiles.png", width = 288, height = 16 },
       ["hgss.signpost.wayfinding"] = {
@@ -127,6 +127,10 @@ local function validManifest()
       count = 20,
       frameTiles = frameTiles,
       palettes = dialogueFramePalettes,
+      standardFrame = {
+        frameTiles = { x = 0, y = 160, width = 72, height = 8 },
+        palette = validPalette(),
+      },
       continueCursor = {
         asset = "hgss.dialogue_continue_cursor",
         cycle = { 0, 1, 2, 1 },
@@ -304,7 +308,40 @@ end
 function T.contract_constants_flow_from_the_contract_owner()
   Assert.equal(FieldUiAssetCache.FORMAT, DerivedAssetContract.fieldUi.cacheFormat)
   Assert.equal(FieldUiAssetCache.SCHEMA, DerivedAssetContract.fieldUi.schema)
+  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v16")
   Assert.equal(FieldUiAssetCache.marker("abc", "def"), "field-ui-cache-v1:abc:def")
+end
+
+function T.standard_yes_no_frame_record_is_required_and_strict()
+  Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
+  local function rejectStandard(mutate)
+    local manifest = validManifest()
+    mutate(manifest)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok)
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  end
+  rejectStandard(function(m)
+    m.schema = "g4-field-ui-v14"
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame = nil
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.frameTiles.width = 64
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.member = 0
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.palette[15] = nil
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.palette[16] = { r = 0, g = 0, b = 0 }
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.palette[0].r = 256
+  end)
 end
 
 function T.ready_requires_marker_manifest_and_every_indexed_file()

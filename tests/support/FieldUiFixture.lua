@@ -1,4 +1,4 @@
--- Synthetic field-UI fixtures for the dialogue frame, window style, signpost,
+-- Synthetic field-UI fixtures for the standard Yes/No frame, dialogue frame, window style, signpost,
 -- and Start Menu surface work: a generated-shape `ui.lua` manifest carrying
 -- one dialogue frame strip (18 tiles of 8x8 stacked per frame, like the
 -- compiled class), the signpost frame strip and wayfinding atlas (one
@@ -26,6 +26,7 @@ FieldUiFixture.STRIP_PATH = "assets/generated/field/ui/dialogue-frame-tiles.png"
 FieldUiFixture.CONTINUE_CURSOR_PATH = "assets/generated/field/ui/dialogue-continue-cursor.png"
 FieldUiFixture.TILES_PER_FRAME = 18
 FieldUiFixture.FRAME_COUNT = 2
+FieldUiFixture.STANDARD_FRAME_Y = FieldUiFixture.FRAME_COUNT * 8
 
 FieldUiFixture.SIGNPOST_TILES_PATH = "assets/generated/field/ui/signpost-tiles.png"
 FieldUiFixture.WAYFINDING_PATH = "assets/generated/field/ui/wayfinding-tiles.png"
@@ -84,13 +85,18 @@ end
 -- image where the 8x8 cell at (tile * 8, row) carries that tile's bytes,
 -- so image-space addressing matches the frame-strip quads.
 ---@param palette fun(i: integer): integer, integer, integer
+---@param tileCount integer? number of authored tiles before transparent padding
 ---@return string rgba the frame row pixels, 144x8 row-major
-local function frameRowBytes(palette)
+local function frameRowBytes(palette, tileCount)
   local rows = {}
+  tileCount = tileCount or FieldUiFixture.TILES_PER_FRAME
   for _ = 0, 7 do
-    for tile = 0, FieldUiFixture.TILES_PER_FRAME - 1 do
+    for tile = 0, tileCount - 1 do
       local r, g, b = palette(tile)
       rows[#rows + 1] = string.rep(string.char(r, g, b, 255), 8)
+    end
+    for _ = tileCount, FieldUiFixture.TILES_PER_FRAME - 1 do
+      rows[#rows + 1] = string.rep(string.char(0, 0, 0, 0), 8)
     end
   end
   return table.concat(rows)
@@ -104,7 +110,19 @@ function FieldUiFixture.stripBytes()
   for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
     rgba[#rgba + 1] = frameRowBytes(frame == 0 and paletteA or paletteB)
   end
-  return PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, table.concat(rgba))
+  rgba[#rgba + 1] = frameRowBytes(function(tile)
+    return 20 + tile * 3, 220 - tile * 2, 80 + tile * 5
+  end, 9)
+  return PngWriter.encode(144, (FieldUiFixture.FRAME_COUNT + 1) * 8, table.concat(rgba))
+end
+
+---@return table<integer, {r: integer, g: integer, b: integer}>
+function FieldUiFixture.standardFramePalette()
+  local palette = {}
+  for slot = 0, 15 do
+    palette[slot] = { r = 200 - slot * 7, g = 30 + slot * 9, b = 60 + slot * 11 }
+  end
+  return palette
 end
 
 -- The raw RGBA rows of one frame row (144x8) in renderer image space, so
@@ -565,7 +583,7 @@ function FieldUiFixture.manifest()
       [FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES] = {
         image = FieldUiFixture.STRIP_PATH,
         width = 144,
-        height = FieldUiFixture.FRAME_COUNT * 8,
+        height = (FieldUiFixture.FRAME_COUNT + 1) * 8,
       },
       [FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR] = {
         image = FieldUiFixture.CONTINUE_CURSOR_PATH,
@@ -638,6 +656,10 @@ function FieldUiFixture.manifest()
         end
         return palettes
       end)(),
+      standardFrame = {
+        frameTiles = { x = 0, y = FieldUiFixture.STANDARD_FRAME_Y, width = 72, height = 8 },
+        palette = FieldUiFixture.standardFramePalette(),
+      },
       continueCursor = {
         asset = FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
         cycle = { 0, 1, 2, 1 },

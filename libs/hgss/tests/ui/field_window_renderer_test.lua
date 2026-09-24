@@ -39,7 +39,7 @@ function T.frame_palette_returns_the_selected_manifest_bank_by_identity()
     [1] = { [11] = { r = 41, g = 51, b = 61 } },
   }
   manifest.dialogueFrames.palettes = palettes
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg, manifest)
 
   Assert.equal(window:framePalette(0), palettes[0])
@@ -48,6 +48,35 @@ function T.frame_palette_returns_the_selected_manifest_bank_by_identity()
     window:framePalette(2)
   end, "an invalid frame index must fail")
   window:release()
+end
+
+function T.standard_window_uses_its_own_atlas_row_and_palette()
+  local manifest = FieldUiFixture.manifest()
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
+  local window = openWindow(lg, manifest)
+  window:drawStandardWindow({ x = 16, y = 152, width = 16, height = 16 }, { 0, 0, 0, 1 })
+  local drawsBeforeUserWindow = #lg.draws
+  window:drawWindow({ x = 16, y = 152, width = 216, height = 32 }, 1, { 0, 0, 0, 1 })
+
+  Assert.equal(window:standardFramePalette(), manifest.dialogueFrames.standardFrame.palette)
+  Assert.equal(drawsBeforeUserWindow, 12, "the Gfx1 frame repeats its edge tiles around the fill")
+  Assert.deepEqual(
+    (function()
+      local xs = {}
+      for i = 1, drawsBeforeUserWindow do
+        xs[i] = lg.draws[i].quad.x
+      end
+      return xs
+    end)(),
+    { 0, 8, 8, 16, 24, 24, 40, 40, 48, 56, 56, 64 },
+    "the standard window addresses only its nine-tile source strip"
+  )
+  Assert.equal(lg.draws[1].quad.y, FieldUiFixture.STANDARD_FRAME_Y, "the standard window samples its own row")
+  Assert.equal(lg.draws[1].image, lg.draws[#lg.draws].image, "both frame APIs share the owned atlas")
+  Assert.equal(lg.draws[drawsBeforeUserWindow + 1].quad.y, 8, "indexed user frame 1 keeps its original row")
+  Assert.equal(#lg.images, 1, "the standard window adds no image resource")
+  window:release()
+  Assert.equal(lg.images[1].releaseCount, 1, "the shared atlas is released once")
 end
 
 local function syntheticImageData(width, height)
@@ -226,7 +255,7 @@ local function cacheWithStrip(png)
 end
 
 function T.application_border_samples_whole_keyed_tiles()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local FieldWindowRenderer = windowRenderer()
   local window = FieldWindowRenderer.new({
     cacheFs = cacheWithStrip(patternedBottomStrip()),
@@ -257,7 +286,7 @@ function T.application_border_samples_whole_keyed_tiles()
 end
 
 function T.fill_and_frame_tiles_follow_the_shared_tilemap()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg)
   window:drawWindow({ x = 16, y = 152, width = 216, height = 32 }, 0, { 0, 0, 0, 1 })
   Assert.equal(#lg.rectangles, 1, "the content background is filled once")
@@ -288,7 +317,7 @@ function T.fill_and_frame_tiles_follow_the_shared_tilemap()
 end
 
 function T.frame_index_selects_the_manifest_strip_row_without_moving_geometry()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg)
   window:drawWindow({ x = 16, y = 152, width = 216, height = 32 }, 1, { 0, 0, 0, 1 })
   Assert.deepEqual({ lg.draws[1].quad.x, lg.draws[1].quad.y }, { 0, 8 }, "frame 1 samples the second strip row")
@@ -311,14 +340,14 @@ function T.missing_frame_strip_is_a_typed_error_without_acquiring()
 end
 
 function T.release_is_idempotent_and_safe_before_draw()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg)
   window:release()
   window:release()
 end
 
 function T.unknown_frame_index_fails_loudly()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg)
   local err = Assert.throws(function()
     window:drawWindow({ x = 16, y = 152, width = 216, height = 32 }, 9, { 0, 0, 0, 1 })
@@ -335,7 +364,7 @@ end
 -- addressed quad keeps only its outer border columns or rows, never the
 -- tiles' interior fill. No graphics transform is borrowed.
 function T.application_frame_draws_only_the_direct_selected_border()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg)
   local box = { x = 8, y = 24, width = 256, height = 192 }
   window:drawApplicationFrame(box, 0)
@@ -391,7 +420,7 @@ function T.application_frame_draw_failure_propagates_without_state()
   local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
   local groups = FieldDialogueTheme.applicationFrameTilePlacements({ x = 8, y = 24, width = 256, height = 192 })
   local lg = fakeGraphics({
-    imageSizes = { { 144, 16 } },
+    imageSizes = { { 144, 24 } },
     failOnDrawCall = #groups.sides + #groups.bottom + 1,
   })
   local window = openWindow(lg)
@@ -407,7 +436,7 @@ end
 -- The selected index moves artwork, not geometry: frame 1 samples the
 -- second strip row at the same direct targets and still fills nothing.
 function T.application_frame_index_selects_artwork_without_moving_geometry()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg)
   local box = { x = 8, y = 24, width = 256, height = 192 }
   window:drawApplicationFrame(box, 1)
@@ -420,7 +449,7 @@ function T.application_frame_index_selects_artwork_without_moving_geometry()
 end
 
 function T.application_frame_unknown_index_fails_loudly()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg)
   local err = Assert.throws(function()
     window:drawApplicationFrame({ x = 8, y = 24, width = 256, height = 192 }, 9)
@@ -435,7 +464,7 @@ end
 -- lazily on the first application draw, so dialogue-only callers never
 -- pay for frames they never decorate.
 function T.constructor_acquires_the_dialogue_atlas_with_nearest_sampling()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg)
   Assert.equal(#lg.images, 1, "construction acquires only the dialogue strip")
   Assert.deepEqual(
@@ -457,7 +486,7 @@ end
 -- from the dialogue strip: the frame primitive draws no decoration
 -- beyond the selected border and fill.
 function T.ordinary_window_drawing_samples_only_the_dialogue_strip()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local window = openWindow(lg)
   window:drawWindow({ x = 16, y = 152, width = 216, height = 32 }, 0, { 0, 0, 0, 1 })
   Assert.equal(#lg.rectangles, 1, "the ordinary window fills its content box exactly once")
@@ -472,7 +501,7 @@ end
 -- the selected row still drives the border artwork.
 function T.application_frame_builds_from_the_dialogue_atlas_alone()
   local FieldWindowRenderer = windowRenderer()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 144, 24 } } })
   local manifest = FieldUiFixture.manifest()
   Assert.isNil(manifest.dialogueFrames.application, "no application record is published")
   Assert.isNil(manifest.assets["hgss.application_frame.tiles"], "no second atlas is indexed")

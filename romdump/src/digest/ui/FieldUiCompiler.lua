@@ -797,7 +797,7 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
   -- contract (18 tiles per frame in the real dump); a frame carrying any
   -- other count is malformed source the renderer could never place.
   local atlasWidth = FieldUiAssetCache.GEOMETRY.FRAME_TILES * 8
-  local atlasHeight = cfg.frameCount * 8
+  local atlasHeight = (cfg.frameCount + 1) * 8
   local rgba = newRgba(atlasWidth, atlasHeight)
   local frameTiles = {}
   local palettes = {}
@@ -867,6 +867,57 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
       sha1 = sha1hex(framePalBytes),
     }
   end
+  local standardCharBytes = decodeMember(archive, cfg.standardFrameMember, "standard Yes/No frame char")
+  local standardPaletteBytes = decodeMember(archive, cfg.standardPaletteMember, "standard Yes/No frame palette")
+  local standardChar, standardCharErr = G2dDecoder.decodeChar(standardCharBytes, {
+    label = "standard Yes/No frame char",
+  })
+  local standardPalette, standardPaletteErr = G2dDecoder.decodePalette(standardPaletteBytes, {
+    label = "standard Yes/No frame palette",
+  })
+  standardChar = must(standardChar, standardCharErr)
+  standardPalette = must(standardPalette, standardPaletteErr)
+  if standardChar.depth ~= 3 then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "standard Yes/No frame must use 4bpp tiles",
+      { member = cfg.standardFrameMember, depth = standardChar.depth }
+    )
+  end
+  local standardTileCount = math.floor(#standardChar.tiles / (standardChar.depth == 3 and 32 or 64))
+  if standardTileCount ~= 9 then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "standard Yes/No frame must carry exactly 9 tiles",
+      { member = cfg.standardFrameMember, tiles = standardTileCount }
+    )
+  end
+  if #standardPalette.colors < 16 then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "standard Yes/No frame palette must contain 16 colors",
+      { member = cfg.standardPaletteMember, colors = #standardPalette.colors }
+    )
+  end
+  local standardY = cfg.frameCount * 8
+  for tile = 0, standardTileCount - 1 do
+    blitTile(rgba, atlasWidth, tile * 8, standardY, standardChar, tile, 0, standardPalette.colors, false, false, {
+      asset = "standard Yes/No frame",
+      member = cfg.standardFrameMember,
+    })
+  end
+  local standardFramePalette = {}
+  for slot = 0, 15 do
+    standardFramePalette[slot] = standardPalette.colors[slot + 1]
+  end
+  deps[#deps + 1] = {
+    name = manifestConfig.dialogueFrames.alias .. ":member:" .. cfg.standardFrameMember,
+    sha1 = sha1hex(standardCharBytes),
+  }
+  deps[#deps + 1] = {
+    name = manifestConfig.dialogueFrames.alias .. ":palette:" .. cfg.standardPaletteMember,
+    sha1 = sha1hex(standardPaletteBytes),
+  }
   assets[tilesPath] = PngWriter.encode(atlasWidth, atlasHeight, concatChars(rgba))
   manifestAssets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES] =
     { image = tilesPath, width = atlasWidth, height = atlasHeight }
@@ -883,6 +934,10 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
     count = cfg.frameCount,
     frameTiles = frameTiles,
     palettes = palettes,
+    standardFrame = {
+      frameTiles = { x = 0, y = standardY, width = 72, height = 8 },
+      palette = standardFramePalette,
+    },
     continueCursor = {
       asset = FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
       cycle = { 0, 1, 2, 1 },

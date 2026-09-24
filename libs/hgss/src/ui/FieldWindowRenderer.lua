@@ -24,6 +24,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 ---@field _applicationFrameImage love.Image? keyed copy, built lazily on first application draw
 ---@field _frameBytes string? retained strip bytes backing the lazy keyed build
 ---@field _frameQuadCache table<integer, love.Quad[]>|nil per-frame tile quads, built lazily
+---@field _standardFrameQuads love.Quad[]? standard Yes/No frame tile quads, built lazily
 ---@field _frameClipCache table<integer, love.Quad[]>|nil per-frame keyed application quads, built lazily
 local FieldWindowRenderer = {}
 FieldWindowRenderer.__index = FieldWindowRenderer
@@ -167,6 +168,7 @@ function FieldWindowRenderer.new(opts)
     _applicationFrameImage = nil,
     _frameBytes = nil,
     _frameQuadCache = nil,
+    _standardFrameQuads = nil,
     _frameClipCache = nil,
   }, FieldWindowRenderer)
   local frameData = opts.cacheFs:read(frameImagePath)
@@ -282,6 +284,13 @@ function FieldWindowRenderer:framePalette(frameIndex)
   return assert(frames.palettes[frameIndex], "dialogue frame palette is missing")
 end
 
+-- Returns the generated palette for the fixed standard Yes/No frame.
+---@return { [integer]: { r: integer, g: integer, b: integer } }
+function FieldWindowRenderer:standardFramePalette()
+  local frames = assert(self._manifest.dialogueFrames, "the field-UI manifest must carry dialogue frames")
+  return assert(frames.standardFrame.palette, "standard Yes/No frame palette is missing")
+end
+
 -- Draws the application border around the content box from the selected
 -- frame row: one exterior side column per side plus the bottom and top
 -- caps, sampling whole keyed source tiles with no artwork rotation. The
@@ -335,29 +344,19 @@ function FieldWindowRenderer:drawApplicationFrame(box, frameIndex)
   end
 end
 
--- Draws the content-background fill and, for a non-nil frame index, the
--- player frame around the content box. A nil frame index draws the fill only
--- rather than inventing a frame.
----@param box { x: number, y: number, width: number, height: number } content box in the caller's reference space
----@param frameIndex integer? generated frame index, nil draws the fill only
----@param backgroundColor number[] { r, g, b, a } content fill color
-function FieldWindowRenderer:drawWindow(box, frameIndex, backgroundColor)
-  assert(type(box) == "table" and box.x and box.y and box.width and box.height, "drawWindow requires the content box")
-  ---@cast box FieldDialogueTheme.Rect
-  assert(
-    type(backgroundColor) == "table" and backgroundColor[1] and backgroundColor[2] and backgroundColor[3],
-    "drawWindow requires the background color"
-  )
+-- Draws the content fill and a preselected tile composition.
+---@param self FieldWindowRenderer
+---@param box FieldDialogueTheme.Rect
+---@param backgroundColor number[] { r, g, b, a }
+---@param quads table<integer, love.Quad>
+---@param placements { tile: integer, x: number, y: number, spanX?: number, spanY?: number }[]
+local function drawWindowWithQuads(self, box, backgroundColor, quads, placements)
   local lg = assert(self._graphics)
   lg.setColor(backgroundColor[1], backgroundColor[2], backgroundColor[3], backgroundColor[4] or 1)
   lg.rectangle("fill", box.x, box.y, box.width, box.height)
-  if frameIndex == nil then
-    return
-  end
-  local quads = self:frameQuads(frameIndex)
   local image = assert(self._frameImage)
   lg.setColor(1, 1, 1, 1)
-  for _, placement in ipairs(FieldDialogueTheme.frameTilePlacements(box)) do
+  for _, placement in ipairs(placements) do
     local tile = assert(quads[placement.tile])
     for row = 0, (placement.spanY or 1) - 1 do
       for col = 0, (placement.spanX or 1) - 1 do
@@ -365,6 +364,72 @@ function FieldWindowRenderer:drawWindow(box, frameIndex, backgroundColor)
       end
     end
   end
+end
+
+-- DrawFrameAndWindow1 lays its nine Gfx1 tiles out as a three-by-three
+-- frame: corners, repeated top/bottom edges, and repeated side edges. The
+-- center remains the content fill, unlike the distinct Gfx2 user-frame map.
+local function standardFrameTilePlacements(box)
+  assert(box.width % TILE_SIZE == 0 and box.height % TILE_SIZE == 0, "standard window dimensions must be tile aligned")
+  local right = box.x + box.width
+  local bottom = box.y + box.height
+  return {
+    { tile = 0, x = box.x - TILE_SIZE, y = box.y - TILE_SIZE },
+    { tile = 1, x = box.x, y = box.y - TILE_SIZE, spanX = box.width / TILE_SIZE },
+    { tile = 2, x = right, y = box.y - TILE_SIZE },
+    { tile = 3, x = box.x - TILE_SIZE, y = box.y, spanY = box.height / TILE_SIZE },
+    { tile = 5, x = right, y = box.y, spanY = box.height / TILE_SIZE },
+    { tile = 6, x = box.x - TILE_SIZE, y = bottom },
+    { tile = 7, x = box.x, y = bottom, spanX = box.width / TILE_SIZE },
+    { tile = 8, x = right, y = bottom },
+  }
+end
+
+-- Draws the fixed standard Yes/No window from its generated semantic rect.
+---@param box { x: number, y: number, width: number, height: number } content box in the caller's reference space
+---@param backgroundColor number[] { r, g, b, a } content fill color
+function FieldWindowRenderer:drawStandardWindow(box, backgroundColor)
+  assert(
+    type(box) == "table" and box.x and box.y and box.width and box.height,
+    "drawStandardWindow requires the content box"
+  )
+  ---@cast box FieldDialogueTheme.Rect
+  assert(
+    type(backgroundColor) == "table" and backgroundColor[1] and backgroundColor[2] and backgroundColor[3],
+    "drawStandardWindow requires the background color"
+  )
+  local frames = assert(self._manifest.dialogueFrames, "the field-UI manifest must carry dialogue frames")
+  local rect = assert(frames.standardFrame.frameTiles, "standard Yes/No frame tiles are missing")
+  assert(rect.width == 72 and rect.height == 8, "standard Yes/No frame must be a 72x8 strip")
+  local quads = self._standardFrameQuads
+  if quads == nil then
+    local lg = assert(self._graphics)
+    local image = assert(self._frameImage, "the window renderer owns no frame strip")
+    quads = {}
+    for tile = 0, rect.width / TILE_SIZE - 1 do
+      quads[tile] =
+        lg.newQuad(rect.x + tile * TILE_SIZE, rect.y, TILE_SIZE, TILE_SIZE, image:getWidth(), image:getHeight())
+    end
+    self._standardFrameQuads = quads
+  end
+  drawWindowWithQuads(self, box, backgroundColor, quads, standardFrameTilePlacements(box))
+end
+
+function FieldWindowRenderer:drawWindow(box, frameIndex, backgroundColor)
+  assert(type(box) == "table" and box.x and box.y and box.width and box.height, "drawWindow requires the content box")
+  ---@cast box FieldDialogueTheme.Rect
+  assert(
+    type(backgroundColor) == "table" and backgroundColor[1] and backgroundColor[2] and backgroundColor[3],
+    "drawWindow requires the background color"
+  )
+  if frameIndex == nil then
+    local lg = assert(self._graphics)
+    lg.setColor(backgroundColor[1], backgroundColor[2], backgroundColor[3], backgroundColor[4] or 1)
+    lg.rectangle("fill", box.x, box.y, box.width, box.height)
+    return
+  end
+  local quads = self:frameQuads(frameIndex)
+  drawWindowWithQuads(self, box, backgroundColor, quads, FieldDialogueTheme.frameTilePlacements(box))
 end
 
 function FieldWindowRenderer:release()
@@ -378,6 +443,7 @@ function FieldWindowRenderer:release()
   self._applicationFrameImage = nil
   self._frameBytes = nil
   self._frameQuadCache = nil
+  self._standardFrameQuads = nil
   self._frameClipCache = nil
 end
 

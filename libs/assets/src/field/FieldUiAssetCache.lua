@@ -263,46 +263,66 @@ function FieldUiAssetCache.validateManifest(manifest)
         return false, err
       end
     end
-    if type(s.palettes) ~= "table" then
-      return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.palettes must be a table", {})
-    end
-    for frame = 0, s.count - 1 do
-      local palette = s.palettes[frame]
+    local function validatePalette(palette, label)
       if type(palette) ~= "table" then
-        return false,
-          Errors.new(MANIFEST_INVALID, "dialogue frame " .. frame .. " palette must be a table", { frame = frame })
+        return false, Errors.new(MANIFEST_INVALID, label .. " must be a table", {})
       end
       for slot = 0, 15 do
         local color = palette[slot]
         if type(color) ~= "table" then
-          return false,
-            Errors.new(
-              MANIFEST_INVALID,
-              "dialogue frame " .. frame .. " palette slot " .. slot .. " is missing",
-              { frame = frame, slot = slot }
-            )
+          return false, Errors.new(MANIFEST_INVALID, label .. " slot " .. slot .. " is missing", { slot = slot })
         end
         for _, component in ipairs({ "r", "g", "b" }) do
           local value = color[component]
           if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 255 then
             return false,
-              Errors.new(
-                MANIFEST_INVALID,
-                "dialogue frame " .. frame .. " palette slot " .. slot .. " must have byte RGB",
-                { frame = frame, slot = slot, component = component }
-              )
+              Errors.new(MANIFEST_INVALID, label .. " slot " .. slot .. " must have byte RGB", {
+                slot = slot,
+                component = component,
+              })
           end
         end
       end
       for slot in pairs(palette) do
         if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 15 then
-          return false,
-            Errors.new(MANIFEST_INVALID, "dialogue frame " .. frame .. " palette has an invalid slot", {
-              frame = frame,
-              slot = slot,
-            })
+          return false, Errors.new(MANIFEST_INVALID, label .. " has an invalid slot", { slot = slot })
         end
       end
+      return true
+    end
+    if type(s.palettes) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.palettes must be a table", {})
+    end
+    for frame = 0, s.count - 1 do
+      local palette = s.palettes[frame]
+      local ok, err = validatePalette(palette, "dialogue frame " .. frame .. " palette")
+      if not ok then
+        return false, err
+      end
+    end
+    local standard = s.standardFrame
+    if type(standard) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.standardFrame must be a table", {})
+    end
+    local standardKeyCount = 0
+    for key in pairs(standard) do
+      standardKeyCount = standardKeyCount + 1
+      if key ~= "frameTiles" and key ~= "palette" then
+        return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.standardFrame has an unknown field", { field = key })
+      end
+    end
+    if standardKeyCount ~= 2 then
+      return false,
+        Errors.new(MANIFEST_INVALID, "dialogueFrames.standardFrame requires exactly frameTiles and palette", {})
+    end
+    local standardRectOk, standardRectErr =
+      stripInAtlas(standard.frameTiles, FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES, "standard Yes/No frame tiles", 72)
+    if not standardRectOk then
+      return false, standardRectErr
+    end
+    local standardPaletteOk, standardPaletteErr = validatePalette(standard.palette, "standard Yes/No frame palette")
+    if not standardPaletteOk then
+      return false, standardPaletteErr
     end
     -- The single dialogue strip is the only frame authority: the same
     -- row rectangles index the one atlas for ordinary windows and

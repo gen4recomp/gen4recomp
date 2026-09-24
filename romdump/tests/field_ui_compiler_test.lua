@@ -89,11 +89,13 @@ end
 
 -- 4bpp char data: `tiles` tiles, tile t all value ((t + base) % 15) + 1, so
 -- members with different bases decode to visibly distinct tile runs.
-local function charData(tiles, base)
-  local payload = u16(8) .. u16(0x20) .. u32(3) .. u16(0) .. u16(0) .. u32(0) .. u32(tiles * 32) .. u32(0x18)
+local function charData(tiles, base, depth)
+  depth = depth or 3
+  local tileBytes = depth == 3 and 32 or 64
+  local payload = u16(8) .. u16(0x20) .. u32(depth) .. u16(0) .. u16(0) .. u32(0) .. u32(tiles * tileBytes) .. u32(0x18)
   local body = {}
   for t = 0, tiles - 1 do
-    body[#body + 1] = string.rep(string.char((((t + (base or 0)) % 15) + 1) * 0x11), 32)
+    body[#body + 1] = string.rep(string.char((((t + (base or 0)) % 15) + 1) * 0x11), tileBytes)
   end
   return container("RGCN", { block("CHAR", payload .. table.concat(body)) })
 end
@@ -500,9 +502,11 @@ local function fixture(opts)
       for i = 1, 47 do
         members[i] = string.rep("\0", 4)
       end
+      members[1] = lz10Wrap(opts.standardFrame or charData(9, 6))
       for i = 1, 20 do
         members[2 + i] = lz10Wrap(charData(18))
       end
+      members[26] = lz10Wrap(paletteOr16(opts.standardPalette))
       for i = 1, 20 do
         members[26 + i] = lz10Wrap(paletteOr16(opts.framePalette))
       end
@@ -1336,6 +1340,65 @@ function T.dialogue_frame_tile_counts_must_be_exactly_eighteen()
     Assert.equal(typed.context.member, 2)
     Assert.equal(typed.context.tiles, tiles)
   end
+end
+
+function T.standard_yes_no_frame_is_published_after_user_rows()
+  local standardPalette = { 0, 0x001F, 0x03E0, 0x7C00 }
+  for i = 5, 16 do
+    standardPalette[i] = i * 0x39B
+  end
+  local romFs, sha1, hashLua = fixture({ standardPalette = standardPalette })
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local frames = bundle.manifest.dialogueFrames
+  local standard = assert(frames.standardFrame)
+  Assert.equal(frames.count, 20, "the fixed frame does not change selectable user-frame count")
+  Assert.equal(frames.frameTiles[0].y, 0, "user frame 0 keeps its row")
+  Assert.equal(standard.frameTiles.x, 0)
+  Assert.equal(standard.frameTiles.y, frames.count * 8, "the fixed frame follows all user rows")
+  Assert.equal(standard.frameTiles.width, 72)
+  Assert.equal(standard.frameTiles.height, 8)
+  Assert.isNil(standard.member, "source member identity is not published")
+
+  local path = bundle.manifest.assets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES].image
+  local width, height, rgba = PngReader.rgba(bundle.assets[path])
+  Assert.equal(width, 144)
+  Assert.equal(height, (frames.count + 1) * 8)
+  local userPixel = { PngReader.pixel(rgba, width, 0, frames.frameTiles[0].y) }
+  local standardPixel = { PngReader.pixel(rgba, width, 0, standard.frameTiles.y) }
+  Assert.isTrue(
+    userPixel[1] ~= standardPixel[1] or userPixel[2] ~= standardPixel[2],
+    "the fixed row has distinct pixels"
+  )
+  Assert.equal(standard.palette[0].r, 0, "palette slot 0 is included")
+  Assert.equal(standard.palette[1].r, 255, "palette bytes decode independently from user frame 0")
+  Assert.equal(standard.palette[1].g, 0)
+end
+
+function T.standard_yes_no_frame_source_defects_are_rejected()
+  local cases = {
+    { opts = { standardFrame = charData(8, 6) }, tiles = 8 },
+    { opts = { standardFrame = charData(10, 6) }, tiles = 10 },
+  }
+  for _, case in ipairs(cases) do
+    local romFs, sha1, hashLua = fixture(case.opts)
+    local bundle, err = compileWithTestConfig(romFs, sha1, hashLua)
+    Assert.isNil(bundle, "a non-18-tile standard frame must fail")
+    local typed = assert(err)
+    Assert.equal(typed.code, FieldUiCompiler.ERROR.SOURCE_INVALID)
+    Assert.equal(typed.context.member, 0)
+    Assert.equal(typed.context.tiles, case.tiles)
+  end
+
+  local romFs8bpp, sha18bpp, hashLua8bpp = fixture({ standardFrame = charData(9, 6, 4) })
+  local bundle8bpp, err8bpp = compileWithTestConfig(romFs8bpp, sha18bpp, hashLua8bpp)
+  Assert.isNil(bundle8bpp, "the standard source frame must use 4bpp tiles")
+  Assert.equal(assert(err8bpp).code, FieldUiCompiler.ERROR.SOURCE_INVALID)
+  Assert.equal(assert(err8bpp).context.member, 0)
+
+  local romFs, sha1, hashLua = fixture({ standardPalette = { 0x7FFF } })
+  local bundle, err = compileWithTestConfig(romFs, sha1, hashLua)
+  Assert.isNil(bundle, "a short standard palette must fail")
+  Assert.equal(assert(err).code, FieldUiCompiler.ERROR.SOURCE_INVALID)
 end
 
 function T.signpost_frame_tile_counts_must_be_exactly_eighteen()

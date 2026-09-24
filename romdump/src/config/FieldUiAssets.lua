@@ -196,6 +196,8 @@ return {
   },
   dialogueFrames = {
     alias = "dialogue_frames",
+    standardFrameMember = 0,
+    standardPaletteMember = 25,
     firstFrameMember = 2,
     frameCount = 20,
     firstPaletteMember = 26,
