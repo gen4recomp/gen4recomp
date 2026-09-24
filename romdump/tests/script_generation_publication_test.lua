@@ -82,6 +82,7 @@ local function memberFor(memberId, id, generation, steps)
         sourceHash = SOURCE_HASH,
         resource = resourceFor(id, memberId, generation, steps),
         report = { complete = true, unsupportedCount = 0 },
+        directDependencies = { audioSequences = {}, scriptTargets = {} },
       },
     },
   }

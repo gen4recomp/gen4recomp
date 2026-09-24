@@ -65,6 +65,7 @@ local function member(memberId, id, generation)
         sourceHash = SOURCE_HASH,
         resource = resource(id, generation),
         report = { complete = true, unsupportedCount = 0 },
+        directDependencies = { audioSequences = {}, scriptTargets = {} },
       },
     },
   }
@@ -479,6 +480,46 @@ function T.summary_publishes_explicit_empty_member_audio_closure_deterministical
     LuaWriter.encode(secondIndex),
     "two identical summary publications are byte-equivalent"
   )
+end
+
+function T.summary_metadata_join_reads_each_member_sidecar_once()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local currentPlan = plan(GENERATION_A, "marker-a")
+  publishMember(cache, currentPlan, member(0, "stable.script", GENERATION_A), "counted-member-0", "outer-a")
+  publishMember(cache, currentPlan, member(1, "second.script", GENERATION_A), "counted-member-1", "outer-a")
+  local rawLoad = cache.loadLua
+  local sidecarLoads = 0
+  cache.loadLua = function(self, path)
+    if type(path) == "string" and path:find("resource-hashes", 1, true) ~= nil then
+      sidecarLoads = sidecarLoads + 1
+    end
+    return rawLoad(self, path)
+  end
+  local summary = preparation(cache, "global", "counted-summary", "outer-a")
+  Assert.isTrue(ScriptCacheWriter.stageSummary(summary, currentPlan) ~= nil)
+  cache.loadLua = rawLoad
+  summary:finishSuccess({ marker = currentPlan.marker })
+  Assert.isTrue(summary:publish({
+    generationId = "outer-a",
+    epoch = 1,
+    kind = "script-member",
+    key = "global",
+    jobKey = "script-member:global",
+  }))
+  -- Readiness proves each member through isMemberReady (one
+  -- resource-hashes load per member) before the metadata join runs,
+  -- so the prescribed single join contributes exactly one more load
+  -- per member: 2 members x (1 readiness + 1 join) == 4. The current
+  -- code performs two separate join scans, yielding 6.
+  Assert.equal(sidecarLoads, 4, "one readiness plus one metadata-join sidecar load per member")
+  local index = assert(cache:loadLua(ScriptCache.generationIndexPath(GENERATION_A)))
+  for _, entry in ipairs(index.resources) do
+    Assert.isTrue(
+      type(entry.resourceHash) == "string" and entry.resourceHash ~= "",
+      "the joined index carries canonical hashes: " .. tostring(entry.id)
+    )
+  end
+  Assert.deepEqual(index.memberAudioSequences, { ["0"] = {}, ["1"] = {} })
 end
 
 function T.cleanup_propagates_generation_listing_failure()

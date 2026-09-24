@@ -7,6 +7,9 @@
 local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local FieldScripts = require("tests.rom.support.FieldScripts")
+local ScriptCompileSession = require("romdump.src.digest.script.ScriptCompileSession")
+local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
+local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local Sdat = require("libs.nds.src.nitro.sound.Sdat")
 local Verifier = require("romdump.src.digest.script.Verifier")
@@ -305,6 +308,44 @@ T["corpus decodes validates and sound partition remains closed"] = function(romF
       Assert.equal(player.maxSequences, 1, role .. " player " .. playerId .. " declares exactly one sequence slot")
     end
   end
+end
+
+-- The pinned member compiles through the production session with the
+-- source-grounded dex-evaluation pair in its generated dependency
+-- metadata: the corpus census above proves 148 is the only dynamic
+-- fanfare site, and this proves the session publishes the pair for it.
+T["the pinned member compiles the grounded fanfare pair"] = function(romFs)
+  local archive = assert(romFs:openNarc("field_scripts"))
+  local _, memberIrs = FieldScripts.decodeMembers(romFs, { 148 })
+  local ir = assert(memberIrs[148], "member 148 must decode")
+  local stdCatalog = SourceCatalog.catalog()
+  local scripts = {}
+  for scriptIndex in pairs(ir.scripts) do
+    scripts[#scripts + 1] = {
+      scriptIndex = scriptIndex,
+      id = ScriptCompiler.publicId(148, scriptIndex, stdCatalog),
+    }
+  end
+  Assert.isTrue(#scripts >= 1, "member 148 carries scripts")
+  local session = assert(ScriptCompileSession.new(romFs, {
+    generationKey = string.rep("d", 40),
+    sourcePath = "romfs/scr_seq.narc",
+    memberCount = archive:memberCount(),
+    members = { { memberId = 148, marker = "member-marker", scripts = scripts } },
+  }))
+  local compiled = assert(session:compileMember(148))
+  session:close()
+  Assert.equal(#compiled.resources, #scripts)
+  local seen = {}
+  for _, entry in ipairs(compiled.resources) do
+    local direct = entry.directDependencies
+    Assert.isTrue(type(direct) == "table", "every compiled resource carries dependency facts")
+    for _, symbol in ipairs(direct.audioSequences) do
+      seen[symbol] = true
+    end
+  end
+  Assert.isTrue(seen["SEQ_ME_HYOUKA1"] == true, "member 148 publishes the normal dex-evaluation fanfare")
+  Assert.isTrue(seen["SEQ_ME_HYOUKA6"] == true, "member 148 publishes the completed-dex fanfare")
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)

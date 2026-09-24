@@ -12,8 +12,6 @@
 
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
-local ScriptCompileSession = require("romdump.src.digest.script.ScriptCompileSession")
-local ScriptSounds = require("romdump.src.reference.hgss.sndseq")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local Coverage = require("romdump.src.digest.script.Coverage")
 local Errors = require("libs.errors.src.Errors")
@@ -344,17 +342,20 @@ local function persistMember(stage, plan, member)
     local path = ScriptCache.scriptPath(plan.generationKey, member.memberId, entry.id)
     stage:write(path, ScriptCompiler.emit(entry, emitOpts))
     local resource = readbackResource(stage, plan, entry)
+    -- Compiler-supplied dependency facts are mandatory staging input:
+    -- the writer validates and persists them but never recomputes them,
+    -- so a compiler contract defect fails loudly instead of hiding
+    -- behind a repaired member.
     local direct = entry.directDependencies
     if
       type(direct) ~= "table"
       or not isSortedUniqueStrings(direct.audioSequences)
       or not isSortedUniqueStrings(direct.scriptTargets)
     then
-      local steps = entry.resource.steps
-      if type(steps) ~= "table" then
-        steps = resource.steps
-      end
-      direct = ScriptCompileSession.directDependencies(steps, ScriptSounds.byId, entry.id)
+      Errors.raise("SCRIPT_MEMBER_INVALID", "script member resource dependency metadata is missing", {
+        memberId = member.memberId,
+        id = entry.id,
+      })
     end
     hashes[#hashes + 1] = {
       id = entry.id,
@@ -509,21 +510,32 @@ local function checkPlan(plan)
   return expectedIndex
 end
 
--- Join the transitive script-audio closure into the generation index: every
--- declared cross-script target must resolve to a planned resource, then a
+-- Join every planned resource's published canonical hash and the
+-- transitive script-audio closure into the generation index in one member
+-- sidecar traversal: each current member's sidecar must attest exactly its
+-- planned resources, so the published index describes precisely the current
+-- member bodies with no missing, extra, or duplicate records, and every
+-- declared cross-script target must resolve to a planned resource before a
 -- deterministic fixed point unions each resource's direct audio with its
 -- targets' closures (cycles converge because iteration only grows sets over
 -- a sorted resource order), aggregated per member as sorted unique arrays
 -- keyed by decimal member id. Audio-free members carry an explicit empty
--- array. Reads only the already-required member sidecars; never resource
--- bodies.
-local function joinMemberAudioSequences(liveFs, plan, expectedIndex)
+-- array. Loads each already-required member sidecar exactly once; never
+-- resource bodies.
+local function joinMemberMetadata(liveFs, plan, expectedIndex)
   local directAudio, directTargets, memberOf = {}, {}, {}
   for _, entry in ipairs(plan.resources) do
     memberOf[entry.id] = entry.member
   end
+  local hashesByMember = {}
   for _, member in ipairs(orderedMembers(plan)) do
-    local sidecar = assert(liveFs:loadLua(ScriptCache.memberHashesPath(plan.generationKey, member.memberId)))
+    local ok, sidecar = pcall(liveFs.loadLua, liveFs, ScriptCache.memberHashesPath(plan.generationKey, member.memberId))
+    if not ok then
+      Errors.raise("SCRIPT_SUMMARY_INCOMPLETE", "script summary refuses a member without published hashes", {
+        generation = plan.generationKey,
+        missingMemberIds = { member.memberId },
+      })
+    end
     local hashes, hashesErr = checkSidecar(plan, member.memberId, member.marker, sidecar)
     if hashes == nil then
       Errors.raise(
@@ -535,10 +547,22 @@ local function joinMemberAudioSequences(liveFs, plan, expectedIndex)
         }
       )
     end
+    hashesByMember[member.memberId] = hashes
     for _, record in ipairs(sidecar.resources) do
       directAudio[record.id] = record.audioSequences
       directTargets[record.id] = record.scriptTargets
     end
+  end
+  for _, entry in ipairs(expectedIndex.resources) do
+    local memberHashes = hashesByMember[entry.member]
+    local resourceHash = memberHashes and memberHashes[entry.id]
+    if resourceHash == nil then
+      Errors.raise("SCRIPT_SUMMARY_INCOMPLETE", "script summary refuses an unattested resource", {
+        generation = plan.generationKey,
+        id = entry.id,
+      })
+    end
+    entry.resourceHash = resourceHash
   end
   local resourceIds = {}
   for _, entry in ipairs(plan.resources) do
@@ -597,48 +621,6 @@ local function joinMemberAudioSequences(liveFs, plan, expectedIndex)
     memberAudioSequences[key] = list
   end
   expectedIndex.memberAudioSequences = memberAudioSequences
-end
-
--- Join every planned resource's published canonical hash into the
--- generation index: each current member's sidecar must attest exactly its
--- planned resources, so the published index describes precisely the current
--- member bodies with no missing, extra, or duplicate records. Every
--- member passed the same proof through memberIsComplete above; the join
--- only carries the attested hashes into the index the runtime consumes.
-local function joinResourceHashes(liveFs, plan, expectedIndex)
-  local hashesByMember = {}
-  for _, member in ipairs(orderedMembers(plan)) do
-    local ok, sidecar = pcall(liveFs.loadLua, liveFs, ScriptCache.memberHashesPath(plan.generationKey, member.memberId))
-    if not ok then
-      Errors.raise("SCRIPT_SUMMARY_INCOMPLETE", "script summary refuses a member without published hashes", {
-        generation = plan.generationKey,
-        missingMemberIds = { member.memberId },
-      })
-    end
-    local hashes, hashesErr = checkSidecar(plan, member.memberId, member.marker, sidecar)
-    if hashes == nil then
-      Errors.raise(
-        "SCRIPT_SUMMARY_INCOMPLETE",
-        "script summary refuses invalid published hashes: " .. tostring(hashesErr),
-        {
-          generation = plan.generationKey,
-          missingMemberIds = { member.memberId },
-        }
-      )
-    end
-    hashesByMember[member.memberId] = hashes
-  end
-  for _, entry in ipairs(expectedIndex.resources) do
-    local memberHashes = hashesByMember[entry.member]
-    local resourceHash = memberHashes and memberHashes[entry.id]
-    if resourceHash == nil then
-      Errors.raise("SCRIPT_SUMMARY_INCOMPLETE", "script summary refuses an unattested resource", {
-        generation = plan.generationKey,
-        id = entry.id,
-      })
-    end
-    entry.resourceHash = resourceHash
-  end
 end
 
 local function memberIsComplete(liveFs, plan, member)
@@ -719,8 +701,7 @@ local function persistSummary(stage, liveFs, plan)
   for _, member in ipairs(orderedMembers(plan)) do
     records[#records + 1] = assert(liveFs:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId)))
   end
-  joinResourceHashes(liveFs, plan, expectedIndex)
-  joinMemberAudioSequences(liveFs, plan, expectedIndex)
+  joinMemberMetadata(liveFs, plan, expectedIndex)
   local coverage = aggregateCoverage(records, plan)
   local coverageJson = jsonValue(coverage) .. "\n"
   local coverageMd = Coverage.markdown(coverage)

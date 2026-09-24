@@ -129,6 +129,7 @@ local function scriptResource(memberId, id, scriptIndex)
       steps = { { op = "stop" } },
     },
     report = { complete = true, unsupportedCount = 0 },
+    directDependencies = { audioSequences = {}, scriptTargets = {} },
   }
 end
 

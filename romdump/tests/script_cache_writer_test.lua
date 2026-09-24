@@ -39,12 +39,17 @@ local function memberCoverage(memberId, id, scriptIndex)
   }
 end
 
+-- Compiler-owned dependency facts arrive with every staged entry: the
+-- writer persists exactly the provided record and never derives semantics
+-- from step bodies, so builders carry explicit dependency arrays by
+-- default and only the rejection tests below omit or corrupt them.
 local function memberResource(memberId, id, scriptIndex)
   return {
     id = id,
     member = memberId,
     scriptIndex = scriptIndex,
     sourceHash = SOURCE_HASH,
+    directDependencies = { audioSequences = {}, scriptTargets = {} },
     resource = {
       api = 1,
       id = id,
@@ -176,15 +181,18 @@ end
 -- Acceptance fixtures for the script-audio dependency contract: members
 -- built from explicit structured steps so publication must derive the
 -- dependency record from the resource bodies it already holds.
-local function resourceWithSteps(memberId, id, scriptIndex, steps)
+local function resourceWithSteps(memberId, id, scriptIndex, steps, directDependencies)
   local entry = memberResource(memberId, id, scriptIndex)
   entry.resource.steps = steps
+  if directDependencies ~= nil then
+    entry.directDependencies = directDependencies
+  end
   return entry
 end
 
-local function stagedWithSteps(memberId, id, scriptIndex, steps, generation)
+local function stagedWithSteps(memberId, id, scriptIndex, steps, generation, directDependencies)
   local staged = member(memberId, id, scriptIndex, generation)
-  staged.resources = { resourceWithSteps(memberId, id, scriptIndex, steps) }
+  staged.resources = { resourceWithSteps(memberId, id, scriptIndex, steps, directDependencies) }
   return staged
 end
 
@@ -232,7 +240,8 @@ local function cycleMember(memberId, specs, generation)
     resources = {},
   }
   for _, spec in ipairs(specs) do
-    staged.resources[#staged.resources + 1] = resourceWithSteps(memberId, spec.id, spec.scriptIndex, spec.steps)
+    staged.resources[#staged.resources + 1] =
+      resourceWithSteps(memberId, spec.id, spec.scriptIndex, spec.steps, spec.deps)
   end
   return staged
 end
@@ -606,7 +615,10 @@ T["member sidecar carries direct script audio and cross-script targets"] = funct
   publishMember(
     cache,
     currentPlan,
-    stagedWithSteps(3, "common.signpost", 0, steps, GENERATION_A),
+    stagedWithSteps(3, "common.signpost", 0, steps, GENERATION_A, {
+      audioSequences = { "SEQ_GS_NAMINORI", "SEQ_GS_TITLE", "SEQ_ME_HYOUKA1", "SEQ_SE_GS_N_SESERAGI" },
+      scriptTargets = { "common.other", "common.third" },
+    }),
     "deps-member-3",
     "outer-a"
   )
@@ -623,30 +635,49 @@ T["member sidecar carries direct script audio and cross-script targets"] = funct
   )
 end
 
--- A variable fanfare cannot name its sequence, so publication records the
--- pinned retail dex-evaluation pair instead of an empty dependency.
-T["variable fanfare publishes the pinned dex-evaluation pair"] = function()
+-- Staging without compiler dependency metadata fails before any marker
+-- lands: persistence cannot repair a compiler omission.
+T["staging without compiler dependency metadata fails and publishes no marker"] = function()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = "script-cache-v5:rom-sha:dep-sha"
   local currentPlan = plan(GENERATION_A, marker)
-  local steps = {
-    { op = "play_fanfare", fanfare = { value = "var", id = "x8000" } },
-    { op = "stop" },
-  }
-  publishMember(
-    cache,
-    currentPlan,
-    stagedWithSteps(3, "common.signpost", 0, steps, GENERATION_A),
-    "fanfare-member-3",
-    "outer-a"
-  )
-  local record = sidecarRecord(cache, GENERATION_A, 3, "common.signpost")
-  Assert.deepEqual(
-    record.audioSequences,
-    { "SEQ_ME_HYOUKA1", "SEQ_ME_HYOUKA6" },
-    "variable fanfare expands to exactly the source-grounded pair"
-  )
-  Assert.deepEqual(record.scriptTargets, {}, "fanfare alone reaches no other script")
+  local staged = stagedWithSteps(3, "common.signpost", 0, { { op = "stop" } }, GENERATION_A)
+  staged.resources[1].directDependencies = nil
+  local artifact = preparation(cache, "3", "missing-deps", "outer-a")
+  Assert.throws(function()
+    ScriptCacheWriter.stageMember(artifact, currentPlan, staged)
+  end, "a missing dependency record must fail staging")
+  artifact:abort()
+  Assert.isNil(cache:read(ScriptCache.memberMarkerPath(GENERATION_A, 3)))
+  Assert.isNil(cache:read(ScriptCache.markerPath()))
+end
+
+-- Staging with malformed dependency metadata fails before any marker
+-- lands: unsorted arrays and non-array fields are not dependency facts.
+T["staging with malformed dependency metadata fails and publishes no marker"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = plan(GENERATION_A, marker)
+  local unsorted = stagedWithSteps(3, "common.signpost", 0, { { op = "stop" } }, GENERATION_A, {
+    audioSequences = { "SEQ_GS_TITLE", "SEQ_GS_NAMINORI" },
+    scriptTargets = {},
+  })
+  local first = preparation(cache, "3", "unsorted-deps", "outer-a")
+  Assert.throws(function()
+    ScriptCacheWriter.stageMember(first, currentPlan, unsorted)
+  end, "an unsorted dependency array must fail staging")
+  first:abort()
+  local mistyped = stagedWithSteps(3, "common.signpost", 0, { { op = "stop" } }, GENERATION_A, {
+    audioSequences = {},
+    scriptTargets = "common.other",
+  })
+  local second = preparation(cache, "3", "mistyped-deps", "outer-a")
+  Assert.throws(function()
+    ScriptCacheWriter.stageMember(second, currentPlan, mistyped)
+  end, "a non-array dependency field must fail staging")
+  second:abort()
+  Assert.isNil(cache:read(ScriptCache.memberMarkerPath(GENERATION_A, 3)))
+  Assert.isNil(cache:read(ScriptCache.markerPath()))
 end
 
 -- Transitive audio is a fixed point over the member graph: a cycle plus an
@@ -668,6 +699,7 @@ T["cyclic script graphs converge to the same transitive closure"] = function()
           { op = "call", target = "alpha.second" },
           { op = "stop" },
         },
+        deps = { audioSequences = { "SEQ_GS_TITLE" }, scriptTargets = { "alpha.second" } },
       },
       {
         id = "alpha.second",
@@ -676,6 +708,7 @@ T["cyclic script graphs converge to the same transitive closure"] = function()
           { op = "call_common", target = "beta.third" },
           { op = "stop" },
         },
+        deps = { audioSequences = {}, scriptTargets = { "beta.third" } },
       },
     }, GENERATION_A),
     "cycle-member-0",
@@ -693,6 +726,7 @@ T["cyclic script graphs converge to the same transitive closure"] = function()
           { op = "call", target = "alpha.second" },
           { op = "stop" },
         },
+        deps = { audioSequences = { "SEQ_GS_NAMINORI" }, scriptTargets = { "alpha.second" } },
       },
     }, GENERATION_A),
     "cycle-member-1",
@@ -734,57 +768,6 @@ T["a member sidecar with unsorted dependencies is not ready"] = function()
   Assert.isTrue(type(reason) == "string" and reason ~= "", "the refusal names its cause")
 end
 
--- An unknown numeric sequence reference fails staging instead of
--- serializing a bare number: sequence identity must always be canonical.
-T["an unknown numeric sequence reference fails member staging"] = function()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local marker = "script-cache-v5:rom-sha:dep-sha"
-  local currentPlan = plan(GENERATION_A, marker)
-  local staged = stagedWithSteps(3, "common.signpost", 0, {
-    { op = "play_sound", sound = 999999 },
-    { op = "stop" },
-  }, GENERATION_A)
-  local artifact = preparation(cache, "3", "unknown-numeric", "outer-a")
-  Assert.throws(function()
-    ScriptCacheWriter.stageMember(artifact, currentPlan, staged)
-  end, "an unknown numeric sequence must fail staging")
-  artifact:abort()
-end
-
--- A dynamic sound operand has no source-grounded expansion, so staging
--- fails instead of publishing an empty dependency.
-T["a dynamic sound operand fails member staging"] = function()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local marker = "script-cache-v5:rom-sha:dep-sha"
-  local currentPlan = plan(GENERATION_A, marker)
-  local staged = stagedWithSteps(3, "common.signpost", 0, {
-    { op = "play_sound", sound = { value = "var", id = "x8000" } },
-    { op = "stop" },
-  }, GENERATION_A)
-  local artifact = preparation(cache, "3", "dynamic-sound", "outer-a")
-  Assert.throws(function()
-    ScriptCacheWriter.stageMember(artifact, currentPlan, staged)
-  end, "a dynamic sound operand must fail staging")
-  artifact:abort()
-end
-
--- Music operands are constants in the current corpus; a dynamic music
--- value fails staging rather than weakening the dependency record.
-T["a dynamic music operand fails member staging"] = function()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local marker = "script-cache-v5:rom-sha:dep-sha"
-  local currentPlan = plan(GENERATION_A, marker)
-  local staged = stagedWithSteps(3, "common.signpost", 0, {
-    { op = "play_music", music = { value = "var", id = "x4000" } },
-    { op = "stop" },
-  }, GENERATION_A)
-  local artifact = preparation(cache, "3", "dynamic-music", "outer-a")
-  Assert.throws(function()
-    ScriptCacheWriter.stageMember(artifact, currentPlan, staged)
-  end, "a dynamic music operand must fail staging")
-  artifact:abort()
-end
-
 -- A resource with no audio operations or cross-script calls publishes
 -- explicit empty dependency arrays, never missing fields.
 T["a silent resource publishes explicit empty dependencies"] = function()
@@ -816,7 +799,7 @@ T["a summary over an unknown script target is refused"] = function()
     stagedWithSteps(843, "new_bark.lab_sign", 9, {
       { op = "call_common", target = "nope.missing" },
       { op = "stop" },
-    }, GENERATION_A),
+    }, GENERATION_A, { audioSequences = {}, scriptTargets = { "nope.missing" } }),
     "dangling-member-843",
     "outer-a"
   )
@@ -847,6 +830,7 @@ T["a self-targeting resource converges to its own audio"] = function()
           { op = "call", target = "alpha.first" },
           { op = "stop" },
         },
+        deps = { audioSequences = { "SEQ_GS_TITLE" }, scriptTargets = { "alpha.first" } },
       },
       {
         id = "alpha.second",
