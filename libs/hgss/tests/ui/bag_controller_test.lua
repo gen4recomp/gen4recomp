@@ -1552,6 +1552,88 @@ function T.cancelling_capture_after_a_modal_press_keeps_the_pending_choice()
   Assert.equal(bag:quantity("POTION"), 5, "the cancelled capture changes no quantities")
 end
 
+-- A press held on the quantity Cancel control cannot close the bag after
+-- the keyboard cancels the picker: returning to browsing drops the nested
+-- capture, so the late release finds nothing to resolve.
+function T.quantity_cancel_press_cannot_close_browsing_after_keyboard_cancel()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  Assert.equal(control:status().state, "toss_quantity", "setup enters the quantity picker")
+  control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = 220, y = 176 } })
+  control:updateFixed({ { type = "cancel" } })
+  Assert.equal(control:status().state, "browsing", "keyboard cancel leaves the picker for browsing")
+  control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = 220, y = 176 } })
+  local status = control:status()
+  Assert.isTrue(status.open, "the late release never closes the bag")
+  Assert.equal(status.state, "browsing", "the late release stays in browsing")
+  Assert.isNil(control:takeResult(), "the late release reports no close")
+  Assert.equal(bag:quantity("POTION"), 5, "the late release changes no quantities")
+  Assert.equal(bag:revision(), revision, "the late release mutates nothing")
+end
+
+-- A press held across the modal handoff cannot poison later pointer
+-- input: entering confirmation drops the Bag capture, the release
+-- delivered to the prompt-owned tick stays inert, and the first fresh tap
+-- after the prompt rejects behaves like any normal tap.
+function T.held_press_across_modal_confirmation_cannot_swallow_the_next_tap()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  Assert.equal(control:status().state, "toss_quantity", "setup enters the quantity picker")
+  control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = 80, y = 144 } })
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_confirm", "keyboard confirm hands ownership to the modal prompt")
+  control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = 80, y = 144 } })
+  Assert.equal(control:status().state, "toss_confirm", "the release under modal ownership stays inert")
+  control:updateFixed({ { type = "cancel" } })
+  settlePromptChoice(control)
+  local rejected = control:status()
+  Assert.equal(rejected.state, "browsing", "rejecting the prompt returns to browsing")
+  Assert.isTrue(rejected.open, "the rejection never closes the bag")
+  Assert.isNil(control:takeResult(), "the rejection reports no close")
+  Assert.equal(bag:quantity("POTION"), 5, "the rejection changes no quantities")
+  Assert.equal(bag:revision(), revision, "the rejection mutates nothing")
+  tap(control, layout, 76, 56)
+  local tapped = control:status()
+  Assert.equal(tapped.state, "action_menu", "the first fresh tap opens the action menu")
+  Assert.isTrue(tapped.open, "the fresh tap never closes the bag")
+  Assert.isNil(control:takeResult(), "the fresh tap reports no close")
+end
+
+-- The modal confirmation enforces the same event vocabulary as every
+-- other Bag state: unknown types raise instead of disappearing inside
+-- the owned prompt, while known prompt-inert events stay no-ops.
+function T.unknown_events_raise_inside_modal_confirmation()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks a tossable stack")
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control, layoutManifest = controller(bag, cursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  tap(control, layout, 76, 56)
+  tap(control, layout, 144, 144)
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  control:updateFixed({ { type = "menu" } })
+  Assert.equal(control:status().state, "toss_confirm", "a known prompt-inert event stays a no-op")
+  Assert.throws(function()
+    control:updateFixed({ { type = "warp" } })
+  end, "an unknown event inside confirmation raises")
+end
+
 -- An acknowledgement batch owns its whole tick: confirming and then
 -- cancelling in one update commits once into browsing without replaying
 -- the trailing edge as a browsing close.

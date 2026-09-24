@@ -476,6 +476,7 @@ end
 -- owned prompt resets with the menu, so no capture or result survives the
 -- return.
 function BagController:_toBrowsing()
+  self:cancelPointerCapture()
   self._prompt:dispose()
   self._state = "browsing"
   self._actions = {}
@@ -663,6 +664,7 @@ function BagController:_enterTossConfirm()
   self._quantityMax = owned
   self._quantity = math.min(self._quantity, owned)
   self:_clearQuantityPress()
+  self:cancelPointerCapture()
   self._prompt:open(self._tossPrompt)
   self._state = "toss_confirm"
 end
@@ -1060,6 +1062,31 @@ function BagController:_activate(target)
   end
 end
 
+-- The event types the Bag boundary accepts from its application and
+-- session input path. Modal tick owners validate against this set before
+-- delegating, so unknown types fail here instead of disappearing inside
+-- a child controller that only understands its narrower subset.
+local BAG_EVENT_TYPES = {
+  navigate = true,
+  confirm = true,
+  cancel = true,
+  dismiss = true,
+  menu = true,
+  pointer_down = true,
+  pointer_move = true,
+  pointer_up = true,
+  pointer_cancel = true,
+  pointer_scroll = true,
+}
+
+---@param event table<string, unknown>
+local function validateBagEvent(event)
+  assert(type(event) == "table" and type(event.type) == "string", "bag events need a type")
+  if not BAG_EVENT_TYPES[event.type] then
+    error("unknown bag event type " .. tostring(event.type), 2)
+  end
+end
+
 -- A fresh press inside the interaction pane acknowledges the post-choice
 -- state; anything outside it is not an acknowledgement.
 ---@param event table<string, unknown>
@@ -1176,7 +1203,7 @@ end
 ---@param uiInput table[]
 function BagController:_stepTossPrompt(uiInput)
   for _, event in ipairs(uiInput) do
-    assert(type(event) == "table" and type(event.type) == "string", "bag events need a type")
+    validateBagEvent(event)
     if event.type == "dismiss" then
       self._result = { kind = "closed" }
       self._closed = true
@@ -1198,7 +1225,7 @@ function BagController:_stepTossAck(uiInput)
   local hasDismiss = false
   local hasAcknowledgement = false
   for _, event in ipairs(uiInput) do
-    assert(type(event) == "table" and type(event.type) == "string", "bag events need a type")
+    validateBagEvent(event)
     if event.type == "dismiss" then
       hasDismiss = true
     elseif event.type == "confirm" or event.type == "cancel" then
@@ -1264,7 +1291,7 @@ function BagController:updateFixed(uiInput)
     if self._closed then
       break
     end
-    assert(type(event) == "table" and type(event.type) == "string", "bag events need a type")
+    validateBagEvent(event)
     if event.type == "navigate" then
       self:_handleNavigate(event)
     elseif event.type == "confirm" then
@@ -1392,8 +1419,10 @@ function BagController:dispose()
   self._closed = true
 end
 
--- A press held across a layout change must not activate a different
--- post-layout target, so placement changes cancel the pointer capture.
+-- Held Bag pointer capture is controller-local: placement changes and
+-- transitions that change hit-test meaning or hand pointer ownership to
+-- the modal prompt invalidate it, so a later release can never resolve
+-- against a different state.
 function BagController:cancelPointerCapture()
   self._pressId = nil
   self._pressCapture = nil
