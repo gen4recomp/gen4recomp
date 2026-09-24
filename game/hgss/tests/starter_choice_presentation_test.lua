@@ -389,7 +389,10 @@ function T.reset_clears_all_semantic_progress()
   for _ = 1, 100 do
     presentation:update(rotating)
   end
+  presentation:beginRenderTick(rotating)
+  presentation:captureRenderSample(rotating)
   presentation:reset()
+  Assert.equal(presentation._renderSamples, nil, "reset drops render samples from the prior open")
   local elapsed = 0
   while elapsed < 1024 do
     local observation = presentation:update(rotating)
@@ -418,6 +421,17 @@ function T.reset_clears_all_semantic_progress()
     timing.infoFadeTicks + timing.machineFadeTicks,
     "reopening restarts the full sequential fades"
   )
+end
+
+function T.dispose_clears_render_history()
+  local presentation = openPresentation()
+  local current = snapshot()
+  presentation:beginRenderTick(current)
+  presentation:captureRenderSample(current)
+  presentation:captureRenderSample(current)
+  presentation:dispose()
+  Assert.equal(presentation._renderSamples, nil, "dispose releases the transient render samples")
+  presentation:dispose()
 end
 
 function T.static_tabletop_alpha_is_forwarded_without_a_second_normalization()

@@ -44,15 +44,17 @@ local function renderNative(resources, view, plan)
   local presentation = assert(resources.presentation, "the starter render borrows its presentation")
   local text = assert(resources.text, "the starter render borrows its text provider")
   local windowRenderer = assert(resources.windowRenderer, "the starter render borrows the field window renderer")
+  local renderAlpha = assert(resources.renderAlpha, "the starter render borrows the field interpolation alpha")
   assert(type(view.selectionState) == "string", "the starter render reads the controller snapshot")
   local snapshot = view
-  presentation --[[@as { drawNative: fun(self: table<string, unknown>, snapshot: table<string, unknown>, view: table<string, unknown>, text: table<string, unknown>, plan: table<string, unknown>, windowRenderer: table<string, unknown>) }]].drawNative(
+  presentation --[[@as { drawNative: fun(self: table<string, unknown>, snapshot: table<string, unknown>, view: table<string, unknown>, text: table<string, unknown>, plan: table<string, unknown>, windowRenderer: table<string, unknown>, renderAlpha: number) }]].drawNative(
     presentation,
     snapshot,
     view,
     text,
     plan,
-    windowRenderer
+    windowRenderer,
+    renderAlpha
   )
 end
 

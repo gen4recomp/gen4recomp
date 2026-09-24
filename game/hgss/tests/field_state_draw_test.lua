@@ -275,9 +275,9 @@ local function drawOrderState(starterActive)
       isActive = function()
         return true
       end,
-      drawPresentation = function(_, text, windowRenderer)
+      drawPresentation = function(_, text, windowRenderer, renderAlpha)
         events[#events + 1] = "starter"
-        starterDraws[#starterDraws + 1] = { text = text, windowRenderer = windowRenderer }
+        starterDraws[#starterDraws + 1] = { text = text, windowRenderer = windowRenderer, renderAlpha = renderAlpha }
       end,
     }
   end
@@ -500,6 +500,7 @@ function T.active_starter_presentation_is_drawn_after_the_script_fade()
   state:draw()
   Assert.deepEqual(events, { "script_fade", "starter" }, "the chooser owns the top application layer")
   Assert.equal(#starterDraws, 1, "the active chooser draws once")
+  Assert.equal(starterDraws[1].renderAlpha, 0.5, "the active chooser receives the field's existing render alpha")
   Assert.isTrue(
     starterDraws[1].windowRenderer == state.presentationResources.windowRenderer,
     "the chooser draws through the field-owned window renderer"

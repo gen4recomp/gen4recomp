@@ -375,16 +375,19 @@ function T.tests.render_callbacks_borrow_the_field_window_renderer()
   local native = interface.wide(contextFor(wideMeasurement(), "wide", interface), view)
   local compact = interface.nativeLike(contextFor(nativeLikeMeasurement(), "nativeLike", interface), view)
   local nativeCalls, compactCalls = {}, {}
+  local nativeAlpha
   local resources = {
     presentation = {
-      drawNative = function(_, _, _, _, _, windowRenderer)
+      drawNative = function(_, _, _, _, _, windowRenderer, renderAlpha)
         nativeCalls[#nativeCalls + 1] = windowRenderer
+        nativeAlpha = renderAlpha
       end,
       drawCompact = function(_, _, _, _, _, windowRenderer)
         compactCalls[#compactCalls + 1] = windowRenderer
       end,
     },
     text = {},
+    renderAlpha = 0.37,
   }
   local nativeErr = Assert.throws(function()
     native.render(resources, view, native)
@@ -406,6 +409,7 @@ function T.tests.render_callbacks_borrow_the_field_window_renderer()
   compact.render(resources, view, compact)
   Assert.equal(#nativeCalls, 1, "the native render reaches its presentation entrypoint")
   Assert.isTrue(nativeCalls[1] == borrowed, "the native render lends the field renderer untouched")
+  Assert.equal(nativeAlpha, resources.renderAlpha, "the native render forwards the field interpolation alpha")
   Assert.equal(#compactCalls, 1, "the compact render reaches its presentation entrypoint")
   Assert.isTrue(compactCalls[1] == borrowed, "the compact render lends the field renderer untouched")
 end

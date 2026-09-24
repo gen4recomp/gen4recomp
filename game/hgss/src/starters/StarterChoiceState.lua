@@ -231,13 +231,9 @@ function StarterChoiceState:close()
   self._doneIndex = nil
 end
 
--- One deterministic application tick: the presentation advances one source
--- tick for the controller's current snapshot and reports its completion
--- observation, then the controller consumes that observation once. The field
--- runtime steps this once per fixed tick while the modal is open; ignored
--- transitions stay settled without input. An all-false observation never
--- completes a transition, so a missing presentation stalls rather than
--- settling.
+-- One field tick preserves retail source timing by running two ordered
+-- presentation/controller substeps. The render samples bracket those source
+-- boundaries without changing controller completion behavior.
 ---@type StarterChoiceController.Observation
 local EMPTY_OBSERVATION = {
   rotationComplete = false,
@@ -253,13 +249,23 @@ function StarterChoiceState:update()
   if controller == nil then
     return
   end
+  local presentation = self._presentation
+  if presentation ~= nil then
+    presentation:beginRenderTick(controller:snapshot())
+  end
   for _ = 1, 2 do
     if not controller:isActive() then
       break
     end
     local snapshot = controller:snapshot()
-    local observation = self._presentation and self._presentation:update(snapshot) or EMPTY_OBSERVATION
+    local observation = presentation and presentation:update(snapshot) or EMPTY_OBSERVATION
     controller:update(observation)
+    if presentation ~= nil then
+      presentation:captureRenderSample(controller:snapshot())
+    end
+  end
+  if presentation ~= nil then
+    presentation:finishRenderTick(controller:snapshot())
   end
   assert(self._session, "an open choice owns its presentation session"):resolve(self:_measured(), self:_sessionView())
 end
@@ -439,7 +445,8 @@ end
 -- never advance semantic clocks.
 ---@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
 ---@param windowRenderer table<string, unknown> field-borrowed window primitive for framed surfaces
-function StarterChoiceState:drawPresentation(text, windowRenderer)
+---@param renderAlpha number? field render interpolation alpha
+function StarterChoiceState:drawPresentation(text, windowRenderer, renderAlpha)
   activeController(self)
   assert(text ~= nil and type(text.drawLine) == "function", "starter presentation requires the text provider")
   assert(self:isPresentationReady(), "starter presentation is not prepared")
@@ -447,6 +454,10 @@ function StarterChoiceState:drawPresentation(text, windowRenderer)
     windowRenderer ~= nil and type(windowRenderer.drawApplicationFrame) == "function",
     "starter presentation borrows the field window renderer at draw time"
   )
+  if renderAlpha == nil then
+    renderAlpha = 1
+  end
+  assert(type(renderAlpha) == "number", "starter presentation requires the field render interpolation alpha")
   local session = assert(self._session, "an open choice owns its presentation session")
   local view = self:_sessionView()
   session:resolve(self:_measured(), view)
@@ -456,6 +467,7 @@ function StarterChoiceState:drawPresentation(text, windowRenderer)
     presentation = activePresentation(self),
     text = text,
     windowRenderer = windowRenderer,
+    renderAlpha = renderAlpha,
   }, view, session:plan())
 end
 

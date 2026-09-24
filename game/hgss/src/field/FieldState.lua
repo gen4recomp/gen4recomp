@@ -595,7 +595,8 @@ function FieldState:draw()
     if ready then
       starter:drawPresentation(
         assert(resources.textRenderer, "field text renderer is unavailable"),
-        assert(resources.windowRenderer, "field presentation owns no window renderer")
+        assert(resources.windowRenderer, "field presentation owns no window renderer"),
+        alpha
       )
     end
   end

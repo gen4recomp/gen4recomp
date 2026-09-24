@@ -236,10 +236,11 @@ local function stepHostUntil(host, predicate, bound)
   return false
 end
 
-local function drawFrame(scope, host, window, width, height)
+local function drawFrame(scope, host, window, width, height, renderAlpha, clearColor)
   local canvas = love.graphics.newCanvas(width, height)
   love.graphics.setCanvas(canvas)
-  love.graphics.clear(0, 0, 0, 1)
+  local color = clearColor or { 0, 0, 0, 1 }
+  love.graphics.clear(color[1], color[2], color[3], color[4])
   host:drawPresentation({
     drawLine = function() end,
     drawLineWithColorVariants = function() end,
@@ -255,7 +256,7 @@ local function drawFrame(scope, host, window, width, height)
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }
     end,
-  }, window)
+  }, window, renderAlpha)
   love.graphics.setCanvas()
   local image = scope:own(canvas:newImageData())
   canvas:release()
@@ -287,6 +288,218 @@ local function frameDistance(first, second, width, height)
     end
   end
   return changed
+end
+
+local function infoSamplePoint(host)
+  local plan = assert(host._session:plan(), "the chooser has a resolved native plan")
+  for _, pane in ipairs(plan.panes) do
+    if pane.id == "info" then
+      local placement = assert(pane.placement)
+      return math.floor(placement.origin.x + 2 * placement.scale), math.floor(placement.origin.y + 2 * placement.scale)
+    end
+  end
+  error("the native chooser plan carries its info pane", 0)
+end
+
+local function assertInfoPaneCoversField(image, host, versionId)
+  local x, y = infoSamplePoint(host)
+  local red, green, blue = image:getPixel(x, y)
+  Assert.isTrue(
+    math.abs(red - 0.9) + math.abs(green) + math.abs(blue - 0.8) > 0.2,
+    versionId .. " chooser-owned pixels cover the paused field in the info pane"
+  )
+end
+
+local function backdropSample(scope, host)
+  local canvas = scope:own(love.graphics.newCanvas(REFERENCE_WIDTH, REFERENCE_HEIGHT))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(host._presentation._backdropImage, 0, 0)
+  love.graphics.setCanvas()
+  local image = scope:own(canvas:newImageData())
+  canvas:release()
+  return { image:getPixel(2, 2) }
+end
+
+local function assertInfoSampleMatchesBackdrop(image, host, expected, versionId, phase)
+  local x, y = infoSamplePoint(host)
+  local actual = { image:getPixel(x, y) }
+  for index = 1, 3 do
+    Assert.isTrue(
+      math.abs(actual[index] - expected[index]) < 0.02,
+      versionId .. " " .. phase .. " exposes the chooser host backdrop at the info pane sample"
+    )
+  end
+end
+
+local function assertInfoSampleShowsArtwork(image, host, backdrop, versionId)
+  local x, y = infoSamplePoint(host)
+  local actual = { image:getPixel(x, y) }
+  local difference = 0
+  for index = 1, 3 do
+    difference = difference + math.abs(actual[index] - backdrop[index])
+  end
+  Assert.isTrue(difference > 0.1, versionId .. " settled confirmation restores the info artwork")
+end
+
+local function assertSameFrame(first, second, versionId, detail)
+  Assert.equal(frameDistance(first, second, 536, 240), 0, versionId .. " " .. detail)
+end
+
+function T.source_rate_rotation_renders_intermediate_frames_without_advancing_semantics(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("smooth Starter Choice rendering needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    loadManifest(cacheModule, cacheFs)
+    local host = openProductionChoice(versionId, cacheFs, nil, function()
+      return nativeWideBox()
+    end)
+    local backend = prepareHost(host, cacheFs)
+    local window = openWindowBorrower(cacheFs, versionId)
+    host:move("right")
+    host:update()
+    local before = host._controller:snapshot()
+    local rotation = host._presentation._rotationAccum
+    local alphaSamples = {}
+    for _, alpha in ipairs({ 0, 0.25, 0.5, 0.75, 1 }) do
+      local sample = host._presentation:_sampleForDraw(before, alpha)
+      alphaSamples[#alphaSamples + 1] = host._presentation:yawForSnapshot(sample.snapshot, sample)
+    end
+
+    Assert.equal(
+      host._controller:snapshot().selection,
+      before.selection,
+      versionId .. " rendering does not settle the selection"
+    )
+    Assert.equal(
+      host._controller:snapshot().transition,
+      before.transition,
+      versionId .. " rendering does not advance the transition"
+    )
+    Assert.equal(
+      host._presentation._rotationAccum,
+      rotation,
+      versionId .. " repeated draws do not advance source rotation"
+    )
+    for index = 2, #alphaSamples do
+      Assert.isTrue(
+        math.abs(alphaSamples[index] - alphaSamples[index - 1]) > 0,
+        versionId .. " adjacent render-alpha samples show the intervening source-frame progression"
+      )
+    end
+    local rotationFrame = drawFrame(scope, host, window, 536, 240, 0.5)
+    Assert.isTrue(
+      brightPixels(rotationFrame, 536, 240) > 0,
+      versionId .. " sampled rotation reaches the rendered chooser"
+    )
+
+    local ticks = 0
+    while host._controller:snapshot().transition == "rotate" and ticks < 16 do
+      host:update()
+      ticks = ticks + 1
+    end
+    Assert.equal(
+      host._controller:snapshot().transition,
+      "idle",
+      versionId .. " rotation keeps its source completion boundary"
+    )
+    host:confirm()
+    host:confirm()
+    Assert.equal(host._controller:snapshot().transition, "zoomIn", versionId .. " inspection starts the zoom path")
+    host:update()
+    local cameraStep = host._presentation._cameraStep
+    local arcStep = host._presentation._arcStep
+    local zoomSamples = {}
+    for _, alpha in ipairs({ 0, 0.25, 0.5, 0.75, 1 }) do
+      local zoomSnapshot = host._controller:snapshot()
+      local sample = host._presentation:_sampleForDraw(zoomSnapshot, alpha)
+      zoomSamples[#zoomSamples + 1] = {
+        camera = host._presentation:_cameraAlpha(sample.snapshot, sample),
+        arc = host._presentation:_arcAlpha(sample.snapshot, sample),
+      }
+    end
+    Assert.equal(
+      host._presentation._cameraStep,
+      cameraStep,
+      versionId .. " zoom draws do not advance the source camera"
+    )
+    Assert.equal(host._presentation._arcStep, arcStep, versionId .. " zoom draws do not advance the source ball arc")
+    for index = 2, #zoomSamples do
+      Assert.isTrue(
+        math.abs(zoomSamples[index].camera - zoomSamples[index - 1].camera) > 0
+          and math.abs(zoomSamples[index].arc - zoomSamples[index - 1].arc) > 0,
+        versionId .. " adjacent render-alpha samples show camera and ball-arc progression"
+      )
+    end
+    local zoomFrame = drawFrame(scope, host, window, 536, 240, 0.5)
+    Assert.isTrue(brightPixels(zoomFrame, 536, 240) > 0, versionId .. " sampled zoom reaches the rendered chooser")
+    host:dispose()
+    window:release()
+    backend:release()
+  end
+end
+
+function T.native_info_pane_keeps_chooser_backing_through_bg_off_zoom_states(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("native info-pane backing needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    loadManifest(cacheModule, cacheFs)
+    local host = openProductionChoice(versionId, cacheFs, nil, function()
+      return nativeWideBox()
+    end)
+    local backend = prepareHost(host, cacheFs)
+    local window = openWindowBorrower(cacheFs, versionId)
+    local fieldColor = { 0.9, 0, 0.8, 1 }
+    local expectedBackdrop = backdropSample(scope, host)
+    host:confirm()
+    local inspected = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoPaneCoversField(inspected, host, versionId)
+    host:confirm()
+    Assert.equal(host._controller:snapshot().transition, "zoomIn", versionId .. " confirmation starts zoom immediately")
+    local zooming = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoPaneCoversField(zooming, host, versionId)
+    assertInfoSampleMatchesBackdrop(zooming, host, expectedBackdrop, versionId, "zoom-in")
+    for _ = 1, 4 do
+      host:update()
+    end
+    Assert.equal(
+      host._controller:snapshot().transition,
+      "waitZoom",
+      versionId .. " camera and arc enter their source wait"
+    )
+    local waiting = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoPaneCoversField(waiting, host, versionId)
+    assertInfoSampleMatchesBackdrop(waiting, host, expectedBackdrop, versionId, "wait-zoom")
+    Assert.isTrue(
+      stepHostUntil(host, function()
+        local snapshot = host._controller:snapshot()
+        return snapshot.transition == "idle" and snapshot.selectionState == "confirm"
+      end, 1024),
+      versionId .. " zoom settles at the existing confirmation boundary"
+    )
+    local confirmed = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoSampleShowsArtwork(confirmed, host, expectedBackdrop, versionId)
+    host:cancel()
+    Assert.equal(host._controller:snapshot().transition, "backOut", versionId .. " cancel begins the source back-out")
+    local backingOut = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoPaneCoversField(backingOut, host, versionId)
+    assertInfoSampleMatchesBackdrop(backingOut, host, expectedBackdrop, versionId, "back-out")
+
+    host:dispose()
+    window:release()
+    backend:release()
+  end
 end
 
 local function assertBallHit(ball, versionId)
