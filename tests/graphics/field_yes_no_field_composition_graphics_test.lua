@@ -2,15 +2,21 @@
 
 local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PixelScale = require("libs.ui.src.PixelScale")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
+local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs")
+local AcceptanceScripts = require("tests.acceptance.support.AcceptanceScripts")
+local RepoFs = require("game.src.RepoFs")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
+
+local MESSAGE_YES_NO_SCRIPT = "acceptance.field_yes_no_message"
 
 local function freshGame(versionId)
   return {
@@ -70,6 +76,136 @@ local function render(scope, state, width, height)
   state:draw()
   graphics.setCanvas()
   return scope:own(canvas:newImageData())
+end
+
+local function fieldStateWithAcceptanceScripts()
+  local originalNew = FieldRuntime.new
+  FieldRuntime.new = function(game, options)
+    local runtimeOptions = {}
+    for key, value in pairs(options or {}) do
+      runtimeOptions[key] = value
+    end
+    runtimeOptions.overrideFs =
+      AcceptanceScriptFs.new(RepoFs.new(love.filesystem.getSourceBaseDirectory()), AcceptanceScripts)
+    return originalNew(game, runtimeOptions)
+  end
+  local ok, stateOrError = xpcall(function()
+    return FieldState.new(freshGame(readyVersion()))
+  end, debug.traceback)
+  FieldRuntime.new = originalNew
+  if not ok then
+    error(stateOrError, 0)
+  end
+  return stateOrError
+end
+
+local function startMessageYesNoScript(state)
+  local runtime = assert(state.runtime)
+  local scripts = assert(runtime.scripts)
+  local composed = assert(scripts.composition:effective(MESSAGE_YES_NO_SCRIPT), "acceptance script is composed")
+  local instanceId = scripts.scheduler:startInteraction(
+    { kind = "acceptance", scriptId = MESSAGE_YES_NO_SCRIPT },
+    composed,
+    assert(runtime.session).tick,
+    true
+  )
+  Assert.notNil(instanceId, "message-bearing fixture starts through the production scheduler")
+end
+
+local function advanceUntil(state, predicate, label)
+  for _ = 1, 480 do
+    if predicate() then
+      return
+    end
+    state:update(1 / 60)
+  end
+  Assert.isTrue(predicate(), label)
+end
+
+local function assertChangedPixelsInsideFrame(image, comparison, frame)
+  local left = math.max(0, frame.x)
+  local top = math.max(0, frame.y)
+  local right = math.min(image:getWidth(), frame.x + frame.width)
+  local bottom = math.min(image:getHeight(), frame.y + frame.height)
+  for y = top, bottom - 1 do
+    for x = left, right - 1 do
+      local red, green, blue, alpha = image:getPixel(x, y)
+      local otherRed, otherGreen, otherBlue, otherAlpha = comparison:getPixel(x, y)
+      if red ~= otherRed or green ~= otherGreen or blue ~= otherBlue or alpha ~= otherAlpha then
+        return
+      end
+    end
+  end
+  Assert.fail("the scheduler-owned Yes/No frame must change pixels inside its production frame bounds")
+end
+
+function T.message_bearing_scheduler_script_renders_yes_no_in_default_field_topology(scope)
+  local width, height = love.graphics.getDimensions()
+  local state = fieldStateWithAcceptanceScripts()
+  scope:own({
+    release = function()
+      state:dispose()
+    end,
+  })
+
+  local runtime = assert(state.runtime)
+  Assert.equal(#runtime.screenTopology.surfaces, 1, "the default production topology is one display")
+  local resolvedYesNoLayout
+  local yesNoRenderer = assert(state.presentationResources).yesNoRenderer
+  local originalLayout = yesNoRenderer.layout
+  yesNoRenderer.layout = function(self, ...)
+    resolvedYesNoLayout = originalLayout(self, ...)
+    return resolvedYesNoLayout
+  end
+  local dialogueOuterRect
+  local dialogueRenderer = assert(state.presentationResources).dialogueRenderer
+  local originalDrawDialogue = dialogueRenderer.draw
+  dialogueRenderer.draw = function(self, dialogue, presentation)
+    dialogueOuterRect = presentation.outerRect
+    return originalDrawDialogue(self, dialogue, presentation)
+  end
+  for _ = 1, 120 do
+    if runtime.session.mapEntryStage == nil then
+      break
+    end
+    state:draw()
+    state:update(1 / 60)
+  end
+  Assert.isNil(runtime.session.mapEntryStage, "production field entry settles before the script starts")
+
+  startMessageYesNoScript(state)
+  local host = assert(runtime.scripts.dialogueHost)
+  advanceUntil(state, function()
+    return host:isOpen() and host:printProgress().done
+  end, "message-bearing script completes its message before opening Yes/No")
+  Assert.isNil(host:yesNoPresentation(), "message-only comparison is captured before the task opens choice")
+  local dialogueOnly = render(scope, state, width, height)
+
+  advanceUntil(state, function()
+    return host:yesNoPresentation() ~= nil
+  end, "message-bearing scheduler task opens Yes/No after printing")
+  local choiceFrame = render(scope, state, width, height)
+
+  local layout = assert(resolvedYesNoLayout, "FieldState passes the active choice to its renderer")
+  local frame = assert(layout.placement).frame
+  local dialogue = assert(dialogueOuterRect, "FieldState renders the message before the active choice")
+  local bounds = assert(runtime.viewport.worldViewport)
+  assertChangedPixelsInsideFrame(choiceFrame, dialogueOnly, frame)
+  Assert.equal(
+    frame.x + frame.width,
+    dialogue.x + dialogue.width,
+    "production choice exterior right edge aligns with dialogue"
+  )
+  Assert.equal(
+    frame.y + frame.height + 2 * layout.placement.scale,
+    dialogue.y,
+    "production choice stays two logical pixels above dialogue"
+  )
+  Assert.isTrue(frame.x >= bounds.x and frame.y >= bounds.y, "choice frame starts inside the world viewport")
+  Assert.isTrue(
+    frame.x + frame.width <= bounds.x + bounds.width and frame.y + frame.height <= bounds.y + bounds.height,
+    "choice frame stays inside the world viewport"
+  )
 end
 
 local function pixelEnvelope(image, comparison)
@@ -196,9 +332,15 @@ local function assertMenuComposition(scope, width, height, safeRect)
     Assert.equal(dialogueBox.height, dialogueOuterRect.height, "dialogue-attached choice keeps dialogue height")
     Assert.near(
       frame.x + frame.width,
-      bounds.x + bounds.width,
+      dialogueBox.x + dialogueBox.width,
       1e-9,
-      "the production layout anchors its complete exterior frame to field UI bounds"
+      "the production layout aligns its complete exterior frame with the dialogue"
+    )
+    Assert.near(
+      frame.y + frame.height + 2 * resolvedYesNoLayout.placement.scale,
+      dialogueBox.y,
+      1e-9,
+      "the production layout keeps the choice two logical pixels above the dialogue"
     )
     local resolvedScale = runtime.fieldPixelScale:resolvedScale()
     local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, resolvedScale)
@@ -207,8 +349,8 @@ local function assertMenuComposition(scope, width, height, safeRect)
       dialogueScale,
       "dialogue-attached choice keeps the dialogue scale"
     )
-    local expectedScale = math.min(dialogueScale, math.floor(math.min(bounds.width / 88, bounds.height / 48)))
-    Assert.isTrue(expectedScale >= 1, "the composed host must fit the complete menu at integer scale")
+    local expectedScale = resolvedYesNoLayout.placement.scale
+    Assert.isTrue(expectedScale > 0 and expectedScale <= dialogueScale, "choice scale fits above the dialogue")
     Assert.isTrue(menuPixels.x >= bounds.x, "every changed menu pixel stays inside field UI bounds")
     Assert.isTrue(menuPixels.y >= bounds.y, "every changed menu pixel stays inside field UI bounds")
     Assert.isTrue(menuPixels.x + menuPixels.width <= bounds.x + bounds.width, "menu pixels stay inside field UI bounds")

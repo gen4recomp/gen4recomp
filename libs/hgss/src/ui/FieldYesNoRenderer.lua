@@ -159,15 +159,21 @@ function FieldYesNoRenderer:layout(status, topology, dialogueBox, adaptedHost)
   local hostFrame =
     { x = bounds.x + bounds.width - width, y = bounds.y + bounds.height - height, width = width, height = height }
   if dialogueBox then
-    local candidates = {
-      { x = hostFrame.x, y = dialogueBox.y + dialogueBox.height, width = width, height = height },
-      { x = hostFrame.x, y = dialogueBox.y - height, width = width, height = height },
-    }
-    for _, candidate in ipairs(candidates) do
-      if fits(candidate, bounds) then
-        hostFrame = candidate
-        break
-      end
+    local dialogueRight = dialogueBox.x + dialogueBox.width
+    local fitAbove = math.min((dialogueRight - bounds.x) / outer.width, (dialogueBox.y - bounds.y) / (outer.height + 2))
+    if fitAbove > 0 then
+      local fitScale = fitAbove >= 1 and math.floor(fitAbove) or fitAbove
+      scale = math.min(scale, fitScale)
+      width = outer.width * scale
+      height = outer.height * scale
+      hostFrame = {
+        x = dialogueRight - width,
+        y = dialogueBox.y - 2 * scale - height,
+        width = width,
+        height = height,
+      }
+      hostFrame.x = math.max(bounds.x, math.min(hostFrame.x, bounds.x + bounds.width - width))
+      hostFrame.y = math.max(bounds.y, math.min(hostFrame.y, bounds.y + bounds.height - height))
     end
   end
   assert(fits(hostFrame, bounds), "yes/no choice frame leaves field UI bounds")

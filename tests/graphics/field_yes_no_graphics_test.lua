@@ -133,6 +133,16 @@ function T.single_display_choice_stays_inside_portrait_safe_area()
   Assert.equal(layout.presentation, "adapted")
   Assert.deepEqual(layout.content, { x = 0, y = 0, width = 48, height = 32 })
   Assert.equal(layout.placement.scale, 1)
+  Assert.equal(
+    layout.placement.frame.x + layout.placement.frame.width,
+    348,
+    "portrait choice aligns with dialogue right edge"
+  )
+  Assert.equal(
+    layout.placement.frame.y + layout.placement.frame.height + 2,
+    300,
+    "portrait choice keeps a two-pixel dialogue gap"
+  )
   Assert.isTrue(layout.placement.frame.x >= bounds.x)
   Assert.isTrue(layout.placement.frame.y >= bounds.y)
   Assert.isTrue(layout.placement.frame.x + layout.placement.frame.width <= bounds.x + bounds.width)
@@ -141,7 +151,7 @@ function T.single_display_choice_stays_inside_portrait_safe_area()
   renderer:release()
 end
 
-function T.single_display_choice_uses_dialogue_aware_candidate_order()
+function T.single_display_choice_attaches_above_the_dialogue_right_edge()
   local renderer = testRenderer()
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -151,32 +161,33 @@ function T.single_display_choice_uses_dialogue_aware_candidate_order()
     touch = false,
   })
   local choice = status(0, 1)
-  local right = 12 + 616 - 88
   local bounds = { x = 12, y = 24, width = 616, height = 432 }
   local adaptedHost = { bounds = bounds, preferredScale = 1 }
-  local below = renderer:layout(choice, topology, { x = 100, y = 100, width = 200, height = 80 }, adaptedHost)
+  local dialogue = { x = 100, y = 100, width = 200, height = 80 }
+  local below = renderer:layout(choice, topology, dialogue, adaptedHost)
   Assert.deepEqual(
     below.placement.frame,
-    { x = right, y = 180, width = 88, height = 48 },
-    "below-right frame wins when it fits"
+    { x = 212, y = 50, width = 88, height = 48 },
+    "choice frame sits two logical pixels above and right-aligned with dialogue"
   )
-  Assert.deepEqual(below.placement.origin, { x = right + 16, y = 188 }, "content sits inside the fitted frame")
+  Assert.deepEqual(below.placement.origin, { x = 228, y = 58 }, "content sits inside the fitted frame")
 
-  local above = renderer:layout(choice, topology, { x = 100, y = 410, width = 200, height = 40 }, adaptedHost)
+  dialogue = { x = 100, y = 410, width = 200, height = 40 }
+  local above = renderer:layout(choice, topology, dialogue, adaptedHost)
   Assert.deepEqual(
     above.placement.frame,
-    { x = right, y = 362, width = 88, height = 48 },
-    "above-right fits the complete frame"
+    { x = 212, y = 360, width = 88, height = 48 },
+    "choice frame keeps the two-pixel gap and shared right edge when above fits"
   )
-  Assert.deepEqual(above.placement.origin, { x = right + 16, y = 370 }, "content retains its frame inset")
+  Assert.deepEqual(above.placement.origin, { x = 228, y = 368 }, "content retains its frame inset")
 
   local fallback = renderer:layout(choice, topology, bounds, adaptedHost)
   Assert.deepEqual(
     fallback.placement.frame,
-    { x = right, y = 408, width = 88, height = 48 },
-    "fallback fits at safe bottom-right"
+    { x = 540, y = 408, width = 88, height = 48 },
+    "frame that cannot fit above is clamped into the host bounds"
   )
-  Assert.deepEqual(fallback.placement.origin, { x = right + 16, y = 416 }, "fallback content remains inside the frame")
+  Assert.deepEqual(fallback.placement.origin, { x = 556, y = 416 }, "fallback content remains inside the frame")
   renderer:release()
 end
 
