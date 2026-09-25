@@ -134,6 +134,13 @@ end
 function FieldState:update(dt)
   self:_refreshDisplay()
   self.runtime:update(dt)
+  local pokemonNaming = self.runtime.pokemonNaming
+  if pokemonNaming:isActive() then
+    local namingStatus = assert(pokemonNaming:status(), "an active Pokemon naming task publishes its status")
+    assert(self.presentationResources, "field presentation resources are unavailable"):preparePokemonNamingSubject(
+      namingStatus.snapshot.subject
+    )
+  end
   self:_advanceStarterPreparation()
   self:_syncStarterPresentationInput()
   self:_advanceEntryCover(dt)

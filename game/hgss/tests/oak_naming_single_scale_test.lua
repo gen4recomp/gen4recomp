@@ -241,7 +241,7 @@ function T.tests.name_edit_draws_without_application_frame_artwork()
     cursor = { row = 3, column = 5 },
     grid = grid,
     subject = { kind = "player", gender = 0 },
-    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
+    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
   }
   ApplicationPresentation.draw(fake, { graphics = fake, namingRenderer = renderer }, snapshot, plan)
   Assert.isTrue(#fake.draws > 0, "the naming screen actually draws its source visuals")

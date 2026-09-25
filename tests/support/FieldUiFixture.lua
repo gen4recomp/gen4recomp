@@ -710,6 +710,7 @@ function FieldUiFixture.cacheWithFontAndFrames()
   cache:write(FieldUiFixture.PROMPT_YES_SELECTED_PATH, FieldUiFixture.promptButtonBytes("yes_selected"))
   cache:write(FieldUiFixture.PROMPT_NO_NORMAL_PATH, FieldUiFixture.promptButtonBytes("no_normal"))
   cache:write(FieldUiFixture.PROMPT_NO_SELECTED_PATH, FieldUiFixture.promptButtonBytes("no_selected"))
+  FieldUiFixture.writeNamingSemanticsImages(cache)
   return cache
 end
 
@@ -1110,6 +1111,25 @@ function FieldUiFixture.addNamingSemantics(manifest)
   end
   manifest.namingScreen = semantics.namingScreen
   return manifest
+end
+
+---@return table manifest for FieldState composition tests
+function FieldUiFixture.fieldStateManifest()
+  return FieldUiFixture.addNamingSemantics(FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest()))
+end
+
+---@param cache CacheFs
+function FieldUiFixture.writeNamingSemanticsImages(cache)
+  for _, asset in pairs(FieldUiFixture.namingSemanticsManifest().assets) do
+    cache:write(
+      asset.image,
+      PngWriter.encode(
+        asset.width,
+        asset.height,
+        string.rep(string.char(255, 255, 255, 255), asset.width * asset.height)
+      )
+    )
+  end
 end
 
 return FieldUiFixture

@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
@@ -401,6 +402,7 @@ local function fieldComposition(starter, queue, backend)
   end
   local zoomCalls = { zoomIn = 0, zoomOut = 0, reset = 0, applied = 0 }
   local runtime = {
+    pokemonNaming = InactivePokemonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
     actionKeys = { z = true },
@@ -445,6 +447,7 @@ local function fieldCompositionWithRealInput(starter, queue, backend, input)
   local FieldState = requireModule(FIELD_STATE_MODULE, "the field state owns presentation composition")
   local zoomCalls = { zoomIn = 0, zoomOut = 0, reset = 0, applied = 0 }
   local runtime = {
+    pokemonNaming = InactivePokemonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
     actionKeys = { z = true },

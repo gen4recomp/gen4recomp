@@ -15,6 +15,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
+local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
@@ -108,6 +109,7 @@ local function presentationState(assets, actorIds)
     end
   end
   local runtime = {
+    pokemonNaming = InactivePokemonNaming.new(),
     update = function() end,
     dispose = function() end,
     actors = actors,

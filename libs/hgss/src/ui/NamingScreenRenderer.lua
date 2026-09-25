@@ -7,8 +7,9 @@
 -- source palette pulse mask on top. Subject and cursor frames resolve
 -- deterministically from the snapshot presentation clocks against the
 -- generated durations and playback modes. Non-player subjects stay
--- host-owned: the host injects drawSubject and the renderer only brackets
--- the call with balanced graphics state. Generated images are owned here
+-- host-owned: the host injects drawSubject with an explicit source position
+-- and icon frame, and the renderer only brackets the call with balanced
+-- graphics state. Generated images are owned here
 -- and released on dispose; the text renderer and subject resources stay
 -- host-owned.
 
@@ -21,14 +22,14 @@ local NamingScreenRenderer = {}
 ---@class NamingScreenRendererOptions
 ---@field graphics table<string, function>
 ---@field text table<string, function>
----@field drawSubject fun(graphics: table<string, function>, subject: table<string, unknown>, rect: table<string, number>)
+---@field drawSubject fun(graphics: table<string, function>, subject: table<string, unknown>, placement: { x: number, y: number, frameIndex: integer })
 ---@field manifest table<string, unknown>
 ---@field imageLoader fun(path: string): unknown
 
 ---@class NamingScreenRenderer
 ---@field graphics table<string, function>
 ---@field text table<string, function>
----@field drawSubject fun(graphics: table<string, function>, subject: table<string, unknown>, rect: table<string, number>)?
+---@field drawSubject fun(graphics: table<string, function>, subject: table<string, unknown>, placement: { x: number, y: number, frameIndex: integer })?
 ---@field naming table<string, unknown>
 ---@field placement table<string, number>
 ---@field images table<string, unknown>
@@ -66,7 +67,6 @@ local function acquireOrder(naming)
     order[#order + 1] = "control:" .. key
   end
   order[#order + 1] = "slot:normal"
-  order[#order + 1] = "slot:selected"
   local seen = {}
   local function animationAssets(records)
     for _, record in ipairs(records) do
@@ -82,7 +82,7 @@ local function acquireOrder(naming)
       end
     end
   end
-  animationAssets({ naming.playerSubjects.male, naming.playerSubjects.female })
+  animationAssets({ naming.entrySlots.selected, naming.playerSubjects.male, naming.playerSubjects.female })
   animationAssets({ naming.cursor.keyboard })
   local homeRecords = {}
   for _, key in ipairs(HOME_KEYS) do
@@ -191,7 +191,7 @@ local function requireSprite(section, key, what)
   return entry
 end
 
----@param options { graphics: table<string, function>, text: table<string, function>, drawSubject: fun(graphics: table<string, function>, subject: table<string, unknown>, rect: table<string, number>), manifest: table<string, unknown>, imageLoader: fun(path: string): unknown }
+---@param options { graphics: table<string, function>, text: table<string, function>, drawSubject: fun(graphics: table<string, function>, subject: table<string, unknown>, placement: { x: number, y: number, frameIndex: integer }), manifest: table<string, unknown>, imageLoader: fun(path: string): unknown }
 ---@return NamingScreenRenderer
 function NamingScreenRenderer.new(options)
   assert(type(options) == "table" and options.graphics and options.text, "naming renderer requires graphics and text")
@@ -209,12 +209,13 @@ function NamingScreenRenderer.new(options)
   assert(type(naming.cursor) == "table", "naming renderer requires the naming cursor")
   assert(type(naming.entrySlots) == "table", "naming renderer requires the naming entry slots")
   assert(type(naming.playerSubjects) == "table", "naming renderer requires the naming player subjects")
+  assert(type(naming.pokemonSubject) == "table", "naming renderer requires the Pokemon subject animation")
   for _, key in ipairs(CONTROL_KEYS) do
     requireSprite(naming.controls, key, key .. " control")
   end
   requireSprite(naming.entrySlots, "normal", "normal slot")
-  requireSprite(naming.entrySlots, "selected", "selected slot")
   local animatedRecords = {
+    naming.entrySlots.selected,
     naming.playerSubjects.male,
     naming.playerSubjects.female,
     naming.cursor.keyboard,
@@ -242,6 +243,40 @@ function NamingScreenRenderer.new(options)
       "naming renderer requires a loop start inside its animation frames"
     )
   end
+  local pokemonSubject = naming.pokemonSubject
+  assert(
+    type(pokemonSubject.frames) == "table"
+      and type(pokemonSubject.anchor) == "table"
+      and pokemonSubject.anchor.x == 24
+      and pokemonSubject.anchor.y == 8,
+    "naming renderer requires source-positioned Pokemon subject frames"
+  )
+  assert(
+    pokemonSubject.playMode == "forward"
+      or pokemonSubject.playMode == "forward_loop"
+      or pokemonSubject.playMode == "reverse"
+      or pokemonSubject.playMode == "reverse_loop",
+    "naming renderer requires a supported Pokemon subject play mode"
+  )
+  assert(
+    type(pokemonSubject.loopStartFrameIdx) == "number"
+      and pokemonSubject.loopStartFrameIdx % 1 == 0
+      and pokemonSubject.loopStartFrameIdx >= 0
+      and pokemonSubject.loopStartFrameIdx < #pokemonSubject.frames,
+    "naming renderer requires a Pokemon subject loop start inside its frames"
+  )
+  for _, frame in ipairs(pokemonSubject.frames) do
+    assert(
+      type(frame.iconFrame) == "number"
+        and frame.iconFrame % 1 == 0
+        and frame.iconFrame >= 1
+        and type(frame.duration) == "number"
+        and frame.duration % 1 == 0
+        and frame.duration > 0
+        and type(frame.offset) == "table",
+      "naming renderer requires validated Pokemon subject frame semantics"
+    )
+  end
   local paths = { base = imagePath(options.manifest, naming.base, "base") }
   for _, key in ipairs(PAGE_KEYS) do
     paths[key] = imagePath(options.manifest, naming.pages[key], key .. " page")
@@ -250,7 +285,6 @@ function NamingScreenRenderer.new(options)
     paths["control:" .. key] = imagePath(options.manifest, naming.controls[key], key .. " control")
   end
   paths["slot:normal"] = imagePath(options.manifest, naming.entrySlots.normal, "normal slot")
-  paths["slot:selected"] = imagePath(options.manifest, naming.entrySlots.selected, "selected slot")
   local function animationPath(assetId, what)
     local assets = options.manifest.assets
     local record = type(assets) == "table" and assets[assetId] or nil
@@ -387,17 +421,22 @@ function NamingScreenRenderer:draw(view, layout)
   for _ in Utf8Glyphs.iter(view.text or "") do
     entered = entered + 1
   end
+  local presentation = assert(view.presentation, "naming draw requires snapshot presentation clocks")
+  assert(
+    type(presentation.subjectTick) == "number"
+      and type(presentation.cursorTick) == "number"
+      and type(presentation.entrySlotTick) == "number"
+      and type(presentation.glowAngle) == "number",
+    "naming draw requires snapshot presentation clocks"
+  )
   for index = 0, (view.maxLength or entered) - 1 do
     local record = slots.normal
     drawVisual("slot:normal", slots.origin.x + index * slots.stepX + record.offset.x, slots.origin.y + record.offset.y)
   end
   if entered < (view.maxLength or entered) then
     local record = slots.selected
-    drawVisual(
-      "slot:selected",
-      slots.origin.x + entered * slots.stepX + record.offset.x,
-      slots.origin.y + record.offset.y
-    )
+    local frame = record.frames[resolveFrameIndex(record, presentation.entrySlotTick)]
+    self:_drawAnimatedFrame(record, frame, slots.origin.x + entered * slots.stepX, slots.origin.y, nil)
   end
   g.setColor(1, 1, 1, 1)
   local keyboard = naming.text.keyboard.cells
@@ -417,21 +456,20 @@ function NamingScreenRenderer:draw(view, layout)
     self.text:drawText(glyph, name.x + slot * name.advanceX, name.y)
     slot = slot + 1
   end
-  local presentation = assert(view.presentation, "naming draw requires snapshot presentation clocks")
-  assert(
-    type(presentation.subjectTick) == "number"
-      and type(presentation.cursorTick) == "number"
-      and type(presentation.glowAngle) == "number",
-    "naming draw requires snapshot presentation clocks"
-  )
   if view.subject.kind == "player" then
     local gender = view.subject.gender == 1 and "female" or "male"
     local record = naming.playerSubjects[gender]
     local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
     self:_drawAnimatedFrame(record, frame, record.anchor.x, record.anchor.y, nil)
   else
+    local record = naming.pokemonSubject
+    local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
     g.push()
-    self.drawSubject(g, view.subject, layout.subject)
+    self.drawSubject(g, view.subject, {
+      x = record.anchor.x + frame.offset.x,
+      y = record.anchor.y + frame.offset.y,
+      frameIndex = frame.iconFrame,
+    })
     g.pop()
   end
   -- The focus cursor composites last so it stays above the control it

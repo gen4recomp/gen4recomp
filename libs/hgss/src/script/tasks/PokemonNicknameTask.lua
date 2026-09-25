@@ -4,6 +4,7 @@ local Errors = require("libs.errors.src.Errors")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local MonsErrors = require("libs.mons.src.errors")
 local Mon = require("libs.mons.src.Mon")
+local Personality = require("libs.mons.src.gen4.Personality")
 local ScriptErrors = require("libs.script.src.errors")
 
 local PokemonNicknameTask = {}
@@ -61,15 +62,17 @@ function PokemonNicknameTask.create(spec, ctx)
   local slot = spec.slot
   validateSlot(slot, mons)
   assert(type(slot) == "number")
-  ---@type { species: string, form: integer, nickname: string? }
+  ---@type { species: string, form: integer, nickname: string?, personality: integer }
   local mon = mons:partyMon(slot)
   local catalog = mons:catalog()
   local species = catalog:species(mon.species)
+  local gender = Personality.gender(species.genderRatio, assert(mon.personality, "a party mon carries its personality"))
   local subject = {
     kind = "pokemon",
     species = species.nativeId,
     form = mon.form,
     iconKey = catalog:iconSelection(mon),
+    gender = gender,
   }
   local initialText = Mon.displayName(mon, catalog)
   return {
@@ -167,6 +170,7 @@ function PokemonNicknameTask.validate(state)
     or subject.form < 0
     or subject.form % 1 ~= 0
     or type(subject.iconKey) ~= "string"
+    or (subject.gender ~= "male" and subject.gender ~= "female" and subject.gender ~= "genderless")
   then
     return Errors.new(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "Pokemon nickname subject is invalid", {})
   end

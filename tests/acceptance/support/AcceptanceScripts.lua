@@ -70,6 +70,20 @@ return S.script({
   },
 })
 ]],
+  ["acceptance.pokemon_naming"] = [[
+local S = require("gen4.script")
+
+return S.script({
+  api = 1,
+  id = "acceptance.pokemon_naming",
+  steps = {
+    S.giveMon({ species = "MAREEP", level = 5, result = S.var("VAR_UNK_407C") }),
+    S.pokemonNicknameInput({ slot = 0, result = S.var("VAR_UNK_407D") }),
+    S.pokemonNicknameInput({ slot = 0, result = S.var("VAR_UNK_407F") }),
+    S.stop(),
+  },
+})
+]],
   ["demo.signpost"] = [[
 local S = require("gen4.script")
 

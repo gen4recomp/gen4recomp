@@ -171,6 +171,23 @@ function T.tests.fixed_update_advances_both_clocks_and_steps_the_glow_angle()
   Assert.equal(presentation.glowAngle, 200, "the glow angle steps 10 degrees per fixed update")
 end
 
+function T.tests.entry_slot_clock_advances_independently_of_keyboard_focus()
+  local controller = player()
+  controller:updateFixed(6)
+  Assert.equal(controller:snapshot().presentation.entrySlotTick, 6)
+  controller:press("right")
+  local moved = assert(controller:snapshot().presentation)
+  Assert.equal(moved.cursorTick, 0, "keyboard focus still resets its own animation clock")
+  Assert.equal(moved.entrySlotTick, 6, "keyboard focus leaves the selected name slot age alone")
+  controller:inputText("A")
+  controller:updateFixed(1)
+  Assert.equal(controller:snapshot().presentation.entrySlotTick, 7)
+  controller:activateControl("ok")
+  local frozen = assert(controller:snapshot().presentation)
+  controller:updateFixed(2)
+  Assert.deepEqual(controller:snapshot().presentation, frozen, "submission freezes every presentation clock")
+end
+
 -- Two presentation ticks model one 30 Hz source tick driving the 60 Hz
 -- naming presentation clock: subject and cursor advance twice while the
 -- glow advances twenty degrees total, restoring the original wall-clock

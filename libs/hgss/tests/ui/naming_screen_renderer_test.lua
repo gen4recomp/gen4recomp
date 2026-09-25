@@ -71,7 +71,7 @@ local function snapshot(cursor)
     maxLength = 7,
     grid = grid,
     subject = { kind = "player", gender = 0 },
-    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
+    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
   }
 end
 
@@ -241,7 +241,7 @@ local function animatedSnapshot(overrides)
     maxLength = 7,
     grid = grid,
     subject = overrides.subject or { kind = "player", gender = 0 },
-    presentation = overrides.presentation or { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
+    presentation = overrides.presentation or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
   }
 end
 
@@ -278,7 +278,10 @@ function T.tests.player_subject_advances_through_generated_frames_by_presentatio
   local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   local function subjectPathsAt(tick)
     calls.draws = {}
-    renderer:draw(animatedSnapshot({ presentation = { subjectTick = tick, cursorTick = 0, glowAngle = 180 } }), layout)
+    renderer:draw(
+      animatedSnapshot({ presentation = { subjectTick = tick, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 } }),
+      layout
+    )
     return drawnPaths(calls)
   end
   Assert.isTrue(contains(subjectPathsAt(0), "subject-male-f0.png"), "tick 0 draws the first male frame")
@@ -290,7 +293,7 @@ function T.tests.player_subject_advances_through_generated_frames_by_presentatio
   renderer:draw(
     animatedSnapshot({
       subject = { kind = "player", gender = 1 },
-      presentation = { subjectTick = 2, cursorTick = 0, glowAngle = 180 },
+      presentation = { subjectTick = 2, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
     }),
     layout
   )
@@ -315,7 +318,10 @@ function T.tests.reverse_subject_animation_traverses_generated_frames_backwards(
   local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   local function subjectPathsAt(tick)
     calls.draws = {}
-    renderer:draw(animatedSnapshot({ presentation = { subjectTick = tick, cursorTick = 0, glowAngle = 180 } }), layout)
+    renderer:draw(
+      animatedSnapshot({ presentation = { subjectTick = tick, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 } }),
+      layout
+    )
     return drawnPaths(calls)
   end
   male.playMode = "reverse"
@@ -346,7 +352,7 @@ function T.tests.focus_cursor_tints_only_its_pulse_mask_and_follows_the_glow_ang
     calls.draws = {}
     calls.colors = {}
     renderer:draw(
-      animatedSnapshot({ presentation = { subjectTick = 0, cursorTick = tick, glowAngle = angle } }),
+      animatedSnapshot({ presentation = { subjectTick = 0, cursorTick = tick, entrySlotTick = 0, glowAngle = angle } }),
       layout
     )
     return drawnPaths(calls)

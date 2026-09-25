@@ -10,7 +10,7 @@ local function requireTask()
 end
 
 local function fixture(hostDone, currentText, nickname)
-  local mon = { species = "CHIKORITA", form = 0, nickname = nickname }
+  local mon = { species = "CHIKORITA", form = 0, nickname = nickname, personality = 1 }
   local changes = 0
   local host = { active = false, opened = {}, updates = 0, closed = 0 }
   function host:isActive()
@@ -47,7 +47,7 @@ local function fixture(hostDone, currentText, nickname)
     catalog = function()
       return {
         species = function()
-          return { nativeId = 152, name = "CHIKORITA" }
+          return { nativeId = 152, name = "CHIKORITA", genderRatio = 127 }
         end,
         form = function()
           return { number = 0 }
@@ -151,6 +151,16 @@ function T.invalid_party_slot_fails_before_open()
   local ok = pcall(task.create, { slot = 1 }, ctx)
   Assert.isFalse(ok)
   Assert.equal(#host.opened, 0)
+end
+
+function T.subject_carries_personality_derived_gender_and_serializes_it()
+  local task = requireTask()
+  local ctx = fixture(false)
+  local state = task.create({ slot = 0 }, ctx)
+  Assert.equal(state.subject.gender, "female")
+  Assert.isNil(task.validate(state), "the derived subject remains serializable")
+  state.subject.gender = "other"
+  Assert.notNil(task.validate(state), "unsupported gender facts are rejected")
 end
 
 return { tests = T }

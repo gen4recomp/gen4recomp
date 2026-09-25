@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
@@ -508,6 +509,7 @@ local function fieldComposition(starter, queue, backend)
   end
   local draws = { field = 0, starter = 0 }
   local runtime = {
+    pokemonNaming = InactivePokemonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
     actionKeys = { z = true },

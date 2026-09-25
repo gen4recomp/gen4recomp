@@ -11,16 +11,12 @@ local ItemFixture = require("libs.items.tests.item_fixture")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
 local function inactivePokemonNaming()
-  return {
-    isActive = function()
-      return false
-    end,
-    cancelPointerCapture = function() end,
-  }
+  return InactivePokemonNaming.new()
 end
 
 local function stateWithInput(calls)
@@ -526,6 +522,7 @@ function T.update_refreshes_the_display_before_runtime_ticks()
   local updates, resizes = 0, {}
   local state = setmetatable({
     runtime = {
+      pokemonNaming = inactivePokemonNaming(),
       update = function()
         updates = updates + 1
         Assert.equal(#resizes, 1, "the display refreshes before the first runtime tick")

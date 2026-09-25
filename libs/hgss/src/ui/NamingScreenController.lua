@@ -21,6 +21,7 @@ local NamingScreenController = {}
 ---@field grid table<integer, table<integer, table<string, unknown>>>
 ---@field subject table<string, unknown>
 ---@field result table<string, string>?
+---@field presentation table<string, unknown>
 
 ---@class NamingScreenController
 ---@field new fun(options: NamingScreenOptions): NamingScreenController
@@ -178,6 +179,7 @@ function NamingScreenController.new(options)
     _result = nil,
     _subjectTick = 0,
     _cursorTick = 0,
+    _entrySlotTick = 0,
     _glowAngle = 180,
   }, NamingScreenController)
 end
@@ -213,6 +215,7 @@ function NamingScreenController:updateFixed(ticks)
     end
     self._subjectTick = self._subjectTick + 1
     self._cursorTick = self._cursorTick + 1
+    self._entrySlotTick = self._entrySlotTick + 1
     local angle = self._glowAngle + 10
     if angle > 360 then
       angle = 0
@@ -416,6 +419,7 @@ function NamingScreenController:snapshot()
     presentation = {
       subjectTick = self._subjectTick,
       cursorTick = self._cursorTick,
+      entrySlotTick = self._entrySlotTick,
       glowAngle = self._glowAngle,
     },
   }

@@ -54,7 +54,8 @@ local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
----@field namingRenderer NamingScreenRenderer? lazily owned script naming renderer
+---@field namingRenderer NamingScreenRenderer? eagerly owned script naming renderer
+---@field namingIconQuads table<string, table<integer, unknown>> prepared mon icon frames borrowed from the provider
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
@@ -210,6 +211,31 @@ function FieldPresentationResources.new(runtime)
     })
     self.partyScreenRenderer = PartyScreenRenderer.new({ text = textRenderer })
     self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs)
+    self.namingIconQuads = {}
+    local graphics = assert(love and love.graphics, "Pokemon naming renderer requires graphics")
+    local function imageLoader(path)
+      local bytes = assert(runtime.cacheFs:read(path), "missing generated naming image " .. path)
+      return graphics.newImage(love.filesystem.newFileData(bytes, path))
+    end
+    local function drawSubject(hostGraphics, subject, placement)
+      local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
+      local iconFrames =
+        assert(self.namingIconQuads[iconKey], "Pokemon naming icon frames were not prepared before draw")
+      local quad = assert(iconFrames[placement.frameIndex], "Pokemon naming icon frame was not prepared before draw")
+      hostGraphics.draw(
+        assert(self.monIconProvider, "field presentation owns the mon icon provider"):image(),
+        quad,
+        placement.x,
+        placement.y
+      )
+    end
+    self.namingRenderer = NamingScreenRenderer.new({
+      graphics = graphics,
+      text = textRenderer,
+      drawSubject = drawSubject,
+      manifest = assert(self.uiManifest, "field UI manifest is unavailable"),
+      imageLoader = imageLoader,
+    })
     -- Bag presentation resolves eagerly beside the party icons: field entry
     -- boots only when the compiled item/bag caches are present, and the
     -- launch-time capability gate in the FieldRuntime bag factory still
@@ -273,40 +299,27 @@ function FieldPresentationResources.new(runtime)
   return self
 end
 
----@return NamingScreenRenderer the lazily created naming renderer
+---@param subject table<string, unknown>
+function FieldPresentationResources:preparePokemonNamingSubject(subject)
+  local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
+  if self.namingIconQuads[iconKey] ~= nil then
+    return
+  end
+  local icons = assert(self.monIconProvider, "field presentation owns the mon icon provider")
+  local dimensions = icons:dimensions(iconKey)
+  assert(dimensions.width == 32 and dimensions.height == 32, "Pokemon naming icon frames use the 32x32 source surface")
+  local naming = assert(self.uiManifest and self.uiManifest.namingScreen, "field UI naming manifest is unavailable")
+  local frames = assert(naming.pokemonSubject and naming.pokemonSubject.frames, "Pokemon naming frames are unavailable")
+  local prepared = {}
+  for _, frame in ipairs(frames) do
+    prepared[frame.iconFrame] = icons:quadFor(iconKey, frame.iconFrame)
+  end
+  self.namingIconQuads[iconKey] = prepared
+end
+
+---@return NamingScreenRenderer the renderer prepared during field resource construction
 function FieldPresentationResources:pokemonNamingRenderer()
-  if self.namingRenderer ~= nil then
-    return self.namingRenderer
-  end
-  local graphics = assert(love and love.graphics, "Pokemon naming renderer requires graphics")
-  local cacheFs = assert(self.cacheFs, "field presentation owns its cache filesystem")
-  local function drawSubject(hostGraphics, subject, rect)
-    local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
-    local icons = assert(self.monIconProvider, "field presentation owns the mon icon provider")
-    local dimensions = icons:dimensions(iconKey)
-    local scale = math.min(rect.width / dimensions.width, rect.height / dimensions.height)
-    hostGraphics.draw(
-      icons:image(),
-      icons:quadFor(iconKey),
-      rect.x + (rect.width - dimensions.width * scale) / 2,
-      rect.y + (rect.height - dimensions.height * scale) / 2,
-      0,
-      scale,
-      scale
-    )
-  end
-  local function imageLoader(path)
-    local bytes = assert(cacheFs:read(path), "missing generated naming image " .. path)
-    return graphics.newImage(love.filesystem.newFileData(bytes, path))
-  end
-  self.namingRenderer = NamingScreenRenderer.new({
-    graphics = graphics,
-    text = assert(self.textRenderer, "field text renderer is unavailable"),
-    drawSubject = drawSubject,
-    manifest = assert(self.uiManifest, "field UI manifest is unavailable"),
-    imageLoader = imageLoader,
-  })
-  return self.namingRenderer
+  return assert(self.namingRenderer, "field presentation owns no Pokemon naming renderer")
 end
 
 -- Draws the current application through its registered presenter. The map is
@@ -377,6 +390,7 @@ function FieldPresentationResources:dispose()
     self.namingRenderer:dispose()
     self.namingRenderer = nil
   end
+  self.namingIconQuads = {}
   if self.monIconProvider then
     self.monIconProvider:release()
     self.monIconProvider = nil

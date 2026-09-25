@@ -186,6 +186,7 @@ local function buildDoubles(sink, calls)
     },
     ["libs.hgss.src.ui.NamingScreenRenderer"] = {
       new = function(options)
+        calls.namingConstructed = (calls.namingConstructed or 0) + 1
         calls.namingDrawSubject = options.drawSubject
         return {
           dispose = function(_)
@@ -201,14 +202,14 @@ local function buildDoubles(sink, calls)
         local provider = releasable(calls, "icons")
         function provider:dimensions(iconKey)
           calls.iconDimensions = iconKey
-          return { width = 24, height = 24 }
+          return { width = 32, height = 32 }
         end
         function provider:image()
           calls.iconImage = (calls.iconImage or 0) + 1
           return "borrowed-icon-image"
         end
-        function provider:quadFor(iconKey)
-          calls.iconQuad = iconKey
+        function provider:quadFor(iconKey, frameIndex)
+          calls.iconQuad = { iconKey = iconKey, frameIndex = frameIndex }
           return "borrowed-icon-quad"
         end
         return provider
@@ -233,7 +234,7 @@ end
 local function compositionRuntime()
   return {
     cacheFs = {},
-    uiManifest = {},
+    uiManifest = { namingScreen = { pokemonSubject = { frames = { { iconFrame = 1 }, { iconFrame = 1 } } } } },
     playerData = { options = { textFrame = 0 } },
     windowStyles = {},
     fieldEntranceIndicatorAsset = {
@@ -335,16 +336,19 @@ end
 function T.pokemon_naming_renderer_borrows_the_shared_mon_icons_and_owns_its_images()
   local sink, calls = {}, {}
   withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    Assert.equal(calls.namingConstructed, 1, "field resources prepare the naming renderer during construction")
     resources:pokemonNamingRenderer()
+    Assert.equal(calls.namingConstructed, 1, "the renderer accessor is a pure read")
+    resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
     local drawCalls = {}
     calls.namingDrawSubject({
       draw = function(image, quad, x, y, rotation, scaleX, scaleY)
         drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
       end,
-    }, { iconKey = "species:1:form:0" }, { x = 10, y = 20, width = 48, height = 24 })
+    }, { iconKey = "species:1:form:0" }, { x = 24, y = 8, frameIndex = 1 })
     Assert.equal(calls.iconDimensions, "species:1:form:0", "the naming subject resolves through shared mon icons")
     Assert.equal(calls.iconImage, 1, "the naming subject draws the shared provider image")
-    Assert.equal(calls.iconQuad, "species:1:form:0", "the naming subject draws the shared provider quad")
+    Assert.deepEqual(calls.iconQuad, { iconKey = "species:1:form:0", frameIndex = 1 })
     Assert.equal(#drawCalls, 1, "the naming subject draws one borrowed icon")
     Assert.equal(drawCalls[1][1], "borrowed-icon-image", "the icon image comes from the shared provider")
     Assert.equal(drawCalls[1][2], "borrowed-icon-quad", "the icon quad comes from the shared provider")

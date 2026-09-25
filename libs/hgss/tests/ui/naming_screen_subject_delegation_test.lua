@@ -83,7 +83,7 @@ local function canonicalLayout()
   }
 end
 
-local function snapshot(subject)
+local function snapshot(subject, presentation)
   local grid = {}
   for row = 1, 6 do
     grid[row] = {}
@@ -99,7 +99,7 @@ local function snapshot(subject)
     maxLength = 7,
     grid = grid,
     subject = subject,
-    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
+    presentation = presentation or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
   }
 end
 
@@ -111,8 +111,8 @@ function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegate
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
     text = textFake(),
-    drawSubject = function(hostGraphics, subject, rect)
-      seen[#seen + 1] = { graphics = hostGraphics, subject = subject, rect = rect }
+    drawSubject = function(hostGraphics, subject, placement)
+      seen[#seen + 1] = { graphics = hostGraphics, subject = subject, placement = placement }
     end,
     manifest = manifest,
     imageLoader = loader,
@@ -139,8 +139,12 @@ function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegate
   renderer:draw(snapshot(pokemonSubject), layout)
   Assert.equal(#seen, 1, "a Pokemon subject still draws through the host callback")
   Assert.deepEqual(seen[1].subject, pokemonSubject)
-  Assert.deepEqual(seen[1].rect, layout.subject)
-  Assert.isNil(seen[1].subject.gender, "a Pokemon subject carries no gender for the renderer to read")
+  Assert.deepEqual(seen[1].placement, { x = 24, y = 8, frameIndex = 1 })
+  renderer:draw(
+    snapshot(pokemonSubject, { subjectTick = 20, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 }),
+    layout
+  )
+  Assert.deepEqual(seen[2].placement, { x = 24, y = 2, frameIndex = 1 }, "the generated source offset follows its tick")
   Assert.equal(calls.push, calls.pop)
   Assert.equal(calls.scaled, 0)
   renderer:dispose()
