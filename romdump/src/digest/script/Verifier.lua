@@ -57,6 +57,7 @@ local BLOCKING_OPS = {
   ask_yes_no = true,
   context_choice = true,
   choose_starter = true,
+  pokemon_nickname_input = true,
   party_select = true,
   menu_exec = true,
   warp = true,

@@ -676,6 +676,17 @@ local function chooseStarter(_)
 end
 
 local function nicknameInput(ins)
+  local slot = Operands.operandValue(ins.operands[1])
+  if slot == 255 then
+    return {
+      op = "unsupported",
+      command = ins.opcode,
+      originalName = "ScrCmd_NicknameInput",
+      arguments = { slot, Operands.operandValue(ins.operands[2]) },
+      sourceOffset = ins.offset,
+      reason = "Bug Contest caught-Pokemon nickname target has no runtime storage owner",
+    }
+  end
   return {
     op = "pokemon_nickname_input",
     slot = Operands.varRef(ins.operands[1]),

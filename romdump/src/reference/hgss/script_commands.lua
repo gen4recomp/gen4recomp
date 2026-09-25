@@ -1202,6 +1202,7 @@ return {
       },
     },
     [173] = {
+      classification = "native_wait",
       name = "ScrCmd_NicknameInput",
       widths = {
         [1] = 2,
