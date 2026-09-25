@@ -1348,6 +1348,91 @@ local function playerOccupies(runtimeMap, candidate, facts)
   return false
 end
 
+---@param runtimeMap RuntimeFieldMap
+---@param actor FieldActorManager.Actor
+---@param direction FieldDirection
+---@param checkStepReachability boolean
+---@param probeWithoutStableSourceIdentity boolean
+---@return table<string, unknown>? endpoint
+---@return boolean blocked
+local function resolveAdjacentDestination(
+  runtimeMap,
+  actor,
+  direction,
+  checkStepReachability,
+  probeWithoutStableSourceIdentity
+)
+  local delta = assert(AUTONOMOUS_DELTAS[direction], "unknown actor direction " .. tostring(direction))
+  local state = actor:numericState()
+  local fieldX, fieldZ = state.fieldX + delta.x, state.fieldZ + delta.z
+  local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
+  local centerX, centerZ = localX + FieldCoordinates.TILE_CENTER_OFFSET, localZ + FieldCoordinates.TILE_CENTER_OFFSET
+  local sample
+  local blocked = false
+  if
+    runtimeMap.probePhysicalCell
+    and (probeWithoutStableSourceIdentity or (actor.cellKey ~= nil and state.hasSourceSurfaceId == 1))
+  then
+    local currentSourceSurfaceId = (state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil) --[[@as integer]]
+    local currentY = (state.hasWorldPosition == 1 and state.worldY or nil) --[[@as number]]
+    local probe = runtimeMap:probePhysicalCell(fieldX, fieldZ, {
+      currentCellKey = actor.cellKey,
+      currentSourceSurfaceId = currentSourceSurfaceId,
+      currentY = currentY,
+      fromFieldX = state.fieldX,
+      fromFieldZ = state.fieldZ,
+    })
+    if probe == nil then
+      return nil, true
+    end
+    assert(type(probe.collision) == "table", "physical probe collision facts are missing")
+    if checkStepReachability and probe.collision.blocked then
+      return nil, true
+    end
+    assert(probe.cellKey ~= nil and probe.sourceSurfaceId ~= nil, "physical probe stable surface identity is missing")
+    assert(type(probe.worldY) == "number", "physical probe world height is missing")
+    sample = {
+      surfaceId = probe.surfaceId,
+      cellKey = probe.cellKey,
+      sourceSurfaceId = probe.sourceSurfaceId,
+      worldY = probe.worldY,
+    }
+  else
+    blocked = runtimeMap.collision.isBlockedLocal ~= nil and runtimeMap.collision:isBlockedLocal(localX, localZ)
+    local surfaceOptions = {
+      localX = centerX,
+      localZ = centerZ,
+      currentY = state.hasWorldPosition == 1 and state.worldY or nil,
+      currentSurfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
+    }
+    if checkStepReachability then
+      surfaceOptions.crossing = {
+        fromX = (state.fieldX - runtimeMap.coordinateOrigin.x) + FieldCoordinates.TILE_CENTER_OFFSET,
+        fromZ = (state.fieldZ - runtimeMap.coordinateOrigin.z) + FieldCoordinates.TILE_CENTER_OFFSET,
+        toX = centerX,
+        toZ = centerZ,
+      }
+    end
+    sample = SurfaceResolver.new(runtimeMap.terrain):resolve(surfaceOptions)
+    local plate = assert(runtimeMap.terrain:plate(sample.surfaceId), "actor destination surface is missing")
+    sample.cellKey, sample.sourceSurfaceId = sourceIdentityFromPlate(plate)
+  end
+
+  local world = FieldCoordinates.fieldToWorld(runtimeMap, fieldX, fieldZ, sample.worldY)
+  return {
+    fieldX = fieldX,
+    fieldZ = fieldZ,
+    surfaceId = sample.surfaceId,
+    cellKey = sample.cellKey or cellKeyFor(fieldX, fieldZ),
+    sourceSurfaceId = sample.sourceSurfaceId,
+    worldX = world.x,
+    worldY = world.y,
+    worldZ = world.z,
+    resident = isResident(runtimeMap, fieldX, fieldZ),
+  },
+    blocked
+end
+
 ---@param self FieldActorManager
 ---@param entry FieldActorManager.Entry
 ---@param actor FieldActorManager.Actor
@@ -1358,9 +1443,6 @@ local function resolveAutonomousDestination(self, entry, actor, direction, conte
   local delta = assert(AUTONOMOUS_DELTAS[direction], "unknown autonomous direction " .. tostring(direction))
   local state = actor:numericState()
   local actorFieldX, actorFieldZ = state.fieldX, state.fieldZ
-  local actorWorldY = state.hasWorldPosition == 1 and state.worldY or nil
-  local actorSurfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil
-  local actorSourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil
   local fieldX, fieldZ = actorFieldX + delta.x, actorFieldZ + delta.z
   local event = actor.sourceEvent
   local xRange = assert(event.xRange, "actor source X range is required")
@@ -1373,52 +1455,16 @@ local function resolveAutonomousDestination(self, entry, actor, direction, conte
 
   local runtimeMap = entry.runtimeMap
   local ok, destination = pcall(function()
-    local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
-    local centerX, centerZ = localX + FieldCoordinates.TILE_CENTER_OFFSET, localZ + FieldCoordinates.TILE_CENTER_OFFSET
-    local sample
-    if runtimeMap.probePhysicalCell then
-      local probe = runtimeMap:probePhysicalCell(fieldX, fieldZ, {
-        currentCellKey = actor.cellKey,
-        currentSourceSurfaceId = actorSourceSurfaceId --[[@as integer]],
-        currentY = actorWorldY --[[@as number]],
-        fromFieldX = actorFieldX,
-        fromFieldZ = actorFieldZ,
-      })
-      if not probe or probe.collision.blocked then
-        return nil
-      end
-      sample = {
-        surfaceId = probe.surfaceId,
-        worldY = probe.worldY,
-        cellKey = probe.cellKey,
-        sourceSurfaceId = probe.sourceSurfaceId,
-      }
-    else
-      if runtimeMap.collision.isBlockedLocal and runtimeMap.collision:isBlockedLocal(localX, localZ) then
-        return nil
-      end
-      sample = SurfaceResolver.new(runtimeMap.terrain):resolve({
-        localX = centerX,
-        localZ = centerZ,
-        currentY = actorWorldY,
-        currentSurfaceId = actorSurfaceId,
-        crossing = {
-          fromX = (actorFieldX - runtimeMap.coordinateOrigin.x) + FieldCoordinates.TILE_CENTER_OFFSET,
-          fromZ = (actorFieldZ - runtimeMap.coordinateOrigin.z) + FieldCoordinates.TILE_CENTER_OFFSET,
-          toX = centerX,
-          toZ = centerZ,
-        },
-      })
-      local plate = assert(runtimeMap.terrain:plate(sample.surfaceId), "autonomous destination surface is missing")
-      sample.cellKey, sample.sourceSurfaceId = sourceIdentityFromPlate(plate)
+    local endpoint, blocked = resolveAdjacentDestination(runtimeMap, actor, direction, true, true)
+    if endpoint == nil or blocked then
+      return nil
     end
-    local plate = assert(runtimeMap.terrain:plate(sample.surfaceId), "autonomous destination surface is missing")
     local candidate = {
-      fieldX = fieldX,
-      fieldZ = fieldZ,
-      surfaceId = sample.surfaceId,
-      cellKey = sample.cellKey or plate.cellKey,
-      sourceSurfaceId = sample.sourceSurfaceId or plate.sourceSurfaceId,
+      fieldX = endpoint.fieldX,
+      fieldZ = endpoint.fieldZ,
+      surfaceId = endpoint.surfaceId,
+      cellKey = endpoint.cellKey,
+      sourceSurfaceId = endpoint.sourceSurfaceId,
     }
     if
       self:getCollisionAt(actor.mapId, candidate) ~= nil
@@ -1426,18 +1472,7 @@ local function resolveAutonomousDestination(self, entry, actor, direction, conte
     then
       return nil
     end
-    local world = FieldCoordinates.fieldToWorld(runtimeMap, fieldX, fieldZ, sample.worldY)
-    return {
-      fieldX = fieldX,
-      fieldZ = fieldZ,
-      surfaceId = sample.surfaceId,
-      cellKey = candidate.cellKey,
-      sourceSurfaceId = candidate.sourceSurfaceId,
-      worldX = world.x,
-      worldY = world.y,
-      worldZ = world.z,
-      resident = isResident(runtimeMap, fieldX, fieldZ),
-    }
+    return endpoint
   end)
   if not ok then
     if movementErrorIsBlocked(destination) then
@@ -2581,7 +2616,23 @@ function FieldActorManager:_resolveScriptedDestination(actor, direction, distanc
   local destCellKey = start.cellKey
   local destSourceSurfaceId = start.sourceSurfaceId
   local destResident = start.resident
-  if direction ~= nil and distance ~= "zero" then
+  if direction ~= nil and distance == nil then
+    local endpoint = resolveAdjacentDestination(entry.runtimeMap, actor, direction, false, false)
+    if endpoint == nil then
+      error(
+        Errors.new(
+          FieldErrors.FIELD_COORDINATES_OUT_OF_COVERAGE,
+          "scripted actor step has no physical destination",
+          { fieldX = startFieldX, fieldZ = startFieldZ, direction = direction }
+        )
+      )
+    end
+    destFieldX, destFieldZ = endpoint.fieldX, endpoint.fieldZ
+    destWorldX, destWorldY, destWorldZ = endpoint.worldX, endpoint.worldY, endpoint.worldZ
+    destSurfaceId = endpoint.surfaceId
+    destCellKey, destSourceSurfaceId = endpoint.cellKey, endpoint.sourceSurfaceId
+    destResident = endpoint.resident
+  elseif direction ~= nil and distance ~= "zero" then
     local delta = assert(deltaMap[direction], "unknown direction " .. tostring(direction))
     local step = 1
     if distance ~= nil then

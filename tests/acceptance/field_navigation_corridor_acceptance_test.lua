@@ -262,4 +262,43 @@ function T.tests.corridor_traverses_water_zone_streaming_grass_ledge_and_returns
   end)
 end
 
+function T.tests.route_29_physical_frontier_traversal_keeps_autonomous_actors_coherent()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local romFs, err = RomFs.open(versionId)
+  assert(romFs, tostring(err))
+  local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
+  romFs:close()
+  local game = AcceptanceHarness.new():boot({
+    versionId = versionId,
+    map = "MAP_NEW_BARK",
+    save = "fresh",
+  })
+  OpeningLifecycle.seedNewBarkWestExitScene(game)
+  OpeningLifecycle.settleNewBarkFriendScene(game)
+  local ok, failure = xpcall(function()
+    game:waitForFieldReady()
+    local route = game:moveTo(facts.zoneBoundary, 33)
+    Assert.equal(route.mapId, facts.route29.mapId)
+    game:waitForFieldReady()
+    local routeAnchor = assert(route.coverage, "Route 29 physical coverage status is required")
+    local far = game:moveTo(facts.far)
+    Assert.equal(far.mapId, facts.route29.mapId, "the route remains on Route 29")
+    local farCoverage = assert(far.coverage, "far Route 29 physical coverage status is required")
+    Assert.isTrue(
+      farCoverage.anchorX ~= routeAnchor.anchorX or farCoverage.anchorZ ~= routeAnchor.anchorZ,
+      "traversal to the far Route 29 cell crosses a physical coverage frontier"
+    )
+    Assert.equal(game.runtime.session.currentMap.mapId, facts.route29.mapId)
+    Assert.equal(game.runtime.actors.currentMapId, facts.route29.mapId)
+    Assert.equal(game.runtime.runtimeMap.mapId, facts.route29.mapId)
+    Assert.isNil(game.runtime.errorText, "autonomous actors must not fault during frontier traversal")
+    assertResident(far)
+    Assert.equal(game:renderAttempts(), 0, "navigation acceptance must stop before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(failure, 0)
+  end
+end
+
 return T

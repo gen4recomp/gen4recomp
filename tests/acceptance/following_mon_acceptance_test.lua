@@ -454,4 +454,81 @@ function T.tests.partner_crosses_new_bark_route_29_seam_without_stale_map_permis
   end
 end
 
+function T.tests.partner_trails_through_a_route_29_physical_frontier()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local romFs, err = RomFs.open(versionId)
+  assert(romFs, tostring(err))
+  local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
+  romFs:close()
+
+  local game = AcceptanceHarness.new():boot({
+    versionId = versionId,
+    map = "MAP_NEW_BARK",
+    save = "fresh",
+    fieldOptions = { recordingScriptHosts = true },
+  })
+  local ok, failure = xpcall(function()
+    OpeningLifecycle.seedNewBarkWestExitScene(game)
+    OpeningLifecycle.settleNewBarkFriendScene(game)
+    game:waitForFieldReady()
+    gift(game, "CHIKORITA")
+    waitForPartner(game)
+
+    game:moveTo(facts.zoneBoundary.approach)
+    game:face(facts.zoneBoundary.direction)
+    game:move(facts.zoneBoundary.direction)
+    game:advanceUntil("New Bark to Route 29 follower seam", function(snapshot)
+      return snapshot.mapId == facts.route29.mapId
+    end, 120)
+    game:waitForFieldReady()
+
+    local followingMon = assert(game.runtime.followingMon)
+    local id = assert(partnerId(game))
+    Assert.equal(id, "field:partner", "the follower keeps its stable actor identity")
+    local routeStart = game:snapshot()
+    local initialAnchorX = assert(routeStart.coverage).anchorX
+    local initialAnchorZ = routeStart.coverage.anchorZ
+    local crossedPhysicalFrontier = false
+    local followedSteps = 0
+    local originalDriveStep = game._driveStep
+    game._driveStep = function(self, direction, expected)
+      local before = self:snapshot()
+      local vacated = playerTile(before)
+      local driven, matched = originalDriveStep(self, direction, expected)
+      local after = self:snapshot()
+      if after.mapId == facts.route29.mapId and not sameTile(playerTile(after), vacated) then
+        local settled = self:advanceUntil("partner follows the vacated Route 29 tile", function(snapshot)
+          local actor = snapshot.actors[id]
+          return actor ~= nil
+            and actor.fieldX == vacated.fieldX
+            and actor.fieldZ == vacated.fieldZ
+            and followingMon:isMovementSettled()
+        end, 180)
+        Assert.notNil(settled.actors[id], "the same partner remains published after its step")
+        Assert.equal(settled.actors[id].fieldX, vacated.fieldX)
+        Assert.equal(settled.actors[id].fieldZ, vacated.fieldZ)
+        followedSteps = followedSteps + 1
+        local coverage = assert(settled.coverage, "physical coverage status is required")
+        crossedPhysicalFrontier = crossedPhysicalFrontier
+          or coverage.anchorX ~= initialAnchorX
+          or coverage.anchorZ ~= initialAnchorZ
+        assertNoFault(self, "while the partner trails across Route 29")
+      end
+      return driven, matched
+    end
+
+    local far = game:moveTo(facts.far)
+    Assert.equal(far.mapId, facts.route29.mapId, "the frontier route stays on Route 29")
+    Assert.isTrue(crossedPhysicalFrontier, "the route crosses a physical coverage frontier")
+    Assert.isTrue(followedSteps > 0, "the partner settles on vacated player tiles along the route")
+    Assert.equal(partnerId(game), "field:partner", "the same partner actor completes the route")
+    assertNoFault(game, "after reaching a Route 29 cell outside the original neighborhood")
+    Assert.equal(game:renderAttempts(), 0, "follower acceptance must stop before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(failure, 0)
+  end
+end
+
 return T
