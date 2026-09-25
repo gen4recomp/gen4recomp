@@ -11,10 +11,41 @@ local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local DoorTiles = require("libs.hgss.src.transition.DoorTiles")
+local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local MapProps = require("libs.hgss.src.world.MapProps")
 local ModelDoorMetadata = require("libs.hgss.src.world.ModelDoorMetadata")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+
+---@class LogicalFieldMap
+--- A scene-free semantic map acquisition: identity, zone, audio/script
+--- selection, interaction, transition, and coordinate fields from the
+--- structural world record plus the generated field record. It owns no
+--- scene, collision, terrain, door resolver, presentation runtime, or
+--- physical window; consumers needing those must use a fully realized map.
+---@field mapId integer
+---@field mapSymbol string
+---@field mapSection string
+---@field mapSectionNativeId integer exact numeric MAPSEC_* identity; never the header id
+---@field followMode string source map-header follow policy: ALLOW, HEIGHT_RESTRICT, or PREVENT
+---@field fieldData table<string, unknown>
+---@field cameraType integer
+---@field coordinateOrigin { x: integer, z: integer }
+---@field released boolean
+---@field release fun(self: LogicalFieldMap)
+---@field updateAnimated fun(self: LogicalFieldMap)
+---@field probePhysicalCell fun(self: LogicalFieldMap, fieldX: integer, fieldZ: integer): nil
+---@field syncPhysicalFields fun(self: RuntimeFieldMap|LogicalFieldMap)|nil semantic maps never set this hook; it stays nil
+--- The visual realization fields below are absent on a semantic map. They
+--- are declared optional so the absence is part of the type: only a fully
+--- realized map carries scene, collision, terrain, the door resolver,
+--- presentation runtime, or a physical window.
+---@field scene table<string, unknown>?
+---@field collision table<string, unknown>?
+---@field terrain TerrainSurface?
+---@field mapProps MapProps?
+---@field sceneRuntime table<string, unknown>?
+---@field coverage FieldCoverage?
 
 ---@class FieldMapLoader
 ---@field cacheFs CacheFs
@@ -55,7 +86,7 @@ FieldMapLoader.__index = FieldMapLoader
 ---@field probePhysicalCell fun(self: RuntimeFieldMap, fieldX: integer, fieldZ: integer, context: PhysicalProbeContext?): table<string, unknown>?|nil
 ---@field release fun(self: RuntimeFieldMap)
 ---@field updateAnimated fun(self: RuntimeFieldMap)
----@field syncPhysicalFields fun(self: RuntimeFieldMap)|nil
+---@field syncPhysicalFields fun(self: RuntimeFieldMap|LogicalFieldMap)|nil
 
 ---@param world table<string, unknown>
 ---@param idOrSymbol string|integer
@@ -136,6 +167,74 @@ local function releaseAggregate(runtimeMap)
   if runtimeMap.sceneRuntime then
     runtimeMap.sceneRuntime:release()
   end
+end
+
+-- Shared structural validation for both semantic and full acquisition: the
+-- generated world manifest is the sole source of map compatibility
+-- metadata. A stale world without the exact native section identity and
+-- source follow mode fails here; the header id is never a substitute.
+---@param record table<string, unknown>
+local function checkWorldIdentity(record)
+  local FOLLOW_MODES = { ALLOW = true, HEIGHT_RESTRICT = true, PREVENT = true }
+  if
+    type(record.mapSectionNativeId) ~= "number"
+    or record.mapSectionNativeId % 1 ~= 0
+    or record.mapSectionNativeId < 0
+    or record.mapSectionNativeId > 65535
+  then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_WORLD_INVALID,
+      "world manifest map section native identity is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+  if FOLLOW_MODES[record.followMode] ~= true then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_WORLD_INVALID,
+      "world manifest follow mode is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+end
+
+-- Shared generated field-record acquisition and validation for both
+-- semantic and full paths: identity, event collections, init scripts, and
+-- transition environment. Visual realization never revalidates these.
+---@param cacheFs CacheFs
+---@param record table<string, unknown>
+---@return table<string, unknown>
+local function loadSemanticFieldData(cacheFs, record)
+  local fieldData =
+    loadRequired(cacheFs, FieldMapDataCache.fieldPath(record.id), FieldErrors.FIELD_MAP_DATA_CACHE_MISSING)
+  if fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA or fieldData.mapId ~= record.id then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache identity or schema mismatch",
+      { mapId = record.id, schema = fieldData.schema }
+    )
+  end
+  if not FieldMapDataCache.hasRequiredEvents(fieldData.events) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache event collections are missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+  if not FieldMapDataCache.hasRequiredInitScripts(fieldData) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache initScripts array is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+  if not FieldMapDataCache.isTransitionEnvironment(fieldData.transitionEnvironment) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache transition environment is missing or malformed; rebuild the derived cache",
+      { mapId = record.id, transitionEnvironment = fieldData.transitionEnvironment }
+    )
+  end
+  return fieldData
 end
 
 -- The terrain artifact's source record is part of the map dependency identity
@@ -279,7 +378,13 @@ end
 
 function FieldMapLoader.new(cacheFs, world, options)
   assert(cacheFs and cacheFs.loadLua, "FieldMapLoader requires a CacheFs-shaped object")
-  assert(world and world.maps and world.byId and world.bySymbol, "world manifest required")
+  if not MapAssetCache.isStructuralWorld(world) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_WORLD_INVALID,
+      "world manifest is not a current structural world; rebuild the derived cache",
+      { schema = type(world) == "table" and world.schema or nil }
+    )
+  end
   options = options or {}
   local capacity = options.capacity or 4
   assert(capacity >= 1 and capacity == math.floor(capacity), "map capacity must be a positive integer")
@@ -324,6 +429,60 @@ function FieldMapLoader:_evict(skipMapId)
   end
 end
 
+-- Shared semantic acquisition for both logical and full paths: structural
+-- world validation, the semantic derived-asset readiness edge, and the
+-- validated generated field record. Reads no scene, collision, terrain,
+-- model, presentation, or physical resource.
+---@param record table<string, unknown>
+---@return table<string, unknown>
+function FieldMapLoader:_acquireSemantic(record)
+  checkWorldIdentity(record)
+  if self.derivedAssets then
+    self.derivedAssets.ensureLogicalField(record.id)
+  end
+  return loadSemanticFieldData(self.cacheFs, record)
+end
+
+-- Acquires the scene-free semantic map for logical residency: scripts,
+-- actors, zone identity, weather/audio selection, interactions, transition
+-- metadata, and world coordinates. Consults only the semantic readiness
+-- edge, never the full visual one, and caches nothing: every call
+-- reasserts readiness and builds a fresh semantic owner. The caller owns
+-- reuse; the loader's entry cache holds fully realized maps only.
+---@param idOrSymbol string|integer
+---@return LogicalFieldMap
+function FieldMapLoader:loadLogical(idOrSymbol)
+  assert(not self.released, "field map loader is released")
+  local record = worldRecord(self.world, idOrSymbol)
+  local fieldData = self:_acquireSemantic(record)
+  -- The coordinate origin comes from the structural world record alone:
+  -- the constructor rejects non-structural worlds, so the manifest origin
+  -- is always present and no visual scene fallback exists.
+  local originX, originZ = record.worldOriginX, record.worldOriginZ
+  local logicalMap = {
+    mapId = record.id,
+    mapSymbol = record.symbol,
+    mapSection = record.mapSection,
+    mapSectionNativeId = record.mapSectionNativeId,
+    followMode = record.followMode,
+    fieldData = fieldData,
+    cameraType = fieldData.cameraType,
+    coordinateOrigin = { x = originX, z = originZ },
+    released = false,
+  }
+  function logicalMap:release()
+    self.released = true
+  end
+  -- A semantic map owns no stepped presentation or neighbor state, but it
+  -- keeps the runtime-map fixed-tick and probe shape so resident maps stay
+  -- interchangeable where only semantic fields are consumed.
+  function logicalMap:updateAnimated() end
+  function logicalMap:probePhysicalCell(_, _)
+    return nil
+  end
+  return logicalMap
+end
+
 function FieldMapLoader:load(idOrSymbol, _)
   assert(not self.released, "field map loader is released")
   local record = worldRecord(self.world, idOrSymbol)
@@ -332,38 +491,13 @@ function FieldMapLoader:load(idOrSymbol, _)
     self:_touch(existing)
     return existing.runtimeMap
   end
+  local fieldData = self:_acquireSemantic(record)
   if self.derivedAssets then
     self.derivedAssets.ensureField(record.id)
   end
 
-  -- The generated world manifest is the sole source of map compatibility
-  -- metadata. A stale world without the exact native section identity and
-  -- source follow mode fails here; the header id is never a substitute.
-  local FOLLOW_MODES = { ALLOW = true, HEIGHT_RESTRICT = true, PREVENT = true }
-  if
-    type(record.mapSectionNativeId) ~= "number"
-    or record.mapSectionNativeId % 1 ~= 0
-    or record.mapSectionNativeId < 0
-    or record.mapSectionNativeId > 65535
-  then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_WORLD_INVALID,
-      "world manifest map section native identity is missing or malformed; rebuild the derived cache",
-      { mapId = record.id }
-    )
-  end
-  if FOLLOW_MODES[record.followMode] ~= true then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_WORLD_INVALID,
-      "world manifest follow mode is missing or malformed; rebuild the derived cache",
-      { mapId = record.id }
-    )
-  end
-
   local mapDir = MapAssetCache.mapDir(record.id)
   local scene = loadRequired(self.cacheFs, mapDir .. "/scene.lua", FieldErrors.FIELD_MAP_VISUAL_CACHE_MISSING)
-  local fieldData =
-    loadRequired(self.cacheFs, FieldMapDataCache.fieldPath(record.id), FieldErrors.FIELD_MAP_DATA_CACHE_MISSING)
   local terrainArtifact
   if scene.schema ~= MapAssetCache.SCENE_SCHEMA or scene.mapId ~= record.id then
     Errors.raise(
@@ -377,34 +511,6 @@ function FieldMapLoader:load(idOrSymbol, _)
       FieldErrors.FIELD_MAP_VISUAL_CACHE_INVALID,
       "scene neighbors record is missing or malformed; rebuild the derived cache",
       { mapId = record.id }
-    )
-  end
-  if fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA or fieldData.mapId ~= record.id then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
-      "field cache identity or schema mismatch",
-      { mapId = record.id, schema = fieldData.schema }
-    )
-  end
-  if not FieldMapDataCache.hasRequiredEvents(fieldData.events) then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
-      "field cache event collections are missing or malformed; rebuild the derived cache",
-      { mapId = record.id }
-    )
-  end
-  if not FieldMapDataCache.hasRequiredInitScripts(fieldData) then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
-      "field cache initScripts array is missing or malformed; rebuild the derived cache",
-      { mapId = record.id }
-    )
-  end
-  if not FieldMapDataCache.isTransitionEnvironment(fieldData.transitionEnvironment) then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
-      "field cache transition environment is missing or malformed; rebuild the derived cache",
-      { mapId = record.id, transitionEnvironment = fieldData.transitionEnvironment }
     )
   end
   if fieldData.cameraType ~= scene.cameraType then
@@ -572,15 +678,206 @@ function FieldMapLoader:load(idOrSymbol, _)
   return runtimeMap
 end
 
+-- Converts map-local coordinates into the global field domain normal
+-- loading uses. The structural world record carries the origin; the
+-- constructor rejects worlds without one, so no scene read happens here.
 ---@param idOrSymbol integer|string
----@return boolean
-function FieldMapLoader:request(idOrSymbol)
+---@param localX integer
+---@param localZ integer
+---@return { x: integer, z: integer }
+function FieldMapLoader:globalPosition(idOrSymbol, localX, localZ)
   assert(not self.released, "field map loader is released")
+  assert(type(localX) == "number" and localX % 1 == 0, "local x must be an integer")
+  assert(type(localZ) == "number" and localZ % 1 == 0, "local z must be an integer")
   local record = worldRecord(self.world, idOrSymbol)
-  if not self.derivedAssets then
+  local originX, originZ = record.worldOriginX, record.worldOriginZ
+  return { x = localX + originX, z = localZ + originZ }
+end
+
+-- Nonblocking location demand: requests the destination full field
+-- closure and, for a destination with physical cells, every valid
+-- descriptor in the existing radius-1 committed footprint. Every loadable
+-- map represented by those committed descriptors additionally enrolls its
+-- logical field closure at the caller's urgency (the destination reuses
+-- its own full closure instead), while non-destination maps enroll their
+-- full visual closure as near prefetch only. Performs no scene, terrain,
+-- or GPU acquisition. Returns ready/pending/error without blocking.
+---@param idOrSymbol integer|string
+---@param fieldX integer
+---@param fieldZ integer
+---@param urgency string
+---@return boolean
+---@return string|nil
+function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
+  assert(not self.released, "field map loader is released")
+  assert(type(fieldX) == "number" and fieldX % 1 == 0, "field x must be an integer")
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "field z must be an integer")
+  assert(type(urgency) == "string" and urgency ~= "", "location demand requires an urgency")
+  local record = worldRecord(self.world, idOrSymbol)
+  local host = self.derivedAssets
+  if host == nil then
     return true
   end
-  return self.derivedAssets.requestField(record.id)
+  local pending = false
+  local function consume(ready, failure)
+    if failure ~= nil then
+      return failure
+    end
+    if not ready then
+      pending = true
+    end
+    return nil
+  end
+  local mapFailure = consume(host.requestField(record.id, urgency))
+  if mapFailure ~= nil then
+    return false, mapFailure
+  end
+  -- The destination logical closure is requested explicitly, not only as a
+  -- session-side member of the full visual demand: synchronous acquisition
+  -- (load/loadLogical) asserts on the logical readiness edge, which only
+  -- exists once this request reaches the cache service.
+  local destinationFailure = consume(host.requestLogicalField(record.id, urgency))
+  if destinationFailure ~= nil then
+    return false, destinationFailure
+  end
+  local seen = {}
+  local matrix = record.matrix
+  if type(matrix) == "table" and type(matrix.memberId) == "number" then
+    if self.fieldCellIndex == nil then
+      local indexOk, indexOrError = pcall(loadFieldCellIndex, self.cacheFs)
+      if not indexOk then
+        return false, Errors.is(indexOrError) and Errors.format(indexOrError) or tostring(indexOrError)
+      end
+      self.fieldCellIndex = indexOrError
+    end
+    local anchorX, anchorZ = math.floor(fieldX / 32), math.floor(fieldZ / 32)
+    local committed = FieldCoverage.descriptorsAt(self.fieldCellIndex, matrix.memberId, anchorX, anchorZ)
+    for _, descriptor in ipairs(committed) do
+      local cellFailure = consume(host.requestCell(descriptor, urgency))
+      if cellFailure ~= nil then
+        return false, cellFailure
+      end
+    end
+    -- The committed footprint is also the logical residency closure:
+    -- every represented loadable map must be semantically ready before
+    -- the destination commits, because residency may publish it
+    -- immediately. Filler headers own cells but no logical map, so they
+    -- enroll nothing. Neighbor visuals stay opportunistic near prefetch:
+    -- their pending state or failure never gates the destination.
+    for _, descriptor in ipairs(committed) do
+      local header = descriptor.mapHeaderId
+      if type(header) == "number" and header % 1 == 0 and not seen[header] then
+        seen[header] = true
+        local headerId = math.floor(header)
+        if headerId ~= record.id and self:definesMap(headerId) then
+          local logicalFailure = consume(host.requestLogicalField(headerId, urgency))
+          if logicalFailure ~= nil then
+            return false, logicalFailure
+          end
+          host.requestField(headerId, "near")
+        end
+      end
+    end
+  end
+  -- Warp exits are one level of required-logical demand beyond the
+  -- represented set: an indoor footprint can never represent the outdoor
+  -- map its door reaches, yet ENVIRONMENT-mode warps read the destination
+  -- record synchronously at warp start. No transitive chase: when the
+  -- player arrives, that map's own record enrolls its exits in turn.
+  -- Warp visuals stay opportunistic near prefetch like neighbor visuals.
+  -- The record read is best-effort prewarming: when it is absent or
+  -- unreadable the represented closure still governs readiness, and
+  -- a corrupt record still fails loudly at load time.
+  local warpOk, destFieldData = pcall(function()
+    return self:_destinationFieldData(record.id)
+  end)
+  if warpOk and destFieldData ~= nil then
+    for _, warp in ipairs(destFieldData.events.warps) do
+      if type(warp) == "table" then
+        local destId = warp.destinationMapId
+        if type(destId) == "number" and destId % 1 == 0 then
+          local warpId = math.floor(destId)
+          if warpId ~= record.id and not seen[warpId] and self:definesMap(warpId) then
+            seen[warpId] = true
+            local warpFailure = consume(host.requestLogicalField(warpId, urgency))
+            if warpFailure ~= nil then
+              return false, warpFailure
+            end
+            host.requestField(warpId, "near")
+          end
+        end
+      end
+    end
+  end
+  if pending then
+    return false
+  end
+  return true
+end
+
+-- Nonblocking warp demand over already-loaded lightweight field data:
+-- resolves the destination coordinates through the shared warp selection
+-- and requests the destination closure as required. Returns
+-- ready/pending/error before resolution and preparation run.
+---@param sourceMap table<string, unknown>
+---@param warp table<string, unknown>
+---@return boolean
+---@return string|nil
+function FieldMapLoader:requestWarp(sourceMap, warp)
+  assert(not self.released, "field map loader is released")
+  assert(type(sourceMap) == "table", "warp demand requires the source map")
+  assert(type(warp) == "table", "warp demand requires the warp record")
+  if self.derivedAssets == nil then
+    return true
+  end
+  if type(warp.destinationMapId) ~= "number" or warp.destinationMapId % 1 ~= 0 then
+    return false, "warp destination map is missing"
+  end
+  -- The warp itself is the demand event for its destination: enroll the
+  -- destination logical closure before reading so a not-yet-compiled
+  -- record waits instead of failing. Indoor destinations are never matrix
+  -- neighbors, so no other closure can demand them.
+  local logicalReady, logicalFailure = self.derivedAssets.requestLogicalField(warp.destinationMapId, "required")
+  if logicalFailure ~= nil then
+    return false, logicalFailure
+  end
+  if not logicalReady then
+    return false
+  end
+  local fieldData, fieldError = self:_destinationFieldData(warp.destinationMapId)
+  if fieldData == nil then
+    return false, fieldError
+  end
+  local coordinatesOk, coordinatesOrError = pcall(WarpSystem.destinationCoordinates, sourceMap, warp, fieldData)
+  if not coordinatesOk then
+    return false, Errors.is(coordinatesOrError) and Errors.format(coordinatesOrError) or tostring(coordinatesOrError)
+  end
+  local coordinates = assert(coordinatesOrError)
+  return self:requestLocation(warp.destinationMapId, coordinates.fieldX, coordinates.fieldZ, "required")
+end
+
+-- Reads only the generated semantic field record needed to plan a warp
+-- destination. Like transitionEnvironment this never loads a scene,
+-- collision grid, terrain, or GPU resource.
+---@param mapId integer
+---@return table<string, unknown>?
+---@return string|nil
+function FieldMapLoader:_destinationFieldData(mapId)
+  local fieldData = self.cacheFs:loadLua(FieldMapDataCache.fieldPath(mapId))
+  if fieldData == nil then
+    -- Absent record file: the destination closure is still compiling, so
+    -- the warp waits. Corruption below still fails loudly.
+    return nil
+  end
+  if
+    type(fieldData) ~= "table"
+    or fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA
+    or fieldData.mapId ~= mapId
+    or not FieldMapDataCache.hasRequiredEvents(fieldData.events)
+  then
+    return nil, "destination field record is invalid; rebuild the derived cache"
+  end
+  return fieldData
 end
 
 -- Construct the session-owned physical window for an outdoor logical map.

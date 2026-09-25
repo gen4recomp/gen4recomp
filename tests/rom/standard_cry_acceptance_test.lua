@@ -12,6 +12,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "bootstrap" },
     tags = { "audio", "cry", "rom" },
   },
   tests = {},

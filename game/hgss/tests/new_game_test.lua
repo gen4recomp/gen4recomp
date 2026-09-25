@@ -68,7 +68,7 @@ local function newCandidate(service)
       mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
       fieldX = 6,
       fieldZ = 6,
-      sourceFacing = 1,
+      facing = "south",
     },
   })
 end
@@ -101,6 +101,25 @@ function T.new_candidate_uses_source_owned_opening_state()
   Assert.isNil(candidate.worldState.fishingRecord, "unowned retail buckets are not fabricated")
   Assert.equal(service.calls.publish, 0)
   Assert.equal(service.calls.save, 0)
+end
+
+function T.normalized_location_rejects_legacy_source_direction_inputs()
+  local service = reservationService()
+  for _, mapIdentity in ipairs({
+    { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6, sourceFacing = 1 },
+    { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6, facing = 1 },
+    { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6, facing = "up" },
+    { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+  }) do
+    local ok = pcall(NewGame.createCandidate, {
+      saveService = service,
+      versionId = "heartgold",
+      eventState = FieldEventState.new(),
+      scriptSymbols = FieldScriptSymbols,
+      mapIdentity = mapIdentity,
+    })
+    Assert.isFalse(ok, "candidate construction must not interpret raw source directions")
+  end
 end
 
 function T.real_store_reservation_creates_an_unpublished_candidate()

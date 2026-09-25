@@ -10,7 +10,11 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_cache" }, tags = { "field", "corridor", "navigation" } },
+  metadata = {
+    capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "map:33", "map:60" },
+    tags = { "field", "corridor", "navigation" },
+  },
   tests = {},
 }
 

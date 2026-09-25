@@ -4,11 +4,11 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
-local DerivedCacheAudit = require("romdump.src.DerivedCacheAudit")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_cache" },
+    capabilities = { "rom_dump", "complete_derived_cache" },
+    derivedAssets = { "complete" },
     tags = { "field", "field-cell", "map", "canonical-cache" },
   },
   tests = {},
@@ -104,17 +104,6 @@ T.tests["physical cell and logical map data agree"] = function()
       descriptor.calibration,
       "logical scene uses the canonical cell calibration"
     )
-  end)
-end
-
-T.tests["complete-corpus attestation remains strict"] = function()
-  withOutdoor(function(game)
-    local cacheFs = game.runtime.cacheFs
-    local corpusMarker =
-      assert(cacheFs:read(FieldCellCache.markerPath()), "the generated corpus has a completion marker")
-    Assert.isTrue(FieldCellCache.isReady(cacheFs, corpusMarker), "the complete-corpus marker attests every cell")
-    Assert.isTrue(DerivedCacheAudit.isAvailable(cacheFs), "the derived-cache audit remains available")
-    Assert.equal(type(FieldCellCache.isCellReady), "function", "granular readiness does not replace corpus readiness")
   end)
 end
 

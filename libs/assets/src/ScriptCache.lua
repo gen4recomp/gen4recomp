@@ -2,7 +2,10 @@
 -- corpus is one of the independently rebuildable derived classes (map
 -- geometry, actor visuals, messages/font, scripts): changing the script
 -- translator must not disturb the raw ROM dump or any compiled map.
--- The class is ready only when the completion marker matches exactly and
+-- Each immutable generation keeps its summary (index, provenance, coverage,
+-- marker) under a `metadata/` child and its member payloads under
+-- `members/`, so the summary can be published without replacing member
+-- artifacts. The class is ready only when the completion marker matches exactly and
 -- every indexed script file is present, so a partial build never reads as
 -- complete. Paths are cache-relative; all IO goes through a CacheFs.
 
@@ -69,24 +72,28 @@ function ScriptCache.generationDir(generation)
   return GENERATIONS_DIR .. "/" .. generation
 end
 
+function ScriptCache.generationMetadataDir(generation)
+  return ScriptCache.generationDir(generation) .. "/metadata"
+end
+
 function ScriptCache.generationIndexPath(generation)
-  return ScriptCache.generationDir(generation) .. "/index.lua"
+  return ScriptCache.generationMetadataDir(generation) .. "/index.lua"
 end
 
 function ScriptCache.generationProvenancePath(generation)
-  return ScriptCache.generationDir(generation) .. "/provenance.lua"
+  return ScriptCache.generationMetadataDir(generation) .. "/provenance.lua"
 end
 
 function ScriptCache.generationCoverageJsonPath(generation)
-  return ScriptCache.generationDir(generation) .. "/coverage.json"
+  return ScriptCache.generationMetadataDir(generation) .. "/coverage.json"
 end
 
 function ScriptCache.generationCoverageMdPath(generation)
-  return ScriptCache.generationDir(generation) .. "/coverage.md"
+  return ScriptCache.generationMetadataDir(generation) .. "/coverage.md"
 end
 
 function ScriptCache.generationMarkerPath(generation)
-  return ScriptCache.generationDir(generation) .. "/complete"
+  return ScriptCache.generationMetadataDir(generation) .. "/complete"
 end
 
 function ScriptCache.memberDir(generation, memberId)
@@ -99,6 +106,17 @@ end
 
 function ScriptCache.memberMarkerPath(generation, memberId)
   return ScriptCache.memberDir(generation, memberId) .. "/complete"
+end
+
+-- Canonical per-resource hashes published alongside one member: the writer
+-- stages this sidecar (validated there) before the member marker lands, so
+-- a member without it is an incompatible older artifact, never a ready one.
+ScriptCache.HASHES_SCHEMA = "g4-script-resource-hashes-v2"
+
+function ScriptCache.memberHashesPath(generation, memberId)
+  assert(isSafeGeneration(generation), "generation key must be lowercase hexadecimal")
+  assert(type(memberId) == "number" and memberId % 1 == 0 and memberId >= 0, "member id must be a non-negative integer")
+  return ScriptCache.memberDir(generation, memberId) .. "/resource-hashes.lua"
 end
 
 function ScriptCache.scriptPath(generation, memberId, id)
@@ -145,20 +163,106 @@ function ScriptCache.loadGenerationIndex(cacheFs, generation)
   return index
 end
 
+local function isSortedUniqueStrings(value)
+  if not Validate.isArray(value) then
+    return false
+  end
+  local previous
+  for _, entry in ipairs(value) do
+    if type(entry) ~= "string" or entry == "" then
+      return false
+    end
+    if previous ~= nil and previous >= entry then
+      return false
+    end
+    previous = entry
+  end
+  return true
+end
+
+-- True when the value is a well-formed per-member audio closure mapping:
+-- decimal member-id keys to sorted unique canonical sequence arrays.
+local function isMemberAudioMapping(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  for key, list in pairs(value) do
+    if type(key) ~= "string" or key == "" or tostring(tonumber(key)) ~= key then
+      return false
+    end
+    local memberId = tonumber(key)
+    if memberId == nil or memberId < 0 or memberId % 1 ~= 0 then
+      return false
+    end
+    if not isSortedUniqueStrings(list) then
+      return false
+    end
+  end
+  return true
+end
+
 local function resourceFilesReady(cacheFs, generation, index)
   if not Validate.isArray(index.resources) then
     return false
   end
+  -- Every planned member carries its transitive audio closure (possibly
+  -- empty) under its decimal id; a mapping without it belongs to an
+  -- incompatible older index, and a malformed list can never attest audio.
+  if not isMemberAudioMapping(index.memberAudioSequences) then
+    return false
+  end
+  local seenIds = {}
+  local seenMembers = {}
   for _, entry in ipairs(index.resources) do
     if type(entry) ~= "table" or type(entry.id) ~= "string" or entry.id == "" or type(entry.member) ~= "number" then
       return false
     end
+    -- Every indexed resource carries its published canonical hash; a
+    -- hashless entry belongs to an incompatible older index, and a repeated
+    -- id would attest the same resource twice.
+    if not Validate.isSha256Key(entry.resourceHash) then
+      return false
+    end
+    if seenIds[entry.id] then
+      return false
+    end
+    seenIds[entry.id] = true
+    seenMembers[entry.member] = true
     local script = cacheFs:loadModule(ScriptCache.scriptPath(generation, entry.member, entry.id))
     if type(script) ~= "table" or script.kind ~= "field_script" or script.id ~= entry.id then
       return false
     end
   end
+  for member in pairs(seenMembers) do
+    local closure = index.memberAudioSequences[tostring(member)]
+    if not isSortedUniqueStrings(closure) then
+      return false
+    end
+  end
   return true
+end
+
+-- The transitive audio closure for one script member: sorted unique
+-- canonical sequence symbols, possibly empty. Returns the list, or nil plus
+-- a cause when the index carries no usable closure for the member. No IO.
+---@param index table<string, unknown>
+---@param memberId integer
+---@return string[]|nil, string|nil
+function ScriptCache.audioSequencesForMember(index, memberId)
+  if type(index) ~= "table" or not isMemberAudioMapping(index.memberAudioSequences) then
+    return nil, "script member audio metadata is malformed"
+  end
+  if type(memberId) ~= "number" or memberId < 0 or memberId % 1 ~= 0 then
+    return nil, "script member identity is invalid: " .. tostring(memberId)
+  end
+  local closure = index.memberAudioSequences[tostring(memberId)]
+  if closure == nil then
+    return nil, "script member " .. tostring(memberId) .. " has no published audio closure"
+  end
+  if not isSortedUniqueStrings(closure) then
+    return nil, "script member " .. tostring(memberId) .. " audio closure is malformed"
+  end
+  return closure
 end
 
 -- True only if the marker is exact, the index loads with the expected schema,

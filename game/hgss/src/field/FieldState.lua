@@ -193,6 +193,7 @@ function FieldState:_advanceStarterPreparation()
   starter:advancePresentationPreparation({
     assetPreparation = runtime.assetPreparation,
     gxRenderer = assert(fieldRenderer.gxRenderer, "field graphics backend is unavailable"),
+    derivedAssets = runtime.derivedAssets,
   }, 1)
 end
 

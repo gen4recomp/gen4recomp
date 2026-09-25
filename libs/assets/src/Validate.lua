@@ -9,6 +9,7 @@ local Validate = {}
 ---@field isArray fun(value: unknown): boolean
 ---@field isNonNegativeInteger fun(value: unknown): boolean
 ---@field isSha1Key fun(value: unknown): boolean
+---@field isSha256Key fun(value: unknown): boolean
 
 -- True when `value` is a contiguous 1-based array (LuaWriter's array shape).
 -- Hash tables, zero-based tables, fractional keys, and holes are not arrays.
@@ -51,6 +52,15 @@ end
 ---@return boolean
 function Validate.isSha1Key(value)
   return type(value) == "string" and #value == 40 and value:match("^[0-9a-f]+$") ~= nil
+end
+
+-- True when `value` is a canonical resource hash: 64 lowercase hex
+-- characters (sha256 shape, as ScriptCacheWriter publishes per decoded
+-- script resource and the script index joins per entry).
+---@param value unknown
+---@return boolean
+function Validate.isSha256Key(value)
+  return type(value) == "string" and #value == 64 and value:match("^[0-9a-f]+$") ~= nil
 end
 
 return Validate

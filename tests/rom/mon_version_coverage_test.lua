@@ -101,4 +101,5 @@ end
 
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.derivedAssets = { "bootstrap" }
 return suite

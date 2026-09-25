@@ -61,8 +61,9 @@ deleting user state by construction.
   outside the cached value.
 - Keep temporary builder, sorter, scheduler, and queue bookkeeping local; do
   not attach scratch fields to caller-owned or shared objects.
-- Producer source fingerprints invalidate derived-cache implementation changes;
-  persisted contract versions describe formats and APIs, not compiler revisions.
+- Development producer-byte digests and explicit per-game release counters
+  identify the immutable cache generation; persisted contract versions
+  describe formats and APIs, not compiler revisions.
 
 ## Strict data and recovery
 

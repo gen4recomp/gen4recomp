@@ -303,4 +303,5 @@ end
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "derived_cache" }
+suite.metadata.derivedAssets = { "bootstrap" }
 return suite

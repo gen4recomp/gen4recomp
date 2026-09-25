@@ -263,7 +263,12 @@ local APP_ROMDUMP_IMPORTS = {
   ["romdump.src.source.GameVersion"] = true,
   ["romdump.src.source.RomImporter"] = true,
   ["romdump.src.build.InteractiveCacheBuild"] = true,
+  ["romdump.src.build.CompilerPool"] = true,
+  ["romdump.src.build.CacheControllerWorker"] = true,
+  ["romdump.src.DerivedCacheState"] = true,
+  ["romdump.src.FirstPlayCompletion"] = true,
   ["romdump.src.ProducerFingerprint"] = true,
+  ["romdump.src.config.DerivedCacheVersions"] = true,
 }
 
 local ROOT_FILE_PACKAGES = {
@@ -420,6 +425,7 @@ function T.app_cross_package_imports_match_exact_semantic_seams()
     { module = "game.hgss.src.HgssGame", allowed = true },
     { module = "romdump.src.source.GameVersion", allowed = true },
     { module = "romdump.src.source.RomImporter", allowed = true },
+    { module = "romdump.src.FirstPlayCompletion", allowed = true },
     { module = "romdump.src.ProducerFingerprint", allowed = true },
     { module = "game.hgss.src.field.FieldRuntime", allowed = false },
     { module = "game.hgss.src.field.FieldState", allowed = false },

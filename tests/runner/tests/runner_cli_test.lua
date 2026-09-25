@@ -35,7 +35,10 @@ function T.test_entrypoint_runs_the_incremental_builder_for_real_dependency_fres
   local script = handle:read("*a")
   handle:close()
 
-  contains(script, "love romdump/ --build-cache", "test entrypoint")
+  contains(script, "love romdump/ --import-rom", "test entrypoint")
+  contains(script, "love romdump/ --prepare-cache", "test entrypoint")
+  contains(script, "--preparation-record", "test entrypoint")
+  contains(script, "--dev", "test entrypoint")
   Assert.isNil(script:find("--check-derived-cache", 1, true))
 end
 
@@ -48,7 +51,9 @@ function T.test_tooling_uses_run_scoped_temporary_directories()
   local typecheckScript = handle:read("*a")
   handle:close()
 
-  contains(testScript, 'BUILD_LOG_DIR="$(mktemp -d)"', "test script")
+  contains(testScript, 'receipt_dir="$(mktemp -d -- "$test_root/preparation.XXXXXXXX")"', "test script")
+  contains(testScript, 'fresh_root="$(mktemp -d)"', "test script")
+  contains(testScript, 'run_dir="$(mktemp -d "${TMPDIR:-/tmp}/portemon-tests.XXXXXXXX")"', "test script")
   contains(typecheckScript, 'LUALS_LOG_DIR="$(mktemp -d)"', "typecheck script")
 end
 
@@ -144,34 +149,38 @@ function T.the_plan_mode_is_part_of_the_command_surface()
 end
 
 -- The plan the shell consumes is a machine-readable answer, not a second
--- parser: whether the derived cache must be prepared follows the suites
--- actually selected (a supplied source is always imported, whatever the
--- selection), and the response names the source path.
+-- parser: the preparation scope follows the exact requirement union of the
+-- suites actually selected, the response names the source path to import and
+-- the cold-rerun flag, and a listing never names a source to import.
 function T.the_plan_response_names_whether_the_cache_must_be_prepared()
-  local function fields(argv, caps, context)
+  local function fields(argv, requirements, context)
     local lines = {}
-    for _, line in ipairs(Cli.renderPlan(parse(argv, context), caps)) do
+    local requires = {}
+    for _, line in ipairs(Cli.renderPlan(parse(argv, context), nil, nil, requirements)) do
       local key, value = line:match("^([^=]+)=(.*)$")
       Assert.notNil(key, "every plan line is key=value: " .. line)
-      lines[key] = value
+      if key == "require" then
+        requires[#requires + 1] = value
+      else
+        lines[key] = value
+      end
     end
+    lines.requires = requires
     return lines
   end
 
-  Assert.equal(fields({}, {}).prepare, "0", "a selection without cache consumers skips preparation")
-  Assert.equal(fields({}, { derived_cache = true }).prepare, "1", "a selection using the cache prepares it")
-  Assert.equal(fields({ "--list" }, { derived_cache = true }).prepare, "0", "listing executes nothing")
-  Assert.equal(fields({ "--layer", "unit" }, {}).prepare, "0", "a selection without cache consumers skips preparation")
+  Assert.equal(fields({}, {}).prepare, "none", "a selection without cache consumers skips preparation")
+  Assert.equal(fields({}, {}, nil).fresh, "0", "a default run is not a cold rerun")
+  Assert.deepEqual(fields({}, {}).requires, {}, "no requirements means no require rows")
+  Assert.equal(fields({}, { "map:7" }).prepare, "assets", "a selection using the cache prepares its partial scope")
+  Assert.deepEqual(fields({}, { "map:7" }).requires, { "map:7" }, "the plan names the required closure")
   Assert.equal(
-    fields({ "--layer", "rom" }, { rom_dump = true }).prepare,
-    "0",
-    "a raw-dump-only selection skips preparation"
+    fields({}, { "complete", "map:7" }).prepare,
+    "complete",
+    "a selection requesting the whole corpus prepares it"
   )
-  Assert.equal(
-    fields({ "--layer", "rom" }, { rom_dump = true, derived_cache = true }).prepare,
-    "1",
-    "a cache-consuming selection prepares"
-  )
+  Assert.equal(fields({ "--list" }, { "map:7" }).prepare, "none", "listing executes nothing")
+  Assert.equal(fields({ "--layer", "rom" }, {}).prepare, "none", "a raw-dump-only selection skips preparation")
 
   local context = {
     fileExists = function(path)
@@ -179,9 +188,17 @@ function T.the_plan_response_names_whether_the_cache_must_be_prepared()
     end,
   }
   local sourced = fields({ "--layer", "unit", "--rom-source", "/roms/hg.nds" }, {}, context)
-  Assert.equal(sourced.prepare, "1", "a supplied source is always imported")
+  Assert.equal(sourced.prepare, "none", "a requirement-free selection prepares nothing")
   Assert.equal(sourced.rom_source, "/roms/hg.nds", "the plan names the source path")
+  Assert.equal(sourced.fresh, "0", "a sourced run without the cold flag is a reuse run")
   Assert.isNil(fields({}, {}, context).rom_source, "no source line when none was supplied")
+  Assert.isNil(
+    fields({ "--list", "--rom-source", "/roms/hg.nds" }, {}, context).rom_source,
+    "a listing names no source to import"
+  )
+  local cold = fields({ "--rom-source", "/roms/hg.nds", "--fresh" }, {}, context)
+  Assert.equal(cold.fresh, "1", "a cold rerun marks the plan")
+  Assert.equal(cold.rom_source, "/roms/hg.nds", "a cold rerun still names its source")
 end
 
 -- A RunnerRun-shaped result. `layers` maps a layer name to its
@@ -632,8 +649,8 @@ function T.narrow_unit_filter_plan_skips_derived_cache_preparation()
 
   Assert.equal(#listing, 1, "the filter selects only the unit suite")
   Assert.equal(
-    prepareOf(Cli.renderPlan(plan, selectedCapabilities(listing))),
-    "0",
+    prepareOf(Cli.renderPlan(plan, selectedCapabilities(listing), 1, TestRunner.selectedRequirements(listing))),
+    "none",
     "a unit-only selection skips preparation"
   )
 end
@@ -657,7 +674,7 @@ function T.raw_rom_focus_does_not_require_the_derived_cache()
 
   Assert.isTrue(caps.rom_dump == true, "the selection keeps rom_dump")
   Assert.isFalse(caps.derived_cache == true, "the selection omits derived_cache")
-  Assert.equal(prepareOf(Cli.renderPlan(plan, caps)), "0", "a raw-dump-only selection skips preparation")
+  Assert.equal(prepareOf(Cli.renderPlan(plan, caps, 1, {})), "none", "a raw-dump-only selection skips preparation")
 
   local run = runOf({ rom = { passed = 1 } }, { selectedCapabilities = { rom_dump = true } })
 
@@ -688,8 +705,8 @@ function T.listing_never_prepares_the_cache_even_for_slow_cache_consumers()
 
   Assert.equal(#listing, 1, "--list --slow exposes the slow cache consumer")
   Assert.equal(
-    prepareOf(Cli.renderPlan(plan, selectedCapabilities(listing))),
-    "0",
+    prepareOf(Cli.renderPlan(plan, selectedCapabilities(listing), 1, TestRunner.selectedRequirements(listing))),
+    "none",
     "a listing executes nothing, so it prepares nothing"
   )
 end
@@ -725,7 +742,8 @@ function T.generated_cache_consumers_declare_the_derived_cache()
       missing[#missing + 1] = name
     end
     local plan = parse({ "--filter", name })
-    if prepareOf(Cli.renderPlan(plan, caps)) ~= "1" then
+    local scope = prepareOf(Cli.renderPlan(plan, caps, 1, TestRunner.selectedRequirements(listing)))
+    if scope ~= "assets" and scope ~= "complete" then
       unprepared[#unprepared + 1] = name
     end
   end
@@ -738,7 +756,11 @@ function T.generated_cache_consumers_declare_the_derived_cache()
   local controlCaps = selectedCapabilities(control)
   Assert.isFalse(controlCaps.derived_cache == true, "a raw-dump-only control omits derived_cache")
   local controlPlan = parse({ "--filter", "field_messages_test" })
-  Assert.equal(prepareOf(Cli.renderPlan(controlPlan, controlCaps)), "0", "a raw-dump-only control skips preparation")
+  Assert.equal(
+    prepareOf(Cli.renderPlan(controlPlan, controlCaps, 1, TestRunner.selectedRequirements(control))),
+    "none",
+    "a raw-dump-only control skips preparation"
+  )
 end
 
 -- A tag focus is an explicit narrowing like a filter: under strict
@@ -801,7 +823,8 @@ function T.unfiltered_strict_run_with_no_executed_graphics_test_still_fails()
 end
 
 -- Raw field-message/font facts need no prepared cache, while the
--- cache-backed message sibling and the dialogue suite still prepare it.
+-- cache-backed message sibling and the dialogue suite prepare the complete
+-- corpus their historical capability name is granted from.
 function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_facts_prepare_it()
   local files = {
     ["fake/rom/field_messages_test.lua"] = require("tests.rom.field_messages_test"),
@@ -814,16 +837,27 @@ function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_
   local rawListing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = rawPlan.filter })
   Assert.equal(#rawListing, 1, "the raw message filter selects exactly its suite")
   local rawCaps = selectedCapabilities(rawListing)
-  Assert.equal(prepareOf(Cli.renderPlan(rawPlan, rawCaps)), "0", "a raw message focus skips cache preparation")
+  Assert.equal(
+    prepareOf(Cli.renderPlan(rawPlan, rawCaps, 1, TestRunner.selectedRequirements(rawListing))),
+    "none",
+    "a raw message focus skips cache preparation"
+  )
 
   local dialoguePlan = parse({ "--filter", "field_dialogue_test" })
   local dialogueListing =
     TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = dialoguePlan.filter })
   Assert.equal(#dialogueListing, 1, "the dialogue filter selects exactly its suite")
   Assert.equal(
-    prepareOf(Cli.renderPlan(dialoguePlan, selectedCapabilities(dialogueListing))),
-    "1",
-    "a cache-backed dialogue focus prepares the cache"
+    prepareOf(
+      Cli.renderPlan(
+        dialoguePlan,
+        selectedCapabilities(dialogueListing),
+        1,
+        TestRunner.selectedRequirements(dialogueListing)
+      )
+    ),
+    "complete",
+    "a cache-backed dialogue focus prepares the complete corpus it claims"
   )
 
   files["fake/rom/field_message_cache_test.lua"] = require("tests.rom.field_message_cache_test")
@@ -838,9 +872,11 @@ function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_
   })
   Assert.equal(#cacheListing, 1, "the cache message filter selects exactly its suite")
   Assert.equal(
-    prepareOf(Cli.renderPlan(cachePlan, selectedCapabilities(cacheListing))),
-    "1",
-    "a cache-backed message focus prepares the cache"
+    prepareOf(
+      Cli.renderPlan(cachePlan, selectedCapabilities(cacheListing), 1, TestRunner.selectedRequirements(cacheListing))
+    ),
+    "complete",
+    "a cache-backed message focus prepares the complete corpus it claims"
   )
 end
 
@@ -865,7 +901,132 @@ function T.slow_follower_producer_focus_needs_no_derived_cache()
   local caps = selectedCapabilities(listing)
   Assert.isTrue(caps.rom_dump == true, "the selection keeps rom_dump")
   Assert.isFalse(caps.derived_cache == true, "a raw producer selection omits derived_cache")
-  Assert.equal(prepareOf(Cli.renderPlan(plan, caps)), "0", "a raw producer selection skips preparation")
+  Assert.equal(
+    prepareOf(Cli.renderPlan(plan, caps, 1, TestRunner.selectedRequirements(listing))),
+    "none",
+    "a raw producer selection skips preparation"
+  )
+end
+
+-- An explicit cold rerun is only meaningful against a named source: asking
+-- for it without one is a usage error that names the missing source option.
+function T.fresh_mode_requires_an_explicit_source()
+  local plan, message = Cli.parse({ "--fresh" })
+
+  Assert.isNil(plan, "--fresh without a source must not parse")
+  Assert.isTrue(type(message) == "string" and #message > 0, "a rejected --fresh needs an actionable message")
+  Assert.isTrue(
+    tostring(message):find("--rom-source", 1, true) ~= nil,
+    "the failure must name the required source option, got: " .. tostring(message)
+  )
+  Assert.isNil(
+    tostring(message):find("unknown option", 1, true),
+    "the failure must state the source rule, not an unknown option, got: " .. tostring(message)
+  )
+end
+
+-- An explicit cold rerun alongside a source parses into the plan the shell
+-- consumes, keeping every other selector untouched.
+function T.fresh_mode_parses_alongside_an_explicit_source()
+  local context = {
+    fileExists = function(path)
+      return path == "/roms/hg.nds"
+    end,
+  }
+  local plan = parse({ "--rom-source", "/roms/hg.nds", "--fresh", "--filter", "dialogue" }, context)
+
+  Assert.equal(plan.romSource, "/roms/hg.nds")
+  Assert.isTrue(plan.fresh, "--fresh is recorded in the plan")
+  Assert.equal(plan.filter, "dialogue", "a fresh rerun keeps the remaining selectors")
+  Assert.isTrue(hasCapability(plan, "rom_source"), "--rom-source still requires the rom_source capability")
+end
+
+-- Suites declare the exact derived closures they need, so the runner can
+-- union only what the actual selection covers: a narrowed focus carries its
+-- own requirements while a hidden slow suite contributes nothing.
+function T.selected_suites_carry_their_declared_derived_requirements()
+  local corpus = FakeCorpus.new({
+    ["fake/rom/map_test.lua"] = {
+      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "map:7" } },
+      tests = { ["map case"] = function() end },
+    },
+    ["fake/rom/slow_audit_test.lua"] = {
+      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "complete" }, slow = true },
+      tests = { ["audit case"] = function() end },
+    },
+  })
+  local roots = { corpus:root("fake/rom", "rom") }
+
+  local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "map case" })
+
+  Assert.equal(#listing, 1, "the map filter selects exactly its suite")
+  Assert.deepEqual(listing[1].derivedAssets, { "map:7" }, "the selected suite keeps its declared closure")
+
+  local unfiltered = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load })
+
+  Assert.equal(#unfiltered, 1, "the fast tier hides the slow audit suite")
+  Assert.deepEqual(unfiltered[1].derivedAssets, { "map:7" }, "a hidden slow suite contributes no requirement")
+
+  local full = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, slow = true })
+
+  Assert.equal(#full, 2, "--slow exposes both suites")
+  local union = {}
+  for _, suite in ipairs(full) do
+    for _, requirement in ipairs(suite.derivedAssets) do
+      union[requirement] = true
+    end
+  end
+  Assert.isTrue(union["map:7"] == true, "the full union keeps the map closure")
+  Assert.isTrue(union["complete"] == true, "the full union keeps the complete request")
+end
+
+-- A selection that still uses the historical cache capability name requires
+-- the complete corpus explicitly: the historical capability is only ever
+-- granted as an alias of the verified complete proof, so planning must be
+-- truthful about what it prepares.
+function T.historical_cache_capability_selection_requires_the_complete_scope()
+  local plan = parse({ "--filter", "cache case" })
+  local caps = { rom_dump = true, derived_cache = true }
+  local lines = Cli.renderPlan(plan, caps, 1, { "map:7" })
+  local requires = {}
+  for _, line in ipairs(lines) do
+    local key, value = line:match("^([^=]+)=(.*)$")
+    if key == "require" then
+      requires[#requires + 1] = value
+    end
+  end
+  Assert.deepEqual(requires, { "complete", "map:7" }, "the historical name is planned as the complete scope")
+  Assert.equal(prepareOf(lines), "complete", "the historical name prepares the complete scope")
+end
+
+-- The requirement union is deduplicated and sorted so repeated runs of the
+-- same selection assemble identical preparation arguments.
+function T.selected_requirements_are_deduplicated_and_sorted()
+  local plan = parse({})
+  local lines = Cli.renderPlan(plan, nil, 1, { "map:7", "map:7", "bootstrap" })
+  local requires = {}
+  for _, line in ipairs(lines) do
+    local key, value = line:match("^([^=]+)=(.*)$")
+    if key == "require" then
+      requires[#requires + 1] = value
+    end
+  end
+  Assert.deepEqual(requires, { "bootstrap", "map:7" }, "the union is deduplicated and sorted")
+  Assert.equal(prepareOf(lines), "assets", "a partial union prepares its partial scope")
+end
+
+-- A malformed requirement never reaches preparation: the plan call fails
+-- before any import.
+function T.malformed_requirements_are_usage_failures_before_import()
+  local plan = parse({})
+  for _, bad in ipairs({ "", "plan.lua", "maps/7/complete", "map: 7", "map:7:extra", " :7" }) do
+    local ok, err = pcall(Cli.renderPlan, plan, nil, 1, { bad })
+    Assert.isFalse(ok, "requirement " .. string.format("%q", bad) .. " must not plan")
+    Assert.isTrue(
+      tostring(err):find("invalid cache requirement", 1, true) ~= nil,
+      "the failure names the requirement, got: " .. tostring(err)
+    )
+  end
 end
 
 return { tests = T }

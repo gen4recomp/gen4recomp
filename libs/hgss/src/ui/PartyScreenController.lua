@@ -469,6 +469,8 @@ end
 ---@field view PartyScreenController.View?
 ---@field cancellable boolean?
 ---@field layout PartyScreenLayoutResolved? resolved layout injected by the application state for hit testing and rendering
+---@field preparationState "pending"|"ready"|"failed"? icon preparation attached by the party application state, never the controller
+---@field preparationError string? visible preparation failure attached by the party application state
 ---@return PartyScreenController.Status
 function PartyScreenController:status()
   if self._closed then

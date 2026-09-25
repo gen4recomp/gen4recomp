@@ -608,4 +608,25 @@ function T.compilation_is_deterministic()
   Assert.deepEqual(first, second)
 end
 
+-- Generation audio planning binds the catalog plan and the sound identity
+-- to one archive observation: a single SDAT read yields the same plan the
+-- standalone planner returns plus the identity of those exact bytes.
+function T.source_planning_binds_plan_and_identity_to_one_archive_read()
+  local bytes = buildArchive()
+  local reads = 0
+  local romFs = fakeRomFs(bytes)
+  local realRead = romFs.readSourcePath
+  romFs.readSourcePath = function(self, path)
+    reads = reads + 1
+    return realRead(self, path)
+  end
+  local planned = assert(AudioCompiler.planSource(romFs))
+  Assert.equal(reads, 1, "plan and identity derive from one archive read")
+  local legacy = assert(AudioCompiler.plan(fakeRomFs(bytes)))
+  Assert.deepEqual(planned.plan, legacy, "source plan")
+  Assert.equal(planned.identity.sdatSha1, Hashing.sha1hex(bytes), "identity hashes the observed bytes")
+  Assert.equal(planned.identity.romSha1, "fake-rom-sha1", "identity carries the source ROM")
+  Assert.equal(planned.identity.sdatFileId, 123, "identity carries the archive file")
+end
+
 return { tests = T }

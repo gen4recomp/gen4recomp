@@ -13,9 +13,18 @@ local T = {}
 local flags = FieldScriptSymbols.flagsByName
 local vars = FieldScriptSymbols.variablesByName
 
-local function v2Artifact(overrides)
+local function initialLocation()
+  return {
+    mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+    fieldX = 6,
+    fieldZ = 6,
+    facing = "south",
+  }
+end
+
+local function v3Artifact(overrides)
   local base = {
-    schema = "g4-new-game-init-v2",
+    schema = "g4-new-game-init-v3",
     versionId = "heartgold",
     operations = {
       {
@@ -38,6 +47,7 @@ local function v2Artifact(overrides)
       { op = "set_flag", id = flags.FLAG_HIDE_NEW_BARK_FRIEND, symbol = "FLAG_HIDE_NEW_BARK_FRIEND" },
     },
     sourceDependency = { standardScriptMember = 149, sha1 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" },
+    initialLocation = initialLocation(),
   }
   if overrides then
     for k, v in pairs(overrides) do
@@ -87,7 +97,7 @@ function T.applying_startup_flags_preserves_finalized_player_and_fast_options()
   local seq = { 0x1111, 0x2222 }
   local idx = 0
   local result = NewGameInitialization.apply(candidate, {
-    artifact = v2Artifact(),
+    artifact = v3Artifact(),
     randomU16 = function()
       idx = idx + 1
       return seq[idx]
@@ -111,7 +121,7 @@ function T.applying_an_already_set_flag_is_idempotent()
   local seq = { 0x1234, 0x5678 }
   local i = 0
   local result = NewGameInitialization.apply(candidate, {
-    artifact = v2Artifact(),
+    artifact = v3Artifact(),
     randomU16 = function()
       i = i + 1
       return seq[i]
@@ -136,7 +146,7 @@ function T.lottery_draws_twice_writes_low_twice_and_leaves_high_untouched()
     return originalSetVar(self, id, value)
   end
   NewGameInitialization.apply(candidate, {
-    artifact = v2Artifact(),
+    artifact = v3Artifact(),
     randomU16 = function()
       calls = calls + 1
       if calls > 2 then
@@ -156,7 +166,7 @@ function T.invalid_random_returns_fail_before_state_write()
   local function checkInvalid(value)
     local candidate = finalizedCandidate()
     local ok = pcall(NewGameInitialization.apply, candidate, {
-      artifact = v2Artifact(),
+      artifact = v3Artifact(),
       randomU16 = function()
         return value
       end,
@@ -174,7 +184,7 @@ function T.operations_execute_in_order()
   local candidate = finalizedCandidate()
   local beforeFlag = flags.FLAG_HIDE_PLAYERS_ROOM_BRONZE_TROPHY
   local afterFlag = flags.FLAG_HIDE_PLAYERS_ROOM_SILVER_TROPHY
-  local artifact = v2Artifact({
+  local artifact = v3Artifact({
     operations = {
       { op = "set_flag", id = beforeFlag, symbol = "FLAG_HIDE_PLAYERS_ROOM_BRONZE_TROPHY" },
       {
@@ -214,7 +224,7 @@ function T.candidate_non_world_data_unchanged()
   local seq = { 0x0001, 0x0002 }
   local i = 0
   NewGameInitialization.apply(candidate, {
-    artifact = v2Artifact(),
+    artifact = v3Artifact(),
     randomU16 = function()
       i = i + 1
       return seq[i]
@@ -230,7 +240,7 @@ function T.lottery_persists_through_world_capture_and_game_save()
   local seq = { 0x1234, 0x5678 }
   local i = 0
   NewGameInitialization.apply(candidate, {
-    artifact = v2Artifact(),
+    artifact = v3Artifact(),
     randomU16 = function()
       i = i + 1
       return seq[i]
@@ -265,6 +275,75 @@ function T.lottery_persists_through_world_capture_and_game_save()
   local restored = WorldState.restore(validated.world)
   Assert.equal(restored:getVar(vars.VAR_LOTO_NUMBER_LO), 0x5678)
   Assert.equal(restored:getVar(vars.VAR_LOTO_NUMBER_HI), 0)
+end
+
+-- The generated initial-location accessor reads through the same strict
+-- artifact path as apply. The cache stub below is restored on every path,
+-- including assertion failure.
+local function withInitialLocationArtifact(artifactOrNil, fn)
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
+  local originalForVersion = CacheFs.forVersion
+  rawset(CacheFs, "forVersion", function(_)
+    local cacheFs = {}
+    function cacheFs.loadLua(_, path)
+      Assert.equal(path, NewGameInitCache.path())
+      return artifactOrNil
+    end
+    return cacheFs
+  end)
+  local ok, err = pcall(fn)
+  rawset(CacheFs, "forVersion", originalForVersion)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.initial_location_returns_the_generated_record()
+  local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+  Assert.notNil(NewGameInitialization.initialLocation, "the game owns a generated initial-location accessor")
+  withInitialLocationArtifact(v3Artifact(), function()
+    Assert.deepEqual(NewGameInitialization.initialLocation("heartgold"), initialLocation())
+  end)
+end
+
+function T.initial_location_returns_a_defensive_copy()
+  local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+  Assert.notNil(NewGameInitialization.initialLocation, "the game owns a generated initial-location accessor")
+  withInitialLocationArtifact(v3Artifact(), function()
+    local first = NewGameInitialization.initialLocation("heartgold")
+    first.fieldX = 999
+    first.facing = "north"
+    first.mapSymbol = "MAP_FAKE"
+    local second = NewGameInitialization.initialLocation("heartgold")
+    Assert.deepEqual(second, initialLocation())
+    Assert.isFalse(first == second, "each read returns a caller-owned table")
+  end)
+end
+
+function T.initial_location_rejects_stale_artifacts()
+  local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+  Assert.notNil(NewGameInitialization.initialLocation, "the game owns a generated initial-location accessor")
+  withInitialLocationArtifact({
+    schema = "g4-new-game-init-v2",
+    versionId = "heartgold",
+    operations = v3Artifact().operations,
+    sourceDependency = v3Artifact().sourceDependency,
+  }, function()
+    Assert.throws(function()
+      NewGameInitialization.initialLocation("heartgold")
+    end, "a stale artifact without the location must not read as current")
+  end)
+end
+
+function T.initial_location_fails_loudly_when_cache_is_cold()
+  local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+  Assert.notNil(NewGameInitialization.initialLocation, "the game owns a generated initial-location accessor")
+  withInitialLocationArtifact(nil, function()
+    Assert.throws(function()
+      NewGameInitialization.initialLocation("heartgold")
+    end, "a missing artifact must not read as a default location")
+  end)
 end
 
 return { tests = T }

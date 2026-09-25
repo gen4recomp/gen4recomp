@@ -8,6 +8,12 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local RomImporter = require("romdump.src.source.RomImporter")
 
+local function pageData(cache, manifest, pageId, label)
+  local page = assert(manifest.pages[pageId], label .. " page " .. pageId .. " must be declared")
+  local imageBytes = assert(cache:read(page.image), label .. " page image must be present: " .. page.image)
+  return love.image.newImageData(love.filesystem.newFileData(imageBytes, page.image))
+end
+
 local function opaquePixelCount(data, x, y, width, height)
   local count = 0
   for row = y, y + height - 1 do
@@ -82,8 +88,6 @@ local function starter_portraits_follow_source_row_layout(_, context)
       local cache = CacheFs.forVersion(versionId)
       local portraits =
         assert(cache:loadLua(MonCache.portraitManifestPath()), versionId .. " portrait manifest must load")
-      local imageBytes = assert(cache:read(portraits.image), versionId .. " portrait atlas must be present")
-      local data = love.image.newImageData(love.filesystem.newFileData(imageBytes, portraits.image))
       local romFs = assert(RomFs.open(versionId))
       for _, key in ipairs({ "CHIKORITA", "CYNDAQUIL", "TOTODILE" }) do
         local speciesId = assert(MonSources.speciesId(key), key .. " must be a known species")
@@ -97,6 +101,7 @@ local function starter_portraits_follow_source_row_layout(_, context)
         local unscanned = unscanSource(char.tiles, versionId .. " " .. key)
         local selector = MonCache.portraitSelector(key, 0, "male", false)
         local rect = assert(portraits.entries[selector], versionId .. " selector must resolve: " .. selector)
+        local data = pageData(cache, portraits, rect.pageId, versionId .. " " .. selector)
         Assert.equal(rect.width, PORTRAIT_CELL, versionId .. " " .. selector .. " stays 80 wide")
         Assert.equal(rect.height, PORTRAIT_CELL, versionId .. " " .. selector .. " stays 80 high")
         Assert.equal(#rect.frames, 2, versionId .. " " .. selector .. " keeps two frames")
@@ -143,9 +148,9 @@ local function starter_portraits_follow_source_row_layout(_, context)
             end
           end
         end
+        data:release()
       end
       romFs:close()
-      data:release()
     end
   end
   context = context -- capability is asserted by the runner
@@ -165,13 +170,17 @@ local function representative_selections_address_rendered_pixels(_, context)
       local portraits =
         assert(cache:loadLua(MonCache.portraitManifestPath()), versionId .. " portrait manifest must load")
       for _, manifest in ipairs({ icons, portraits }) do
-        local imageBytes = assert(cache:read(manifest.image), versionId .. " atlas must be present")
-        local data = love.image.newImageData(love.filesystem.newFileData(imageBytes, manifest.image))
         local checked = 0
+        local pages = {}
         for _, selector in ipairs(manifest.representative) do
           local rect = assert(manifest.entries[selector], versionId .. " selector must resolve: " .. selector)
-          Assert.isTrue(rect.x + rect.width <= data:getWidth(), "rectangle inside atlas width")
-          Assert.isTrue(rect.y + rect.height <= data:getHeight(), "rectangle inside atlas height")
+          local data = pages[rect.pageId]
+          if data == nil then
+            data = pageData(cache, manifest, rect.pageId, versionId .. " " .. selector)
+            pages[rect.pageId] = data
+          end
+          Assert.isTrue(rect.x + rect.width <= data:getWidth(), "rectangle inside page width")
+          Assert.isTrue(rect.y + rect.height <= data:getHeight(), "rectangle inside page height")
           Assert.isTrue(
             opaquePixelCount(data, rect.x, rect.y, rect.width, rect.height) > 0,
             versionId .. " " .. selector .. " must address visible pixels"
@@ -179,7 +188,9 @@ local function representative_selections_address_rendered_pixels(_, context)
           checked = checked + 1
         end
         Assert.isTrue(checked > 0, versionId .. " must check representative selections")
-        data:release()
+        for _, data in pairs(pages) do
+          data:release()
+        end
       end
       local catalog = assert(cache:loadLua(MonCache.catalogPath()), versionId .. " catalog must load")
       local actorIndex = assert(FieldActorCache.loadIndex(cache), versionId .. " field-actor index must load")
@@ -208,4 +219,5 @@ local suite = GraphicsSmoke.suite({
   starter_portraits_follow_source_row_layout = starter_portraits_follow_source_row_layout,
 })
 suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
+suite.metadata.derivedAssets = { "complete" }
 return suite

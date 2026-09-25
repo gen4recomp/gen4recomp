@@ -267,10 +267,18 @@ function FieldAudioController:enterZone(runtimeMap)
   end
 end
 
--- Pre-fade current BGM if destination map-header differs
+-- Pre-fade current BGM if destination map-header differs. When the destination
+-- field record is not yet available (sparse cache still compiling it), skip the
+-- cosmetic pre-fade; the commit path establishes destination music authoritatively.
 ---@param destinationMapId integer|string
 function FieldAudioController:beginWarp(destinationMapId)
   local destData = self._fieldDataForMap(destinationMapId)
+  if destData == nil then
+    -- Not-yet-compiled destination record: skip the cosmetic pre-fade;
+    -- the commit path establishes destination music authoritatively.
+    -- Corrupt records still fail loudly below.
+    return
+  end
   if type(destData) ~= "table" then
     error("missing field data for destination " .. tostring(destinationMapId))
   end

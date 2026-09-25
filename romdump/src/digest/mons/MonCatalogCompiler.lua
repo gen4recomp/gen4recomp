@@ -26,9 +26,7 @@ local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local charmap = require("romdump.src.reference.hgss.charmap")
-local Hashing = require("romdump.src.digest.Hashing")
 local MonCache = require("libs.assets.src.MonCache")
-local PngWriter = require("libs.assets.src.PngWriter")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 
 ---@class MonCatalogCompiler
@@ -931,103 +929,6 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
     }
     must(MonAssetSchema.assertCatalog(catalog))
     return catalog
-  end)
-  if not ok then
-    if Errors.is(result) then
-      return nil, result
-    end
-    error(result, 0)
-  end
-  return result
-end
-
--- Compile the complete publishable class: catalog plus icon/portrait atlas
--- inputs, manifests, content hashes, and the completion marker. Every
--- catalog selector must resolve to a manifest entry before the bundle
--- leaves this function.
----@param romFs RomFs
----@param opts table<string, unknown>|nil
----@return table<string, unknown>|nil, Errors.Error|string|nil
-function MonCatalogCompiler.compileAll(romFs, opts)
-  opts = opts or {}
-  local catalog, err = MonCatalogCompiler.compileCatalog(romFs, opts)
-  if not catalog then
-    return nil, err
-  end
-  local ok, result = pcall(function()
-    local icons = must(MonPresentationCompiler.compileIcons(romFs, catalog))
-    local portraits = must(MonPresentationCompiler.compilePortraits(romFs, catalog))
-    must(MonAssetSchema.assertIconManifest(icons.manifest))
-    must(MonAssetSchema.assertPortraitManifest(portraits.manifest))
-    for speciesKey, species in pairs(catalog.species) do
-      for formId, form in pairs(species.forms) do
-        if icons.manifest.entries[form.icon] == nil then
-          error(
-            Errors.new("MON_MANIFEST_UNRESOLVED_SELECTOR", "icon selector has no manifest entry: " .. form.icon, {
-              species = speciesKey,
-              form = formId,
-              selector = form.icon,
-            }),
-            0
-          )
-        end
-        if portraits.manifest.entries[form.portrait] == nil then
-          error(
-            Errors.new("MON_MANIFEST_UNRESOLVED_SELECTOR", "portrait selector has no entry: " .. form.portrait, {
-              species = speciesKey,
-              form = formId,
-              selector = form.portrait,
-            }),
-            0
-          )
-        end
-      end
-    end
-    local catalogHash = Hashing.hashLua(catalog)
-    local iconPng = PngWriter.encode(icons.image.width, icons.image.height, icons.image.pixels)
-    local portraitPng = PngWriter.encode(portraits.image.width, portraits.image.height, portraits.image.pixels)
-    local iconHash = Hashing.sha1hex(iconPng)
-    local portraitHash = Hashing.sha1hex(portraitPng)
-    local index = {
-      schema = MonCache.INDEX_SCHEMA,
-      version = catalog.version,
-      catalogHash = catalogHash,
-      iconHash = iconHash,
-      portraitHash = portraitHash,
-      catalog = MonCache.catalogPath(),
-      icons = MonCache.iconImagePath(),
-      iconManifest = MonCache.iconManifestPath(),
-      portraits = MonCache.portraitImagePath(),
-      portraitManifest = MonCache.portraitManifestPath(),
-    }
-    must(MonAssetSchema.assertIndex(index))
-    local romSha1 = romFs:metadata().sha1
-    local marker = MonCache.marker(
-      romSha1,
-      Hashing.hashLua({
-        catalog = catalogHash,
-        icons = iconHash,
-        portraits = portraitHash,
-        iconManifest = Hashing.hashLua(icons.manifest),
-        portraitManifest = Hashing.hashLua(portraits.manifest),
-      })
-    )
-    return {
-      marker = marker,
-      index = index,
-      catalog = catalog,
-      icons = icons.image,
-      iconManifest = icons.manifest,
-      portraits = portraits.image,
-      portraitManifest = portraits.manifest,
-      iconPng = iconPng,
-      portraitPng = portraitPng,
-      provenance = {
-        schema = "g4-mon-provenance-v1",
-        source = MonSources.provenance,
-        rom = { version = catalog.version.id, sha1 = romSha1 },
-      },
-    }
   end)
   if not ok then
     if Errors.is(result) then

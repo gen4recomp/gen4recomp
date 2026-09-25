@@ -120,10 +120,25 @@
 -- map scene schema 10: Elm's Lab publishes the generated starter-ball model
 -- reference and its normalized runtime placement transforms.
 -- instead of raw HGSS movement selectors.
+--
+-- revision 11: prepared stages carry their generation, epoch, and canonical
+-- job identity, and each successful publication leaves a generation receipt
+-- beside the family output, so a receipt plus the family validator proves
+-- the current generation without recompiling.
+--
+-- revision 12: the audio runtime index is independently attestable before
+-- full audio completion. The audio catalog owns the index and its catalog
+-- completion; the family summary owns only exhaustive provenance and
+-- completion.
+--
+-- world schema 1: the world manifest is a structural catalog derived from
+-- source analysis alone. Membership means the source map is structurally
+-- loadable, never that its scene geometry compiled; every record carries the
+-- resolver-normalized world origin alongside its source identities.
 
 local DerivedAssetContract = {}
 
-DerivedAssetContract.revision = 10
+DerivedAssetContract.revision = 12
 
 DerivedAssetContract.map = {
   cacheFormat = "map-cache-v7",
@@ -137,6 +152,10 @@ DerivedAssetContract.map = {
   sceneSchema = "g4-map-scene-v10",
   terrainSchema = "g4-terrain-surfaces-v1",
   collisionVersion = 1,
+}
+
+DerivedAssetContract.world = {
+  schema = "g4-world-v1",
 }
 
 DerivedAssetContract.fieldCells = {
@@ -196,10 +215,23 @@ DerivedAssetContract.font = {
 }
 
 DerivedAssetContract.scripts = {
+  -- v7 carries the deterministic per-member transitive script-audio closure
+  -- (memberAudioSequences, keyed by decimal member id, possibly empty) and
+  -- the v2 member attestation sidecar with per-resource direct audio and
+  -- cross-script targets, so a sparse field can demand exactly the audio
+  -- its scripts reach; older generated script data rebuilds.
+  -- v6 keeps the v5 layout and requires every complete-index resource
+  -- entry to carry its canonical decoded-resource hash (published per
+  -- member beside the bodies, joined into the index by the summary), so a
+  -- hashless older index rebuilds instead of reading as ready.
+  -- v5 moves the generation summary (index, provenance, coverage, marker)
+  -- under a `metadata/` child of the generation directory, disjoint from
+  -- the `members/` payload roots, so one summary publication can own the
+  -- metadata directory plus the active selector without replacing members.
   -- v4 shards the generated corpus into immutable generations and member
   -- roots. The active selector is separate from the generation contents.
-  cacheFormat = "script-cache-v4",
-  indexSchema = "g4-script-index-v2",
+  cacheFormat = "script-cache-v5",
+  indexSchema = "g4-script-index-v4",
   provenanceSchema = "g4-script-provenance-v2",
 }
 
@@ -210,7 +242,9 @@ DerivedAssetContract.fieldWeather = {
 
 DerivedAssetContract.newGameInit = {
   cacheFormat = "g4-new-game-init-cache-v1",
-  schema = "g4-new-game-init-v2",
+  -- v3 carries the source-grounded initial player-room location alongside
+  -- the ordered startup operations; stale v2 artifacts rebuild.
+  schema = "g4-new-game-init-v3",
 }
 
 DerivedAssetContract.fieldEffects = {
@@ -245,17 +279,24 @@ DerivedAssetContract.starterChoice = {
 }
 
 -- The mon class carries the complete species/form/move/ability/growth
--- catalog plus the party-icon and portrait atlases with their selection
--- manifests. Following-mon drawable definitions stay in the field-actor
--- class; the catalog references field-actor visual IDs only. Item identity
--- lives in the item class, never here: v3 drops the former generated item
--- collection so item-only metadata changes never invalidate mon buckets.
+-- catalog plus the party-icon and portrait atlas pages with their selection
+-- manifests. The semantic catalog stages apart from pixels; one layout
+-- manifest per kind assigns every reachable selector to a bounded page, and
+-- each page stages as its own image. Following-mon drawable definitions stay
+-- in the field-actor class; the catalog references field-actor visual IDs
+-- only. Item identity lives in the item class, never here: v3 drops the
+-- former generated item collection so item-only metadata changes never
+-- invalidate mon buckets.
 DerivedAssetContract.mons = {
   cacheFormat = "mon-cache-v1",
   catalogSchema = "g4-mon-catalog-v3",
-  indexSchema = "g4-mon-index-v1",
-  iconManifestSchema = "g4-mon-icon-manifest-v1",
-  portraitManifestSchema = "g4-mon-portrait-manifest-v1",
+  -- v2 replaces the whole-atlas index with a page inventory: the index binds
+  -- the catalog hash to one marker per icon/portrait page.
+  indexSchema = "g4-mon-index-v2",
+  -- v2 replaces the single global image with per-page records: each selector
+  -- entry carries its zero-based page id and page-local rectangles.
+  iconManifestSchema = "g4-mon-icon-manifest-v2",
+  portraitManifestSchema = "g4-mon-portrait-manifest-v2",
 }
 
 -- The item class carries the source-independent item catalog (definitions,

@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local CacheBuilder = require("romdump.src.CacheBuilder")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local Errors = require("libs.errors.src.Errors")
-local FieldCameraCompiler = require("romdump.src.digest.field.FieldCameraCompiler")
+local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local IntroAssetCompiler = require("romdump.src.digest.newgame.IntroAssetCompiler")
 local RomFs = require("romdump.src.source.RomFs")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -33,7 +33,7 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   local originalOpen = RomFs.open
   local originalMatches = DerivedCacheState.matches
   local originalPublish = DerivedCacheState.publish
-  local originalCompile = FieldCameraCompiler.compile
+  local originalSessionNew = InteractiveCacheBuild.new
   RomFs.open = function(...)
     local openedRomFs, openErr = originalOpen(...)
     if openedRomFs ~= nil then
@@ -52,19 +52,28 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
     statePublished = true
     return originalPublish(...)
   end
-  local function failCamera()
-    return nil, Errors.new("DUMP_FAILURE", "acceptance-injected camera failure")
-  end
   rawset(DerivedCacheState, "matches", forceMismatch)
   rawset(DerivedCacheState, "publish", recordPublish)
-  rawset(FieldCameraCompiler, "compile", failCamera)
+  -- Compiler work runs in worker threads that never observe main-state
+  -- module patching, and the session constructor performs no ROM work, so
+  -- the failure is injected where the main-state pipeline actually pumps
+  -- the session: the generation session cannot borrow the ROM while the
+  -- identity probe already closed its own handle.
+  rawset(InteractiveCacheBuild, "new", function(options)
+    ---@cast options table<string, unknown>
+    local session = originalSessionNew(options)
+    rawset(session, "update", function()
+      error(Errors.new("ROMFS_LOAD_FAILED", "acceptance-injected source failure", {}), 0)
+    end)
+    return session
+  end)
   local ok, report, err = pcall(function()
     return CacheBuilder.buildVersions({ versionId }, { log = log })
   end)
   RomFs.open = originalOpen
+  rawset(InteractiveCacheBuild, "new", originalSessionNew)
   rawset(DerivedCacheState, "matches", originalMatches)
   rawset(DerivedCacheState, "publish", originalPublish)
-  rawset(FieldCameraCompiler, "compile", originalCompile)
 
   Assert.isTrue(ok, tostring(report))
   Assert.isNil(report)

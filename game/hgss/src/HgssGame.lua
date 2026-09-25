@@ -7,7 +7,10 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+local FirstPlayCachePreparation = require("game.hgss.src.newgame.FirstPlayCachePreparation")
+local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 local MainMenuState = require("game.hgss.src.menu.MainMenuState")
 local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -16,6 +19,8 @@ local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local RepoFs = require("game.src.RepoFs")
 local CacheFs = require("libs.storage.src.CacheFs")
 local DisplayContext = require("game.hgss.src.ui.DisplayContext")
+local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
+local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
@@ -25,7 +30,8 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 ---@field versionId string
 ---@field onExit fun(result: table<string, unknown>|nil)
 ---@field development boolean?
----@field derivedAssets table<string, function>?
+---@field derivedAssets table<string, function> semantic derived-asset host for gated field entry
+---@field fieldMapLoader table<string, unknown>? borrowed metadata-only loader for entry planning
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)? actual host surfaces for every entry route
 ---@field presentationOverrides table<string, table<string, unknown>>? per-case function overrides by application
 
@@ -65,12 +71,7 @@ local function newGameCandidate(saveStore, versionId)
     versionId = versionId,
     eventState = FieldEventState.new(),
     scriptSymbols = FieldScriptSymbols,
-    mapIdentity = {
-      mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
-      fieldX = 6,
-      fieldZ = 6,
-      sourceFacing = 1,
-    },
+    mapIdentity = NewGameInitialization.initialLocation(versionId),
     catalogLoader = loadMonCatalog,
     nowSeconds = os.time(),
   })
@@ -113,6 +114,11 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
   -- owned Main Menu and Oak routes receive the same inputs in their slices.
   local displayContext = DisplayContext.new({ topologyProvider = options.topologyProvider })
   local presentationOverrides = copyPresentationOverrides(options.presentationOverrides)
+  local derivedAssets = assert(options.derivedAssets, "HgssGame requires the derived-asset host")
+  local bootMenu -- forward: menu construction closes over the result router below
+  local function backToMenu()
+    game:setState(bootMenu())
+  end
   local function enterField(record, extraOptions)
     game:setState(FieldState.new(
       record,
@@ -122,14 +128,49 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
       })
     ))
   end
+  local function entryLoader()
+    -- The borrowed composition loader plans entry geometry; otherwise a
+    -- temporary metadata-only loader over the version cache. Planning
+    -- acquires no entries, scenes, or GPU resources through it.
+    if options.fieldMapLoader ~= nil then
+      return assert(options.fieldMapLoader)
+    end
+    local cacheFs = CacheFs.forVersion(versionId)
+    -- This factory runs once entry planning is ready, so a missing
+    -- manifest is a cache/preparation failure, not a manual prerequisite.
+    local world = assert(
+      cacheFs:loadLua(MapAssetCache.worldPath()),
+      "field world metadata is unavailable although entry planning is ready"
+    )
+    return FieldMapLoader.new(cacheFs, world, { derivedAssets = derivedAssets })
+  end
+  local function enterPreparation(preparationOptions)
+    game:setState(FieldPreparationState.new({
+      kind = preparationOptions.kind,
+      saveId = preparationOptions.saveId,
+      candidate = preparationOptions.candidate,
+      versionId = versionId,
+      derivedAssets = derivedAssets,
+      saveStore = saveStore,
+      createLoader = entryLoader,
+      enterField = enterField,
+      onCancel = backToMenu,
+    }))
+  end
 
   local function onOakComplete(result)
     assert(type(result) == "table" and result.playerData ~= nil, "Oak intro completed without a finalized game")
-    enterField(NewGameInitialization.apply(result), { initialFadeIn = true })
+    -- Initialization applies exactly once to the finalized candidate before
+    -- the handoff plans its field entry; waiting updates never apply it again.
+    enterPreparation({ kind = "newgame", candidate = NewGameInitialization.apply(result) })
   end
 
   local function bootOakIntro()
     local candidate = newGameCandidate(saveStore, versionId)
+    -- Speculative warmth for the later field handoff: the runtime closure
+    -- builds while the intro plays. Readiness is ignored here; the handoff
+    -- promotes the same work to required interest when it runs.
+    derivedAssets.requestMilestone("field-runtime", "near")
     game:setState(OakIntroComposition.compose({
       candidate = candidate,
       versionId = versionId,
@@ -143,30 +184,64 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
     if result.kind == "quit" then
       game:exit(result)
     elseif result.kind == "new_game" then
-      bootOakIntro()
+      -- New Game waits for its semantic intro closure: the candidate and
+      -- Oak composition run only inside the ready transfer, so a cold
+      -- partial cache shows preparation instead of missing-asset failure.
+      game:setState(NewGamePreparationState.new({
+        derivedAssets = derivedAssets,
+        onReady = bootOakIntro,
+        onCancel = backToMenu,
+      }))
     elseif result.kind == "continue" then
-      enterField(assert(result.game))
+      -- Continue is a save intent, not a loaded record: entry planning,
+      -- the field runtime, strict validation and location geometry gate
+      -- the transfer.
+      enterPreparation({ kind = "continue", saveId = assert(result.saveId) })
     end
   end
 
-  local width, height = love.graphics.getDimensions()
-  local versionCache = CacheFs.forVersion(versionId)
-  local menuText = FieldTextRenderer.new({ cacheFs = versionCache })
-  local rendererOk, menuRendererOrError = pcall(MainMenuRenderer.new, { text = menuText, versionId = versionId })
-  if not rendererOk then
-    menuText:release()
-    error(menuRendererOrError, 0)
+  local function makeMenuRenderer()
+    local versionCache = CacheFs.forVersion(versionId)
+    local menuText = FieldTextRenderer.new({ cacheFs = versionCache })
+    local rendererOk, menuRendererOrError = pcall(MainMenuRenderer.new, { text = menuText, versionId = versionId })
+    if not rendererOk then
+      menuText:release()
+      error(menuRendererOrError, 0)
+    end
+    return assert(menuRendererOrError)
   end
-  game:setState(MainMenuState.new({
-    saveStore = saveStore,
-    readyVersions = { versionId },
-    width = width,
-    height = height,
-    renderer = assert(menuRendererOrError),
-    onResult = onMenuResult,
-    displayContext = displayContext,
-    overrides = presentationOverrides ~= nil and presentationOverrides.main_menu or nil,
-  }))
+  function bootMenu()
+    return MainMenuState.new({
+      saveStore = saveStore,
+      readyVersions = { versionId },
+      width = game.drawableWidth,
+      height = game.drawableHeight,
+      renderer = makeMenuRenderer(),
+      onResult = onMenuResult,
+      displayContext = displayContext,
+      overrides = presentationOverrides ~= nil and presentationOverrides.main_menu or nil,
+    })
+  end
+
+  game:setState(bootMenu())
+  -- Speculative New Game warmth once the menu exists: the intro closure
+  -- prefetches at near, and choosing New Game later promotes the same
+  -- milestone to required. Readiness is ignored here; pending work simply
+  -- continues in the background.
+  derivedAssets.requestMilestone("new-game-intro", "near")
+end
+
+-- App-facing first-play preparation for the import path: builds
+-- the HGSS semantic-demand coordinator over the borrowed provisioner
+-- host. No milestone/location policy lives here; the coordinator owns
+-- which closures constitute first play. The optional completion gateway
+-- carries the durable attestation answers owned by the import
+-- orchestration boundary; the fresh-import path omits it and always
+-- compiles the closure.
+---@param options { versionId: string, derivedAssets: table<string, function>, completion: table<string, function>? }
+---@return FirstPlayCachePreparation
+function HgssGame.newFirstPlayCachePreparation(options)
+  return FirstPlayCachePreparation.new(options)
 end
 
 ---@param options HgssGameOptions

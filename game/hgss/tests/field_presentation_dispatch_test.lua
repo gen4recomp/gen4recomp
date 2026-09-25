@@ -31,6 +31,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.hgss.src.ui.TrainerCardRenderer",
   "libs.hgss.src.ui.PartyScreenRenderer",
   "libs.hgss.src.presentation.MonIconAssetProvider",
+  "libs.hgss.src.presentation.AssetPreparationQueue",
   "libs.hgss.src.presentation.ItemIconAssetProvider",
   "libs.hgss.src.presentation.FollowingMonTransitionRenderer",
 }
@@ -130,12 +131,14 @@ local function buildDoubles(sink, calls)
     },
     ["libs.hgss.src.ui.FieldTextRenderer"] = {
       new = function(_)
-        local instance = releasable(calls, "text")
-        function instance:drawText(_, _, _) end
-        function instance:windowBackgroundColor()
+        local text = releasable(calls, "text")
+        function text:drawText(content, x, y)
+          sink[#sink + 1] = { "text", content, x, y }
+        end
+        function text:windowBackgroundColor()
           return 0, 0, 0, 1
         end
-        return instance
+        return text
       end,
     },
     ["libs.hgss.src.presentation.FieldStaticEffectRenderer"] = {
@@ -188,6 +191,11 @@ local function buildDoubles(sink, calls)
         return releasable(calls, "itemIcons")
       end,
     },
+    ["libs.hgss.src.presentation.AssetPreparationQueue"] = {
+      new = function(_)
+        return releasable(calls, "queue")
+      end,
+    },
     ["libs.hgss.src.presentation.FollowingMonTransitionRenderer"] = {
       new = function(_)
         return disposable(calls, "transition")
@@ -200,7 +208,7 @@ end
 -- reads. Follower-transition composition stays disabled by leaving its
 -- definition and controller nil, the same as a definition-less composition.
 local function compositionRuntime()
-  return {
+  local runtime = {
     cacheFs = {},
     uiManifest = {},
     playerData = { options = { textFrame = 0 } },
@@ -220,6 +228,23 @@ local function compositionRuntime()
       setModelFactory = function(_, _) end,
     },
   }
+  runtime.iconDemands = {}
+  runtime.derivedAssets = {
+    requestIconPage = function(pageId, urgency)
+      runtime.iconDemands[#runtime.iconDemands + 1] = { pageId = pageId, urgency = urgency }
+      return true
+    end,
+  }
+  runtime.bindCalls = {}
+  runtime.unbindCalls = {}
+  runtime.bindPartyIconPreparation = function(_, prepare, cancel)
+    runtime.bindCalls[#runtime.bindCalls + 1] = { prepare = prepare, cancel = cancel }
+    return #runtime.bindCalls
+  end
+  runtime.unbindPartyIconPreparation = function(_, binding)
+    runtime.unbindCalls[#runtime.unbindCalls + 1] = binding
+  end
+  return runtime
 end
 
 ---@param viewport table?
@@ -395,6 +420,48 @@ function T.bag_routes_only_to_the_bag_presenter()
   end
 end
 
+function T.party_binding_installs_and_retires_with_presentation()
+  local sink, calls = {}, {}
+  local runtime = compositionRuntime()
+  withProductionComposition(sink, calls, runtime, function(resources)
+    Assert.equal(#runtime.bindCalls, 1, "presentation binds one party preparation pair before launch")
+    Assert.isTrue(
+      type(runtime.bindCalls[1].prepare) == "function" and type(runtime.bindCalls[1].cancel) == "function",
+      "the binding carries the provider prepare/cancel closures"
+    )
+    resources:dispose()
+    Assert.deepEqual(runtime.unbindCalls, { 1 }, "disposal unbinds the exact installed binding")
+    resources:dispose()
+    Assert.deepEqual(runtime.unbindCalls, { 1 }, "repeat disposal unbinds nothing again")
+  end)
+end
+
+function T.party_wait_renders_without_icon_getters()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    local frame = { x = 0, y = 0, width = 640, height = 480 }
+    resources:drawApplication(
+      FieldApplicationIds.POKEMON,
+      { preparationState = "pending", layout = { frame = frame } },
+      drawRuntime()
+    )
+    Assert.equal(#sink, 1, "the wait renders exactly one message")
+    Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
+    resources:drawApplication(
+      FieldApplicationIds.POKEMON,
+      { preparationState = "failed", preparationError = "boom", layout = { frame = frame } },
+      drawRuntime()
+    )
+    Assert.equal(#sink, 2, "the failure renders exactly one message")
+    Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
+    Assert.isTrue(
+      tostring(sink[2][2]):find("boom", 1, true) ~= nil,
+      "the failure message carries the preparation cause"
+    )
+    resources:dispose()
+  end)
+end
+
 function T.unknown_application_ids_fault_without_drawing()
   local sink, calls = {}, {}
   withProductionComposition(sink, calls, compositionRuntime(), function(resources)
@@ -493,6 +560,7 @@ function T.dispose_releases_owned_resources_exactly_once()
       Assert.equal(calls.terrain, 1, "repeat disposal never releases the terrain effect renderer twice")
       Assert.equal(calls.emote, 1, "repeat disposal never releases the emote renderer twice")
       Assert.equal(calls.pool, 2, "repeat disposal releases each asset pool once")
+      Assert.equal(calls.queue, 1, "repeat disposal releases the owned image queue exactly once")
     end)
   end)
   rawset(_G, "love", savedLove)

@@ -1,7 +1,7 @@
 -- Shared staging/publication lifecycle for generated cache artifacts. A writer
 -- stages every owned file under a disposable mirror (`staging/<version>/<name>/`,
 -- mirroring the live cache-relative layout), validates the staged result, and
--- only then publishes it: each owned live root is copied to an adjacent next
+-- only then publishes it: each owned live root is moved to an adjacent next
 -- sibling, each live root is moved aside, and the candidates are renamed into
 -- place. A publication failure leaves the previous live artifact untouched:
 -- staging never writes to the live tree, and a failed publish rolls every moved

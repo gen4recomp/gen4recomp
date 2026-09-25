@@ -6,6 +6,7 @@ local BagHeroRenderer = require("libs.hgss.src.presentation.BagHeroRenderer")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
@@ -27,8 +28,14 @@ local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetPro
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
 
+---@alias PartyIconPrepare fun(iconKeys: string[]): boolean, string?
+---@alias PartyIconCancel fun()
+
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
+---@field derivedAssets table<string, function>? semantic derived-asset host in presented composition
+---@field bindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, prepare: PartyIconPrepare, cancel: PartyIconCancel): integer? runtime party preparation binding in presented composition
+---@field unbindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer)? runtime preparation unbinding in presented composition
 ---@field uiManifest table<string, unknown>
 ---@field playerData table<string, unknown> the validated profile/options authority
 ---@field windowStyles FieldWindowStyles
@@ -51,6 +58,9 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
+---@field imageQueue AssetPreparationQueue? the one owned worker decoding party icon pages
+---@field _presentationRuntime FieldPresentationResourcesRuntime? borrowed runtime owning the party preparation binding
+---@field _partyIconBinding integer? installed preparation binding identity
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
@@ -110,6 +120,21 @@ end
 ---@return table<string, FieldPresentationApplicationPresenter>
 local function buildPresenters(owner)
   local function drawPokemon(presentation, _)
+    local state = presentation and presentation.preparationState
+    if state == "pending" or state == "failed" then
+      -- The party view is still preparing its icon pages: render the wait
+      -- or the failure through the text renderer without invoking icon
+      -- getters, so no draw ever acquires resources.
+      local layout = assert(presentation and presentation.layout, "the party application presents its layout")
+      local frame = assert(layout.frame, "the party layout carries its frame")
+      local text = assert(owner.textRenderer, "party text renderer is unavailable")
+      if state == "pending" then
+        text:drawText("Preparing party icons...", frame.x + 8, frame.y + 8)
+      else
+        text:drawText("Party icons unavailable: " .. tostring(presentation.preparationError), frame.x + 8, frame.y + 8)
+      end
+      return
+    end
     local status = assert(presentation, "the party application presents its status")
     local plan = assert(status.presentation, "the party application presents its plan")
     local hostGraphics = love and love.graphics
@@ -205,7 +230,22 @@ function FieldPresentationResources.new(runtime)
       text = textRenderer,
     })
     self.partyScreenRenderer = PartyScreenRenderer.new({ text = textRenderer })
-    self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs)
+    self.imageQueue = AssetPreparationQueue.new(runtime.cacheFs)
+    self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs, {
+      preparationQueue = self.imageQueue,
+      derivedAssets = assert(runtime.derivedAssets, "presented party icons require the semantic cache host"),
+    })
+    local provider = assert(self.monIconProvider, "party icon provider is unavailable")
+    local function preparePartyIcons(iconKeys)
+      return provider:prepareKeys(iconKeys)
+    end
+    local function cancelPartyIconPreparation()
+      provider:cancelPreparation()
+    end
+    self._presentationRuntime = runtime
+    local bindPreparation =
+      assert(runtime.bindPartyIconPreparation, "presented party icons require the runtime preparation binding")
+    self._partyIconBinding = bindPreparation(runtime, preparePartyIcons, cancelPartyIconPreparation)
     -- Bag presentation resolves eagerly beside the party icons: field entry
     -- boots only when the compiled item/bag caches are present, and the
     -- launch-time capability gate in the FieldRuntime bag factory still
@@ -336,6 +376,21 @@ function FieldPresentationResources:dispose()
   if self.monIconProvider then
     self.monIconProvider:release()
     self.monIconProvider = nil
+  end
+  local partyIconBinding = self._partyIconBinding
+  local presentationRuntime = self._presentationRuntime
+  self._partyIconBinding = nil
+  self._presentationRuntime = nil
+  if partyIconBinding ~= nil and presentationRuntime ~= nil then
+    local unbindPreparation = assert(
+      presentationRuntime.unbindPartyIconPreparation,
+      "the installed preparation binding requires its runtime unbinding"
+    )
+    unbindPreparation(presentationRuntime, partyIconBinding)
+  end
+  if self.imageQueue then
+    self.imageQueue:release()
+    self.imageQueue = nil
   end
   if self.itemIconProvider then
     self.itemIconProvider:release()

@@ -11,19 +11,23 @@ local U32 = require("libs.codec.src.U32")
 
 local NewGame = {}
 
-local SOURCE_FACING = {
-  [0] = "north",
-  [1] = "south",
-  [2] = "west",
-  [3] = "east",
+local FACING = {
+  north = true,
+  south = true,
+  west = true,
+  east = true,
 }
 
 local function assertMapIdentity(mapIdentity)
   assert(type(mapIdentity) == "table", "NewGame requires a source map identity")
+  local allowed = { mapSymbol = true, fieldX = true, fieldZ = true, facing = true }
+  for key in pairs(mapIdentity) do
+    assert(allowed[key] == true, "NewGame map identity has unknown key " .. tostring(key))
+  end
   assert(type(mapIdentity.mapSymbol) == "string", "NewGame map identity requires mapSymbol")
   assert(type(mapIdentity.fieldX) == "number" and mapIdentity.fieldX % 1 == 0, "NewGame fieldX must be an integer")
   assert(type(mapIdentity.fieldZ) == "number" and mapIdentity.fieldZ % 1 == 0, "NewGame fieldZ must be an integer")
-  assert(SOURCE_FACING[mapIdentity.sourceFacing] ~= nil, "NewGame source facing is invalid")
+  assert(FACING[mapIdentity.facing] == true, "NewGame facing must be a cardinal direction")
 end
 
 -- One-time opening generator seed: the Fowler-Noll-Vo hash (FNV-1) over the
@@ -111,7 +115,7 @@ function NewGame.createCandidate(options)
       mapSymbol = options.mapIdentity.mapSymbol,
       fieldX = options.mapIdentity.fieldX,
       fieldZ = options.mapIdentity.fieldZ,
-      facing = SOURCE_FACING[options.mapIdentity.sourceFacing],
+      facing = options.mapIdentity.facing,
     },
     profileDraft = { money = 3000 },
     options = PlayerData.defaultOptions(),

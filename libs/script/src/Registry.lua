@@ -5,9 +5,9 @@
 -- deterministic fingerprint used by save validation. Base layers may be
 -- installed as deferred placeholders (installBaseDeferred) that decode
 -- through an injected resource loader on first access, so a boot never
--- needs to decode the whole generated corpus; the warm-up pass can stash
--- per-resource fingerprint hashes (cacheScriptHash) that fingerprint()
--- consumes without decoding. The registry is sealed after load: the public
+-- needs to decode the whole generated corpus; published per-resource
+-- fingerprint hashes (cacheScriptHash, seeded by the loader from the cache
+-- index) let fingerprint() assemble the digest without decoding. The registry is sealed after load: the public
 -- install surface raises once sealed, while the post-load machinery
 -- (restoreFingerprint, cacheScriptHash, and the private `_load`
 -- memoization) stays live. Pure domain module: no love dependency.
@@ -190,10 +190,9 @@ function Registry:version()
   return self._version
 end
 
--- Preload the fingerprint memo from a validated keyed snapshot: the key
--- proves the registry content is what the digest was computed from. Valid
--- only while the registry is unmutated; any later install bumps `_version`
--- and the memo is recomputed from live content.
+-- Preload the fingerprint memo from a trusted digest of the current
+-- content: valid only while the registry is unmutated; any later install
+-- bumps `_version` and the memo is recomputed from live content.
 ---@param value string
 function Registry:restoreFingerprint(value)
   assert(type(value) == "string" and value ~= "", "restored fingerprint must be a non-empty string")

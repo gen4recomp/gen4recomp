@@ -73,6 +73,7 @@ local function publishedCache(versionId)
     FieldEmoteAssetCache.markerPath(),
     NewGameInitCache.markerPath(),
     FieldCellCache.markerPath(),
+    FieldCellCache.indexMarkerPath(),
     MonCache.markerPath(),
     ItemCache.markerPath(),
     BagCache.markerPath(),
@@ -96,13 +97,38 @@ local function backdropImage(bundle)
   return entry.image
 end
 
-function T.published_bundle_is_ready_and_audited(romFs, versionId)
+-- The smallest well-formed inventory the audit walk accepts; the starter
+-- fixtures below carry markers but no current receipts, so the walk
+-- refuses them before reaching any family payload.
+local function minimalPlans()
+  return {
+    indexBundle = { index = { matrices = {} } },
+    scriptPlan = { generationKey = string.rep("e", 40), members = {}, resources = {} },
+    messageBankIds = {},
+    audioBankIds = {},
+    scriptMemberIds = {},
+    iconPageIds = {},
+    portraitPageIds = {},
+    mapDataIds = {},
+    mapIds = {},
+  }
+end
+
+local function auditIdentity(versionId)
+  return { versionId = versionId, generationId = "current-generation", producerId = "starter-producer" }
+end
+
+function T.published_bundle_is_ready_but_never_sufficient_alone(romFs, versionId)
   local bundle = assert(compiler().compile(romFs))
   local cacheFs = publishedCache(versionId)
 
   Assert.isTrue(writer().write(cacheFs, bundle), "publication succeeds")
   Assert.isTrue(cache().isReady(cacheFs, bundle.marker), "the published family reads ready")
-  Assert.isTrue(DerivedCacheAudit.isAvailable(cacheFs), "the audit reports the published cache usable")
+  -- One published family is not a usable corpus: without current receipts
+  -- for the complete inventory the audit refuses the marker-only cache.
+  local available, reason = DerivedCacheAudit.isAvailable(cacheFs, auditIdentity(versionId), minimalPlans())
+  Assert.isFalse(available, "a single family never proves the whole corpus")
+  Assert.isTrue(reason ~= nil and reason ~= "", "a refused proof names its cause")
 end
 
 function T.missing_reference_or_stale_marker_is_not_ready(romFs, versionId)
@@ -121,12 +147,9 @@ function T.missing_reference_or_stale_marker_is_not_ready(romFs, versionId)
   Assert.isFalse(starter.isReady(fresh, "stale-marker"), "a stale marker is not ready")
 
   local audited = publishedCache(versionId)
-  local available, reason = DerivedCacheAudit.isAvailable(audited)
-  Assert.isFalse(available, "the audit requires the starter-choice family")
-  Assert.isTrue(
-    tostring(reason):find(starter.markerPath(), 1, true) ~= nil,
-    "the audit names the starter-choice marker: " .. tostring(reason)
-  )
+  local available, reason = DerivedCacheAudit.isAvailable(audited, auditIdentity(versionId), minimalPlans())
+  Assert.isFalse(available, "the audit requires the complete inventory, not markers")
+  Assert.isTrue(reason ~= nil and reason ~= "", "a refused proof names its cause")
 end
 
 function T.failed_publication_preserves_the_previous_ready_family(romFs, versionId)

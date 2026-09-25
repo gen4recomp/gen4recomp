@@ -71,13 +71,25 @@ function T.standard_fade_in_uses_the_reversed_recurrence_and_holds_its_terminal_
 end
 
 function T.transition_exposes_profile_presentation_state()
-  local transition = FieldTransition.new({ loader = {}, prepare = function() end, commit = function() end })
+  local transition = FieldTransition.new({
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
+    prepare = function() end,
+    commit = function() end,
+  })
   Assert.equal(type(transition.presentationStatus), "function")
 end
 
 function T.fixed_updates_do_not_mutate_the_source_fade()
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     resolveDestination = function()
       return { destinationMap = { mapId = 60 }, fieldX = 0, fieldZ = 0, surfaceId = 0, worldY = 0 }
     end,
@@ -99,6 +111,9 @@ local function recordingLoader()
   local protections = {}
   return {
     protections = protections,
+    requestWarp = function()
+      return true
+    end,
     protectMap = function(_, mapId, protected)
       protections[#protections + 1] = { mapId, protected }
     end,
@@ -134,6 +149,9 @@ function T.fades_loads_swaps_while_black_and_completes()
   local loader = {
     protectMap = function(_, mapId, protected)
       protections[#protections + 1] = { mapId, protected }
+    end,
+    requestWarp = function()
+      return true
     end,
   }
   local transition = FieldTransition.new({
@@ -242,6 +260,9 @@ function T.default_resolver_handles_direct_warp_records()
     load = function()
       return destination
     end,
+    requestWarp = function()
+      return true
+    end,
   }
   local transition = FieldTransition.new({
     loader = loader,
@@ -259,6 +280,98 @@ function T.default_resolver_handles_direct_warp_records()
   Assert.equal(transition.resolution.fieldZ, 392)
   Assert.equal(transition.resolution.destinationWarp.direct, true)
   Assert.deepEqual(transition.suppression, { mapId = 60, fieldX = 688, fieldZ = 392 })
+end
+
+-- A pending destination demand holds the covered transition: the source
+-- stays authoritative and input stays locked while compilation continues,
+-- and readiness runs the existing resolution/preparation/commit exactly
+-- once. A demand failure uses the existing abort path.
+function T.pending_destination_demand_holds_the_cover_until_ready()
+  local gate = "pending"
+  local prepares, commits = {}, {}
+  local loader = {
+    requestWarp = function()
+      if gate == "pending" then
+        return false
+      end
+      if gate == "error" then
+        return false, "destination closure failed"
+      end
+      return true
+    end,
+  }
+  local transition = FieldTransition.new({
+    loader = loader,
+    resolveDestination = function()
+      return {
+        destinationMap = { mapId = 60 },
+        fieldX = 684,
+        fieldZ = 393,
+        surfaceId = 0,
+        worldY = 0,
+        suppression = { mapId = 60, fieldX = 684, fieldZ = 393 },
+      }
+    end,
+    prepare = function(result)
+      prepares[#prepares + 1] = result
+      return {}
+    end,
+    commit = function(result, facing)
+      commits[#commits + 1] = { result = result, facing = facing }
+    end,
+  })
+  transition:start(
+    sourceMap(),
+    { warp = { index = 0, x = 4, z = 14, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  advanceTo(transition, "load_destination", 32)
+  for _ = 1, 10 do
+    step(transition)
+    Assert.equal(transition.phase, "load_destination", "pending demand holds the covered transition")
+    Assert.isTrue(transition.locked, "input stays locked while the destination compiles")
+  end
+  Assert.deepEqual(prepares, {}, "no preparation runs while the destination is pending")
+  Assert.deepEqual(commits, {}, "no commit runs while the destination is pending")
+  gate = "ready"
+  advanceTo(transition, "idle", 32)
+  Assert.equal(#prepares, 1, "readiness runs existing preparation exactly once")
+  Assert.equal(#commits, 1, "readiness commits exactly once")
+end
+
+function T.destination_demand_failure_aborts_with_source_ownership()
+  local transition = FieldTransition.new({
+    loader = {
+      requestWarp = function()
+        return false, "destination closure failed"
+      end,
+    },
+    resolveDestination = function()
+      error("resolution must not run before demand readiness", 0)
+    end,
+    prepare = function()
+      error("preparation must not run before demand readiness", 0)
+    end,
+    commit = function()
+      error("commit must not run before demand readiness", 0)
+    end,
+  })
+  transition:start(
+    sourceMap(),
+    { warp = { index = 0, x = 4, z = 14, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  advanceTo(transition, "idle", 32)
+  Assert.equal(transition.phase, "idle")
+  Assert.isFalse(transition.locked)
+  Assert.equal(tostring(transition.error), "destination closure failed")
+  Assert.isNil(transition.sourceMap, "aborted demand keeps no source reference")
+  Assert.deepEqual(transition.warpContext, {
+    sourceMapId = 61,
+    sourceWarpId = 0,
+    destinationMapId = 60,
+    destinationWarpId = 0,
+  })
 end
 
 -- A failed resolution aborts to a coherent idle state: unlocked, source
@@ -573,6 +686,9 @@ local function transitionFixture(opts)
         return destination
       end,
       protectMap = function() end,
+      requestWarp = function()
+        return true
+      end,
     }
   local swaps = {}
   local sounds = {}
@@ -1195,6 +1311,9 @@ function T.finish_does_not_touch_map_protection()
         error("release failed", 0)
       end
     end,
+    requestWarp = function()
+      return true
+    end,
   }
   local transition = FieldTransition.new({
     loader = loader,
@@ -1384,6 +1503,91 @@ end
 -- a valid "headless, no choreography" composition. It must not degrade to a
 -- plain fade while still emitting the door-open sound and completing the
 -- swap, because that observes audio without proving semantic door ingress.
+-- A door-kind warp from a scene-less active map waits for the source
+-- visual instead of failing door resolution: the wait locks the field
+-- without fading, and once the visual realizes the full source map
+-- resolves the door and the fade begins. A source visual failure aborts
+-- to idle before any ownership changes.
+function T.door_warp_from_a_sceneless_source_waits_for_its_visual()
+  local sourceDoor = doorStub()
+  local fullSource = { mapId = 61, scene = { type = "indoor" } }
+  local visualReady = false
+  local visualFailure = nil
+  local demands = {}
+  local loads = 0
+  local transition, source = transitionFixture({
+    loader = {
+      protectMap = function() end,
+      requestWarp = function()
+        return true
+      end,
+      derivedAssets = {
+        requestField = function(mapId, urgency)
+          demands[#demands + 1] = { mapId = mapId, urgency = urgency }
+          return visualReady, visualFailure
+        end,
+      },
+      load = function(_, mapId)
+        Assert.equal(mapId, 61, "the wait realizes the source visual")
+        if not visualReady then
+          error("field 61 is not ready", 0)
+        end
+        loads = loads + 1
+        return fullSource
+      end,
+    },
+    doorAt = function(runtimeMap)
+      if runtimeMap == fullSource then
+        return sourceDoor
+      end
+      return nil
+    end,
+    player = stubPlayer(),
+  })
+  Assert.isNil(source.scene, "the fixture source starts scene-less")
+  transition:start(source, makeTrigger("door", DOOR_WARP), "south")
+  Assert.equal(transition.phase, "await_source_visual", "a scene-less door source waits for its visual")
+  Assert.isTrue(transition.locked, "the visual wait locks the field")
+  Assert.equal(#demands, 1, "the wait enrolls the source visual once")
+  Assert.equal(demands[1].mapId, 61, "the wait names the source map")
+  Assert.equal(demands[1].urgency, "required", "the wait holds required urgency")
+  Assert.equal(transition.fadeAlpha, 0, "no fade starts while the visual is pending")
+  step(transition)
+  Assert.equal(transition.phase, "await_source_visual", "a pending visual keeps waiting")
+  Assert.equal(loads, 0, "no visual load runs while pending")
+  visualReady = true
+  step(transition)
+  Assert.equal(transition.phase, "fade_out", "the fade begins once the visual realizes")
+  Assert.equal(loads, 1, "the realized source loads exactly once")
+  Assert.equal(transition.sourceDoor, sourceDoor, "the realized source resolves its door")
+  Assert.equal(sourceDoor.opened, 1, "the source door opens at transition start")
+end
+
+function T.door_visual_wait_failure_aborts_before_ownership_changes()
+  local transition, source = transitionFixture({
+    loader = {
+      protectMap = function() end,
+      requestWarp = function()
+        return true
+      end,
+      derivedAssets = {
+        requestField = function()
+          return false, "injected visual failure"
+        end,
+      },
+      load = function()
+        error("no visual load runs behind a failed visual", 0)
+      end,
+    },
+    player = stubPlayer(),
+  })
+  local ok, err = pcall(transition.start, transition, source, makeTrigger("door", DOOR_WARP), "south")
+  Assert.isFalse(ok, "a failed source visual fails the warp loudly")
+  Assert.isTrue(string.find(tostring(err), "injected visual failure", 1, true) ~= nil, "the visual cause is preserved")
+  Assert.equal(transition.phase, "idle", "a failed visual wait returns to idle")
+  Assert.isFalse(transition.locked, "a failed visual wait releases the field")
+end
+
 function T.absent_door_resolver_is_a_data_contract_failure_not_a_synthetic_success()
   local transition, source, _, swaps, sounds = transitionFixture({ player = stubPlayer() })
   local ok, err = pcall(transition.start, transition, source, makeTrigger("door", DOOR_WARP), "north")

@@ -2,9 +2,15 @@
 -- options table naming exactly one command (`opts.command`), or nil when no
 -- command flag appears. Unknown options, stray arguments, missing option
 -- values, and a second command flag are rejected with a raise that main.lua
--- turns into a usage message and exit status 2. It holds no state and never
--- touches love, so main.lua can dispatch and the parser can be unit tested
--- off-runtime.
+-- turns into a usage message and exit status 2. `opts.dev` selects the
+-- development cache identity (hash of the producer working-tree bytes) for
+-- the build commands; without it the packaged CLI uses the release cache
+-- identity (the explicit per-game counter, no source reads). It holds no
+-- state and never touches love, so main.lua can dispatch and the parser can
+-- be unit tested off-runtime.
+
+local ArtifactState = require("romdump.src.build.ArtifactState")
+local GameVersion = require("romdump.src.source.GameVersion")
 
 local Cli = {}
 
@@ -13,8 +19,9 @@ local Cli = {}
 Cli.EXIT_USAGE = 2
 
 Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--forcedump <path>] [--build-cache [path]]"
-  .. " [--check-dump] [--check-derived-cache]"
-  .. " [--allow-compile-exclusions]"
+  .. " [--check-dump] [--check-derived-cache] [--probe-rom <path>]"
+  .. " [--prepare-cache --version <version> --require <request> [--require <request> ...] [--dev] [--profile <path>] [--preparation-record <path>] [--rebuild <job> ...]]"
+  .. " [--allow-compile-exclusions] [--dev]"
   .. " [--discover-app <overlay-id> --rom-source <path> [--output <path>]"
   .. " [--resource-detail <fileId>:<memberId>]...]"
 
@@ -28,6 +35,15 @@ local COMMAND_FLAGS = {
   ["--check-dump"] = "check-dump",
   ["--check-derived-cache"] = "check-derived-cache",
   ["--discover-app"] = "discover-app",
+  ["--probe-rom"] = "probe-rom",
+  ["--prepare-cache"] = "prepare-cache",
+}
+
+-- Closed preparation scopes: the fixed milestones plus the exhaustive scope.
+-- Anything else must be a canonical kind:key pair owned by ArtifactState.
+local SCOPES = {
+  bootstrap = true,
+  complete = true,
 }
 
 -- The value-taking flags require the next token to be a path, not another
@@ -61,9 +77,36 @@ local function parseOverlayId(argv, i, flag)
   return tonumber(raw)
 end
 
+-- Strict closed requirement grammar: a fixed scope word or a canonical
+-- kind:key pair validated through the kind/key owner. Signs, whitespace
+-- padding, paths, plan files, and unknown kinds are rejected here so a
+-- malformed request never reaches the cache.
+---@param text string
+---@param flag string cli flag naming the option under validation, used in diagnostics
+local function checkRequirement(text, flag)
+  if SCOPES[text] then
+    return
+  end
+  local kind, key = text:match("^([^:]+):(.+)$")
+  local valid = kind ~= nil and pcall(ArtifactState.path, kind, key)
+  if not valid then
+    error("invalid " .. flag .. " '" .. text .. "'\n" .. Cli.USAGE)
+  end
+end
+
+-- A rebuild selector is always one canonical job, never a scope word.
+---@param text string
+local function checkRebuild(text)
+  local kind, key = text:match("^([^:]+):(.+)$")
+  local valid = kind ~= nil and pcall(ArtifactState.path, kind, key)
+  if not valid then
+    error("invalid --rebuild '" .. text .. "'\n" .. Cli.USAGE)
+  end
+end
+
 -- argv: the array LÖVE passes to love.load.
 ---@param argv string[]|nil
----@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, overlayId: integer|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[] }
+---@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean, overlayId: integer|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[], version: string|nil, requirements: string[], rebuild: string[], profile: string|nil, preparationRecord: string|nil }
 function Cli.parse(argv)
   argv = argv or {}
 
@@ -72,9 +115,15 @@ function Cli.parse(argv)
     romPath = nil,
     forceDump = false,
     allowCompileExclusions = false,
+    dev = false,
     overlayId = nil,
     outputPath = nil,
     resourceDetails = {},
+    version = nil,
+    requirements = {},
+    rebuild = {},
+    profile = nil,
+    preparationRecord = nil,
   }
   local commandFlag = nil
   local sawRomSourceFlag = false
@@ -114,8 +163,40 @@ function Cli.parse(argv)
         setPath(path)
         i = i + 1
       end
+    elseif token == "--probe-rom" then
+      setCommand(token)
+      setPath(takePath(argv, i, token))
+      i = i + 1
+    elseif token == "--prepare-cache" then
+      setCommand(token)
+    elseif token == "--version" then
+      if opts.version then
+        error("duplicate --version: " .. opts.version .. "\n" .. Cli.USAGE)
+      end
+      opts.version = takeValue(argv, i, token)
+      i = i + 1
+    elseif token == "--require" then
+      opts.requirements[#opts.requirements + 1] = takeValue(argv, i, token)
+      i = i + 1
+    elseif token == "--rebuild" then
+      opts.rebuild[#opts.rebuild + 1] = takeValue(argv, i, token)
+      i = i + 1
+    elseif token == "--profile" then
+      if opts.profile then
+        error("duplicate --profile: " .. opts.profile .. "\n" .. Cli.USAGE)
+      end
+      opts.profile = takeValue(argv, i, token)
+      i = i + 1
+    elseif token == "--preparation-record" then
+      if opts.preparationRecord then
+        error("duplicate --preparation-record: " .. opts.preparationRecord .. "\n" .. Cli.USAGE)
+      end
+      opts.preparationRecord = takeValue(argv, i, token)
+      i = i + 1
     elseif token == "--allow-compile-exclusions" then
       opts.allowCompileExclusions = true
+    elseif token == "--dev" then
+      opts.dev = true
     elseif token == "--discover-app" then
       setCommand(token)
       opts.overlayId = parseOverlayId(argv, i, token)
@@ -175,6 +256,61 @@ function Cli.parse(argv)
     end)
   elseif sawRomSourceFlag or sawOutputFlag or #opts.resourceDetails > 0 then
     error("--rom-source/--output/--resource-detail require --discover-app\n" .. Cli.USAGE)
+  end
+
+  if opts.command == "prepare-cache" then
+    if opts.version == nil then
+      error("--prepare-cache requires --version\n" .. Cli.USAGE)
+    end
+    if GameVersion.VERSIONS[opts.version] == nil then
+      error("unsupported version '" .. opts.version .. "'\n" .. Cli.USAGE)
+    end
+    if #opts.requirements == 0 then
+      error("--prepare-cache requires at least one --require\n" .. Cli.USAGE)
+    end
+    for _, requirement in ipairs(opts.requirements) do
+      checkRequirement(requirement, "--require")
+    end
+    local allowsAnyJob = false
+    for _, requirement in ipairs(opts.requirements) do
+      if requirement == "complete" then
+        allowsAnyJob = true
+      end
+    end
+    for _, job in ipairs(opts.rebuild) do
+      checkRebuild(job)
+      if not opts.dev then
+        error("--rebuild requires --dev\n" .. Cli.USAGE)
+      end
+      local included = allowsAnyJob
+      if not included then
+        for _, requirement in ipairs(opts.requirements) do
+          if requirement == job then
+            included = true
+            break
+          end
+        end
+      end
+      if not included then
+        error("--rebuild '" .. job .. "' is not in --require\n" .. Cli.USAGE)
+      end
+    end
+  else
+    if opts.version ~= nil then
+      error("--version only applies to --prepare-cache\n" .. Cli.USAGE)
+    end
+    if #opts.requirements > 0 then
+      error("--require only applies to --prepare-cache\n" .. Cli.USAGE)
+    end
+    if #opts.rebuild > 0 then
+      error("--rebuild only applies to --prepare-cache\n" .. Cli.USAGE)
+    end
+    if opts.preparationRecord ~= nil then
+      error("--preparation-record only applies to --prepare-cache\n" .. Cli.USAGE)
+    end
+    if opts.profile ~= nil and opts.command ~= "build-cache" then
+      error("--profile only applies to --build-cache or --prepare-cache\n" .. Cli.USAGE)
+    end
   end
 
   return opts

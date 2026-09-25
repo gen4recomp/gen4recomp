@@ -8,6 +8,7 @@ local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 
 local T = {}
@@ -20,7 +21,14 @@ local function truncatedCollision()
 end
 
 local function fixture(mapCount)
-  local files, world = {}, { maps = {}, byId = {}, bySymbol = {} }
+  local files, world =
+    {}, {
+      schema = MapAssetCache.WORLD_SCHEMA,
+      maps = {},
+      byId = {},
+      bySymbol = {},
+      analysis = { mapHeaderCount = mapCount, excluded = {} },
+    }
   for mapId = 0, mapCount - 1 do
     local symbol = "MAP_" .. mapId
     local scene = {
@@ -52,8 +60,16 @@ local function fixture(mapCount)
       music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
       soundplates = {},
     }
-    world.maps[#world.maps + 1] =
-      { id = mapId, symbol = symbol, mapSection = "TEST_SECTION", mapSectionNativeId = 7, followMode = "ALLOW" }
+    world.maps[#world.maps + 1] = {
+      id = mapId,
+      symbol = symbol,
+      mapSection = "TEST_SECTION",
+      mapSectionNativeId = 7,
+      followMode = "ALLOW",
+      worldOriginX = mapId * 32,
+      worldOriginZ = 0,
+      matrix = { memberId = mapId },
+    }
     world.byId[mapId] = #world.maps
     world.bySymbol[symbol] = mapId
   end
@@ -202,15 +218,13 @@ function T.rejects_world_records_with_missing_or_malformed_compat_fields()
     local cache, world, sceneLoader = fixture(1)
     world.maps[1].mapSectionNativeId = case.nativeId
     world.maps[1].followMode = case.followMode
-    local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
     local err = Assert.throws(function()
-      loader:load(0)
-    end, case.label .. " must fail the runtime boundary")
+      FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+    end, case.label .. " must fail the loader boundary")
     Assert.isTrue(
       Errors.is(err) and err.code == "FIELD_MAP_WORLD_INVALID",
       case.label .. " must raise FIELD_MAP_WORLD_INVALID"
     )
-    loader:release()
   end
 end
 
@@ -862,6 +876,858 @@ function T.reloading_an_evicted_map_builds_a_fresh_map_props()
   Assert.isNil(loader:get(0), "the first map was evicted")
   local reloaded = loader:load(0)
   Assert.isFalse(first.mapProps == reloaded.mapProps, "a reload builds a fresh mapProps, not the evicted one")
+  loader:release()
+end
+
+local function readinessHost(calls, options)
+  options = options or {}
+  return {
+    ensureLogicalField = function(mapId)
+      calls[#calls + 1] = { kind = "logical", mapId = mapId }
+      if options.logicalFailsFor and options.logicalFailsFor[mapId] then
+        error("logical field " .. tostring(mapId) .. " is not ready", 0)
+      end
+      return true
+    end,
+    ensureField = function(mapId)
+      calls[#calls + 1] = { kind = "full", mapId = mapId }
+      if options.fullFailsFor and options.fullFailsFor[mapId] then
+        error("field " .. tostring(mapId) .. " is not ready", 0)
+      end
+      return true
+    end,
+  }
+end
+
+local function requireSemanticAcquisition(loader)
+  Assert.isTrue(
+    type(loader.loadLogical) == "function",
+    "the loader exposes semantic map acquisition without visual readiness"
+  )
+end
+
+-- Semantic acquisition carries exactly the runtime-owned identity, zone,
+-- audio/script selection, interaction, transition, and coordinate fields:
+-- no scene, collision, terrain, door resolver, presentation runtime, or
+-- physical coverage may be read or built, and only the semantic readiness
+-- edge is consulted.
+function T.logical_load_publishes_semantic_fields_without_visual_assets()
+  local cache, world, _, _, files = fixture(1)
+  local scenePath = "data/generated/maps/0000/scene.lua"
+  local terrainPath = "data/generated/maps/0000/terrain.lua"
+  local collisionPath = "data/generated/maps/0000/collision.g4collision"
+  files[scenePath] = nil
+  files[terrainPath] = nil
+  files[collisionPath] = nil
+  world.maps[1].worldOriginX = 96
+  world.maps[1].worldOriginZ = 64
+  local realLoadLua, realRead = cache.loadLua, cache.read
+  local readPaths = {}
+  cache.loadLua = function(_, path)
+    readPaths[#readPaths + 1] = path
+    return realLoadLua(cache, path)
+  end
+  cache.read = function(_, path)
+    readPaths[#readPaths + 1] = path
+    return realRead(cache, path)
+  end
+  local sceneLoader = {
+    load = function()
+      error("semantic acquisition must not acquire representative scene geometry", 0)
+    end,
+    loadEnvironment = function()
+      error("semantic acquisition must not acquire an environment shell", 0)
+    end,
+  }
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+  requireSemanticAcquisition(loader)
+
+  local map = loader:loadLogical(0)
+  local bySymbol = loader:loadLogical("MAP_0")
+
+  Assert.equal(map.mapId, 0)
+  Assert.equal(bySymbol.mapId, 0)
+  Assert.equal(map.mapSymbol, "MAP_0")
+  Assert.equal(map.mapSection, "TEST_SECTION")
+  Assert.equal(map.mapSectionNativeId, 7)
+  Assert.equal(map.followMode, "ALLOW")
+  Assert.equal(map.fieldData.schema, "g4-field-map-v9")
+  Assert.equal(map.cameraType, map.fieldData.cameraType)
+  Assert.deepEqual(map.coordinateOrigin, { x = 96, z = 64 })
+  Assert.isNil(map.scene)
+  Assert.isNil(map.collision)
+  Assert.isNil(map.terrain)
+  Assert.isNil(map.mapProps)
+  Assert.isNil(map.sceneRuntime)
+  Assert.isNil(map.coverage)
+  Assert.equal(#calls, 2)
+  for _, call in ipairs(calls) do
+    Assert.equal(call.kind, "logical")
+    Assert.equal(call.mapId, 0)
+  end
+  for _, path in ipairs(readPaths) do
+    Assert.isTrue(
+      tostring(path):find("scene.lua", 1, true) == nil
+        and tostring(path):find("terrain", 1, true) == nil
+        and tostring(path):find("collision", 1, true) == nil
+        and tostring(path):find("model", 1, true) == nil,
+      "semantic acquisition reads no visual asset: " .. tostring(path)
+    )
+  end
+  map:release()
+  map:release()
+  loader:release()
+end
+
+function T.logical_load_rejects_unknown_and_malformed_records()
+  local cache, world, sceneLoader = fixture(1)
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+  requireSemanticAcquisition(loader)
+  local unknown = Assert.throws(function()
+    loader:loadLogical(999)
+  end)
+  Assert.isTrue(Errors.is(unknown) and unknown.code == "FIELD_MAP_UNKNOWN", "unknown maps fail loudly")
+  loader:release()
+
+  local worldCases = {
+    { nativeId = nil, followMode = "ALLOW", label = "missing native identity" },
+    { nativeId = 126.5, followMode = "ALLOW", label = "fractional native identity" },
+    { nativeId = 126, followMode = "SOMETIMES", label = "unknown follow mode" },
+  }
+  for _, case in ipairs(worldCases) do
+    local caseCache, caseWorld, caseSceneLoader = fixture(1)
+    caseWorld.maps[1].mapSectionNativeId = case.nativeId
+    caseWorld.maps[1].followMode = case.followMode
+    local err = Assert.throws(function()
+      FieldMapLoader.new(caseCache, caseWorld, { sceneLoader = caseSceneLoader })
+    end, case.label)
+    Assert.isTrue(
+      Errors.is(err) and err.code == "FIELD_MAP_WORLD_INVALID",
+      case.label .. " must raise FIELD_MAP_WORLD_INVALID"
+    )
+  end
+
+  local fieldCases = {
+    {
+      mutate = function(record)
+        record.schema = "wrong-schema"
+      end,
+      label = "schema mismatch",
+    },
+    {
+      mutate = function(record)
+        record.mapId = 7
+      end,
+      label = "identity mismatch",
+    },
+    {
+      mutate = function(record)
+        record.events = { background = {}, warps = {}, coordinates = {} }
+      end,
+      label = "missing object events",
+    },
+    {
+      mutate = function(record)
+        record.initScripts = nil
+      end,
+      label = "missing init scripts",
+    },
+    {
+      mutate = function(record)
+        record.transitionEnvironment = "unknown"
+      end,
+      label = "unknown transition environment",
+    },
+  }
+  for _, case in ipairs(fieldCases) do
+    local caseCache, caseWorld, caseSceneLoader, _, caseFiles = fixture(1)
+    case.mutate(caseFiles["data/generated/field/maps/0000/field.lua"])
+    local caseLoader = FieldMapLoader.new(caseCache, caseWorld, { sceneLoader = caseSceneLoader })
+    local err = Assert.throws(function()
+      caseLoader:loadLogical(0)
+    end, case.label)
+    Assert.isTrue(
+      Errors.is(err) and err.code == "FIELD_MAP_DATA_CACHE_INVALID",
+      case.label .. " must raise FIELD_MAP_DATA_CACHE_INVALID"
+    )
+    caseLoader:release()
+  end
+end
+
+-- A missing visual map artifact blocks full realization but never semantic
+-- acquisition: the visual failure stays attached to the full edge while the
+-- semantic edge for the same map succeeds.
+function T.visual_readiness_failure_does_not_block_semantic_acquisition()
+  local cache, world, sceneLoader = fixture(32)
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, { fullFailsFor = { [31] = true } }),
+  })
+  requireSemanticAcquisition(loader)
+
+  local map = loader:loadLogical(31)
+  Assert.equal(map.mapId, 31)
+  Assert.equal(map.mapSymbol, "MAP_31")
+
+  local ok, err = pcall(loader.load, loader, 31)
+  Assert.isFalse(ok, "full realization still demands the visual artifact")
+  Assert.isTrue(
+    tostring(err):find("field 31 is not ready", 1, true) ~= nil,
+    "the visual failure propagates with its own identity"
+  )
+  local kinds = {}
+  for _, call in ipairs(calls) do
+    kinds[#kinds + 1] = call.kind .. ":" .. call.mapId
+  end
+  Assert.deepEqual(kinds, { "logical:31", "logical:31", "full:31" })
+  loader:release()
+end
+
+function T.full_load_still_demands_visual_scene_assets()
+  local cache, world, sceneLoader, _, files = fixture(1)
+  files["data/generated/maps/0000/scene.lua"] = nil
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+  requireSemanticAcquisition(loader)
+
+  local map = loader:loadLogical(0)
+  Assert.equal(map.mapId, 0)
+
+  local err = Assert.throws(function()
+    loader:load(0)
+  end)
+  Assert.isTrue(
+    Errors.is(err) and err.code == "FIELD_MAP_VISUAL_CACHE_MISSING",
+    "full realization without a scene fails at the visual boundary"
+  )
+  loader:release()
+end
+
+function T.logical_load_propagates_an_unready_semantic_closure()
+  local cache, world, sceneLoader = fixture(1)
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, { logicalFailsFor = { [0] = true } }),
+  })
+  requireSemanticAcquisition(loader)
+  local ok, err = pcall(loader.loadLogical, loader, 0)
+  Assert.isFalse(ok, "an unready semantic closure never reads as acquired")
+  Assert.isTrue(
+    tostring(err):find("logical field 0 is not ready", 1, true) ~= nil,
+    "the semantic failure propagates with its own identity"
+  )
+  loader:release()
+end
+
+-- An outdoor semantic map owns no physical window: coverage, collision, and
+-- representative geometry stay absent, and building the physical window
+-- from it fails instead of improvising presentation state.
+function T.outdoor_semantic_map_does_not_own_physical_coverage()
+  local cache, world = fixture(1)
+  world.maps[1].worldOriginX = 672
+  world.maps[1].worldOriginZ = 384
+  cache.loadLua(cache, "data/generated/maps/0000/scene.lua").type = "outdoor"
+  local sceneLoader = {
+    load = function()
+      error("semantic acquisition must not acquire representative scene geometry", 0)
+    end,
+    loadEnvironment = function()
+      error("semantic acquisition must not acquire an environment shell", 0)
+    end,
+  }
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+  requireSemanticAcquisition(loader)
+
+  local map = loader:loadLogical(0)
+  Assert.isNil(map.coverage)
+  Assert.isNil(map.collision)
+  Assert.isNil(map.scene)
+  local ok = pcall(loader.createPhysicalCoverage, loader, map, { fieldX = 0, fieldZ = 0 })
+  Assert.isFalse(ok, "physical coverage still requires a fully realized outdoor map")
+  loader:release()
+end
+
+local function planningHost(calls, fieldReady, cellReady)
+  return {
+    requestField = function(mapId, urgency)
+      calls[#calls + 1] = { kind = "field", mapId = mapId, urgency = urgency }
+      return fieldReady
+    end,
+    requestLogicalField = function(mapId, urgency)
+      calls[#calls + 1] = { kind = "logical", mapId = mapId, urgency = urgency }
+      return fieldReady
+    end,
+    requestCell = function(descriptor, urgency)
+      calls[#calls + 1] = { kind = "cell", descriptor = descriptor, urgency = urgency }
+      return cellReady
+    end,
+  }
+end
+
+local function outdoorPlanningFixture()
+  local cache, world = fixture(1)
+  world.maps[1].matrix = { memberId = 0 }
+  world.maps[1].worldOriginX = 672
+  world.maps[1].worldOriginZ = 384
+  local cell = {
+    schema = FieldCellCache.CELL_SCHEMA,
+    matrixMemberId = 0,
+    index = 0,
+    x = 21,
+    z = 12,
+    mapHeaderId = 0,
+    altitude = 0,
+    origin = { x = 0, y = 0, z = 0 },
+    landDataMemberId = 0,
+    areaDataMemberId = 0,
+    file = FieldCellCache.cellPath(0, 0),
+    collision = { file = FieldCellCache.collisionPath(0, 0) },
+    terrain = { file = FieldCellCache.terrainPath(0, 0), schema = "g4-terrain-surfaces-v1" },
+    batches = {},
+    materials = {},
+    buildingInstances = {},
+    terrainAnimations = { textureSrt = false },
+  }
+  cache.loadLua = function(_, path)
+    if path == FieldCellCache.indexPath() then
+      return {
+        schema = FieldCellCache.INDEX_SCHEMA,
+        matrices = { { matrixMemberId = 0, width = 47, height = 17, cells = { cell } } },
+      }
+    end
+    error("location planning reads no scene, terrain, or GPU resource: " .. tostring(path), 0)
+  end
+  return cache, world
+end
+
+function T.shared_fixture_world_satisfies_the_structural_contract()
+  local _, world = fixture(2)
+  Assert.isTrue(MapAssetCache.isStructuralWorld(world), "the shared loader fixture is a current structural world")
+end
+
+function T.loader_construction_rejects_worlds_without_structural_origins()
+  local cases = {
+    {
+      mutate = function(world)
+        world.maps[1].worldOriginX = nil
+      end,
+      label = "missing origin x",
+    },
+    {
+      mutate = function(world)
+        world.maps[1].worldOriginZ = nil
+      end,
+      label = "missing origin z",
+    },
+    {
+      mutate = function(world)
+        world.maps[1].matrix = nil
+      end,
+      label = "missing matrix identity",
+    },
+    {
+      mutate = function(world)
+        world.schema = "stale-world-schema"
+      end,
+      label = "stale schema tag",
+    },
+    {
+      mutate = function(world)
+        world.analysis = nil
+      end,
+      label = "missing header analysis",
+    },
+  }
+  for _, case in ipairs(cases) do
+    local cache, world = fixture(1)
+    case.mutate(world)
+    Assert.isFalse(MapAssetCache.isStructuralWorld(world), case.label .. " is not a structural world")
+    local err = Assert.throws(function()
+      FieldMapLoader.new(cache, world, {})
+    end, case.label .. " must fail loader construction")
+    Assert.isTrue(
+      Errors.is(err) and err.code == "FIELD_MAP_WORLD_INVALID",
+      case.label .. " must raise FIELD_MAP_WORLD_INVALID"
+    )
+  end
+end
+
+function T.global_position_converts_local_coordinates_through_structural_origins()
+  local cache, world = fixture(2)
+  local sceneReads = 0
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(_, path)
+    if tostring(path):find("scene.lua", 1, true) ~= nil then
+      sceneReads = sceneReads + 1
+    end
+    return realLoadLua(cache, path)
+  end
+  -- The structural world record is the only coordinate authority: map 1
+  -- carries manifest origins that deliberately differ from its scene
+  -- matrix so a visual fallback could never answer the same coordinates.
+  world.maps[2].worldOriginX = 100
+  world.maps[2].worldOriginZ = 200
+  local loader = FieldMapLoader.new(cache, world, {})
+  local converted = loader:globalPosition("MAP_1", 3, 4)
+  Assert.deepEqual(converted, { x = 103, z = 204 })
+  local origin = loader:globalPosition(0, 3, 4)
+  Assert.deepEqual(origin, { x = 3, z = 4 })
+  Assert.equal(sceneReads, 0, "coordinate conversion never reads the visual scene")
+  loader:release()
+end
+
+function T.request_location_demands_the_logical_map_and_committed_footprint()
+  local cache, world = outdoorPlanningFixture()
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, false, true) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isFalse(ready, "a pending logical map holds the location")
+  Assert.isNil(failure)
+  local kinds = {}
+  for _, call in ipairs(calls) do
+    kinds[#kinds + 1] = call.kind .. ":" .. call.urgency
+    if call.kind == "field" then
+      Assert.equal(call.mapId, 0)
+    elseif call.kind == "logical" then
+      Assert.equal(call.mapId, 0, "the destination logical closure is demanded explicitly")
+    else
+      Assert.equal(call.descriptor.x, 21)
+      Assert.equal(call.descriptor.z, 12)
+    end
+  end
+  Assert.deepEqual(kinds, { "field:required", "logical:required", "cell:required" })
+
+  local readyCalls = {}
+  local readyLoader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(readyCalls, true, true) })
+  Assert.isTrue(readyLoader:requestLocation("MAP_0", 695, 397, "required"))
+  Assert.equal(#readyCalls, 3, "the ready closure requests destination logic alongside the map and cell")
+  readyLoader:release()
+  loader:release()
+end
+
+function T.request_location_without_a_host_is_immediately_ready()
+  local cache, world = outdoorPlanningFixture()
+  local loader = FieldMapLoader.new(cache, world, {})
+  Assert.isTrue(loader:requestLocation(0, 695, 397, "required"))
+  Assert.isTrue(loader:requestWarp({ mapId = 0 }, { destinationMapId = 0, destinationWarpId = 0 }))
+  loader:release()
+end
+
+function T.request_warp_plans_indexed_and_direct_destinations_as_required()
+  local cache, world = outdoorPlanningFixture()
+  local fieldPath = "data/generated/field/maps/0000/field.lua"
+  local fieldData = {
+    schema = "g4-field-map-v9",
+    mapId = 0,
+    events = {
+      background = {},
+      objects = {},
+      warps = { { index = 0, x = 695, z = 397, destinationMapId = 0, destinationWarpId = 0, y = 0 } },
+      coordinates = {},
+    },
+  }
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(_, path)
+    if path == fieldPath then
+      return fieldData
+    end
+    return realLoadLua(cache, path)
+  end
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, true, true) })
+  local ready, failure = loader:requestWarp({ mapId = 1 }, {
+    index = 0,
+    x = 4,
+    z = 14,
+    destinationMapId = 0,
+    destinationWarpId = 0,
+  })
+  Assert.isTrue(ready, "a ready destination closure releases the warp")
+  Assert.isNil(failure)
+  Assert.equal(calls[1].kind, "logical")
+  Assert.equal(calls[1].mapId, 0)
+  Assert.equal(calls[1].urgency, "required")
+  Assert.equal(calls[2].kind, "field")
+  Assert.equal(calls[2].mapId, 0)
+  Assert.equal(calls[2].urgency, "required")
+
+  local directReady = loader:requestWarp({ mapId = 1 }, { direct = true, x = 695, z = 397, destinationMapId = 0 })
+  Assert.isTrue(directReady, "a direct record plans its own global coordinates")
+
+  local coldReady, coldFailure = loader:requestWarp({ mapId = 1 }, {
+    index = 0,
+    destinationMapId = 0,
+    destinationWarpId = 4,
+  })
+  Assert.isFalse(coldReady, "an unknown destination index never reads as ready")
+  Assert.notNil(coldFailure, "planning failures propagate instead of pending forever")
+  loader:release()
+end
+
+function T.request_warp_pends_while_the_destination_record_is_absent()
+  -- outdoorPlanningFixture builds a single map, so destination 1 has no
+  -- field record on disk.
+  local cache, world = outdoorPlanningFixture()
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(_, path)
+    if path == "data/generated/field/maps/0001/field.lua" then
+      return nil
+    end
+    return realLoadLua(cache, path)
+  end
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, true, true) })
+  local ready, failure = loader:requestWarp({ mapId = 0 }, {
+    index = 0,
+    x = 4,
+    z = 14,
+    destinationMapId = 1,
+    destinationWarpId = 0,
+  })
+  Assert.isFalse(ready, "a missing destination record waits instead of failing the warp")
+  Assert.isNil(failure, "a missing destination record is pending, not an error")
+  Assert.equal(#calls, 1, "only destination logical demand is enrolled before the record exists")
+  Assert.equal(calls[1].kind, "logical")
+  Assert.equal(calls[1].mapId, 1)
+  Assert.equal(calls[1].urgency, "required")
+  loader:release()
+end
+
+function T.request_warp_fails_while_a_corrupt_destination_record_reports_an_error()
+  -- A present-but-invalid record is corruption, not compilation latency:
+  -- the warp must fail loudly instead of waiting forever.
+  local cache, world = outdoorPlanningFixture()
+  cache.loadLua = function(_, path)
+    if path == "data/generated/field/maps/0001/field.lua" then
+      return { schema = "wrong-schema", mapId = 1, events = {} }
+    end
+    return nil
+  end
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, true, true) })
+  local ready, failure = loader:requestWarp({ mapId = 0 }, {
+    index = 0,
+    x = 4,
+    z = 14,
+    destinationMapId = 1,
+    destinationWarpId = 0,
+  })
+  Assert.isFalse(ready, "a corrupt destination record fails the warp")
+  Assert.notNil(failure, "a corrupt destination record reports its cause")
+  loader:release()
+end
+
+-- Location demand against the committed residency closure: the destination
+-- enrolls its full visual closure at the caller's urgency, every loadable
+-- map represented by the committed descriptors enrolls its logical closure
+-- at the caller's urgency, and non-destination maps additionally enroll a
+-- near visual prefetch that never gates the destination. Filler headers own
+-- cells but no logical map, so they enroll nothing.
+local function demandCell(x, z, headerId)
+  return {
+    schema = FieldCellCache.CELL_SCHEMA,
+    matrixMemberId = 0,
+    index = 0,
+    x = x,
+    z = z,
+    mapHeaderId = headerId,
+    altitude = 0,
+    origin = { x = 0, y = 0, z = 0 },
+    landDataMemberId = 0,
+    areaDataMemberId = 0,
+    file = FieldCellCache.cellPath(0, 0),
+    collision = { file = FieldCellCache.collisionPath(0, 0) },
+    terrain = { file = FieldCellCache.terrainPath(0, 0), schema = "g4-terrain-surfaces-v1" },
+    batches = {},
+    materials = {},
+    buildingInstances = {},
+    terrainAnimations = { textureSrt = false },
+  }
+end
+
+-- behavior[kind][mapId] is true (ready), false (pending), or a failure
+-- string; behavior.default answers unlisted entries (ready by default),
+-- and behavior.cell answers every cell demand the same way.
+local function demandHost(calls, behavior)
+  behavior = behavior or {}
+  local default = behavior.default
+  if default == nil then
+    default = true
+  end
+  local function respond(kind, mapId, urgency)
+    calls[#calls + 1] = { kind = kind, mapId = mapId, urgency = urgency }
+    local configured = behavior[kind] and behavior[kind][mapId]
+    if configured == nil then
+      return default
+    end
+    if configured == true then
+      return true
+    end
+    if configured == false then
+      return false
+    end
+    return false, configured
+  end
+  return {
+    requestField = function(mapId, urgency)
+      return respond("field", mapId, urgency)
+    end,
+    requestLogicalField = function(mapId, urgency)
+      return respond("logical", mapId, urgency)
+    end,
+    requestCell = function(descriptor, urgency)
+      calls[#calls + 1] = { kind = "cell", descriptor = descriptor, urgency = urgency }
+      if behavior.cell == false then
+        return false
+      end
+      if type(behavior.cell) == "string" then
+        return false, behavior.cell
+      end
+      return true
+    end,
+  }
+end
+
+-- Two loadable maps around anchor (21, 12) with a caller-supplied header
+-- per committed cell. Map 0 is the destination; map 1 its neighbor. Index
+-- entries carry unique cell indices so the shared index validation accepts
+-- the synthetic footprint.
+local function neighboringPlanningFixture(cells)
+  for position, cell in ipairs(cells) do
+    cell.index = position - 1
+    cell.file = FieldCellCache.cellPath(0, position - 1)
+  end
+  local cache, world = fixture(2)
+  world.maps[1].matrix = { memberId = 0 }
+  world.maps[1].worldOriginX = 672
+  world.maps[1].worldOriginZ = 384
+  world.maps[2].matrix = { memberId = 0 }
+  world.maps[2].worldOriginX = 0
+  world.maps[2].worldOriginZ = 0
+  cache.loadLua = function(_, path)
+    if path == FieldCellCache.indexPath() then
+      return {
+        schema = FieldCellCache.INDEX_SCHEMA,
+        matrices = { { matrixMemberId = 0, width = 47, height = 17, cells = cells } },
+      }
+    end
+    error("location planning reads no scene, terrain, or GPU resource: " .. tostring(path), 0)
+  end
+  return cache, world
+end
+
+local function demandCounts(calls)
+  local counts = {}
+  for _, call in ipairs(calls) do
+    local key = call.kind .. ":" .. tostring(call.mapId) .. ":" .. tostring(call.urgency)
+    counts[key] = (counts[key] or 0) + 1
+  end
+  return counts
+end
+
+function T.request_location_demands_one_logical_closure_per_represented_neighbor()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+    demandCell(22, 12, 1),
+    demandCell(21, 11, 0),
+    demandCell(21, 13, 7),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, {}) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isTrue(ready, "a fully demanded closure releases the destination")
+  Assert.isNil(failure)
+  local counts = demandCounts(calls)
+  Assert.equal(counts["field:0:required"], 1, "the destination enrolls its full closure once")
+  Assert.equal(counts["logical:1:required"], 1, "duplicate neighbor headers collapse to one logical demand")
+  Assert.equal(counts["field:1:near"], 1, "the neighbor enrolls one near visual prefetch")
+  Assert.equal(
+    counts["logical:0:required"],
+    1,
+    "the destination demands its own logical closure once alongside its full closure"
+  )
+  Assert.isNil(counts["logical:7:required"], "a filler header without a logical map enrolls no logical demand")
+  Assert.isNil(counts["field:7:near"], "a filler header without a logical map enrolls no visual prefetch")
+  Assert.isNil(counts["field:0:near"], "the destination never prefetches itself")
+  loader:release()
+end
+
+function T.request_location_enrolls_warp_destination_logical_closures()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+  })
+  world.maps[#world.maps + 1] = {
+    id = 2,
+    symbol = "MAP_2",
+    mapSection = "TEST_SECTION",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
+    worldOriginX = 64,
+    worldOriginZ = 0,
+    matrix = { memberId = 2 },
+  }
+  world.byId[2] = #world.maps
+  world.bySymbol["MAP_2"] = 2
+  world.analysis.mapHeaderCount = #world.maps
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(_, path)
+    if path == FieldMapDataCache.fieldPath(0) then
+      return {
+        schema = FieldMapDataCache.FIELD_SCHEMA,
+        mapId = 0,
+        mapSymbol = "MAP_0",
+        transitionEnvironment = "building",
+        initScripts = {},
+        events = {
+          background = {},
+          objects = {},
+          coordinates = {},
+          warps = {
+            { index = 0, x = 3, z = 10, destinationMapId = 2, destinationWarpId = 0 },
+            { index = 1, x = 3, z = 3, destinationMapId = 1, destinationWarpId = 0 },
+            { index = 2, x = 4, z = 4, destinationMapId = 0, destinationWarpId = 0 },
+            { index = 3, x = 5, z = 5, destinationMapId = 7, destinationWarpId = 0 },
+          },
+        },
+        music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
+        soundplates = {},
+      }
+    end
+    return realLoadLua(cache, path)
+  end
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, {}) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isTrue(ready, "warp exit demand never blocks its destination")
+  Assert.isNil(failure)
+  local counts = demandCounts(calls)
+  Assert.equal(counts["logical:1:required"], 1, "a warp exit already represented enrolls no second logical demand")
+  Assert.equal(counts["field:1:near"], 1, "the warp exit visual stays a single near prefetch")
+  Assert.equal(counts["logical:2:required"], 1, "an unrepresented warp exit enrolls its logical closure")
+  Assert.equal(counts["field:2:near"], 1, "an unrepresented warp exit prefetches its visual as near")
+  Assert.equal(counts["logical:0:required"], 1, "a warp back to the destination adds no second logical demand")
+  Assert.isNil(counts["logical:7:required"], "a warp to a header without a logical map enrolls nothing")
+  Assert.isNil(counts["field:7:near"], "a warp to a header without a logical map prefetches nothing")
+  loader:release()
+end
+
+function T.request_location_leaves_filler_headers_without_demand()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 7),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, {}) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isTrue(ready, "filler cells never hold a destination")
+  Assert.isNil(failure)
+  for _, call in ipairs(calls) do
+    Assert.isTrue(call.mapId ~= 7, "a header without a logical map enrolls neither logical nor visual demand")
+  end
+  loader:release()
+end
+
+function T.request_location_warms_neighbor_visuals_as_near_without_blocking()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, { field = { [1] = false } }) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isTrue(ready, "a pending neighbor visual prefetch never blocks its destination")
+  Assert.isNil(failure)
+  local counts = demandCounts(calls)
+  Assert.equal(counts["field:1:near"], 1, "the neighbor visual stays a near prefetch")
+  Assert.equal(counts["logical:1:required"], 1, "the neighbor logical closure stays required")
+  loader:release()
+end
+
+function T.request_location_waits_for_a_pending_neighbor_logical_closure()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, { logical = { [1] = false } }) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isFalse(ready, "a pending neighbor logical closure holds the destination")
+  Assert.isNil(failure)
+  loader:release()
+end
+
+function T.request_location_fails_when_a_neighbor_logical_closure_fails()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(
+    cache,
+    world,
+    { derivedAssets = demandHost(calls, { logical = { [1] = "neighbor bank missing" } }) }
+  )
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isFalse(ready, "a failed neighbor logical closure fails the destination")
+  Assert.equal(failure, "neighbor bank missing", "the underlying logical cause surfaces")
+  loader:release()
+end
+
+function T.request_location_ignores_a_failed_neighbor_visual_prefetch()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(
+    cache,
+    world,
+    { derivedAssets = demandHost(calls, { field = { [1] = "neighbor visual broken" } }) }
+  )
+  -- The near visual prefetch for map 1 fails while its required logical
+  -- closure stays ready: only the near enrollment observes the failure.
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isTrue(ready, "a failed neighbor visual prefetch never fails its destination")
+  Assert.isNil(failure)
+  loader:release()
+end
+
+function T.near_location_demand_enrolls_everything_as_near()
+  local cache, world = neighboringPlanningFixture({
+    demandCell(21, 12, 0),
+    demandCell(20, 12, 1),
+  })
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, {}) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "near")
+  Assert.isTrue(ready, "a fully prefetched halo releases its own demand")
+  Assert.isNil(failure)
+  local counts = demandCounts(calls)
+  Assert.equal(counts["field:0:near"], 1, "live prefetch warms the destination visually as near")
+  Assert.equal(counts["logical:1:near"], 1, "live prefetch demands the neighbor logical closure as near")
+  Assert.equal(counts["field:1:near"], 1, "live prefetch warms the neighbor visually as near")
+  for _, call in ipairs(calls) do
+    Assert.equal(call.urgency, "near", "live prefetch never escalates to required")
+  end
   loader:release()
 end
 

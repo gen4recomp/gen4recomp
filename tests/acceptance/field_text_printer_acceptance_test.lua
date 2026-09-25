@@ -8,6 +8,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "map:60" },
     tags = { "field", "dialogue", "text", "signpost", "persistence" },
   },
   tests = {},

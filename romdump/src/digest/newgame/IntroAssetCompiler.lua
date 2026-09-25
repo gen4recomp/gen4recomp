@@ -487,7 +487,7 @@ function IntroAssetCompiler.compile(romFs)
   )
   local paletteLayout = buildPaletteLayout(paletteOrder)
   local manifest = {
-    schemaVersion = 14,
+    schemaVersion = IntroAssetCache.SCHEMA_VERSION,
     variant = variant,
     sourceReference = { width = 256, height = 192 },
     genderSelector = nil,

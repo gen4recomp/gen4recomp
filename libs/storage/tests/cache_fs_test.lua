@@ -455,7 +455,49 @@ function T.candidate_copy_replaces_a_stale_candidate_tree()
   Assert.isNil(live:read(root .. "/stale.bin"))
 end
 
-function T.candidate_copy_failure_cleans_partial_candidates_without_touching_live()
+-- Candidate preparation moves staged payload instead of copying it:
+-- with read/write counters armed, publishing a nested stage performs no
+-- payload-byte reads or writes while the live tree gains the exact
+-- staged bytes, including empty directories.
+function T.staged_publication_moves_candidates_without_copying_payload()
+  local backend = ConstrainedCache.new()
+  local live = cache("heartgold", backend)
+  local root = "data/generated/field/maps"
+  local payload = string.rep("persisted-bytes", 64)
+  local tx = ArtifactPublisher.begin(live, "move-maps", { root })
+  tx.stage:write(root .. "/nested/value.bin", payload)
+  tx.stage:createDirectory(root .. "/empty")
+  local reads, writes = {}, {}
+  local originalRead = backend.read
+  local originalWrite = backend.write
+  backend.read = function(self, path)
+    reads[#reads + 1] = path
+    return originalRead(self, path)
+  end
+  backend.write = function(self, path, data)
+    writes[#writes + 1] = path
+    return originalWrite(self, path, data)
+  end
+  local ok, err = pcall(function()
+    tx:publish()
+  end)
+  backend.read = originalRead
+  backend.write = originalWrite
+  Assert.isTrue(ok, tostring(err))
+  for _, path in ipairs(reads) do
+    Assert.isFalse(path:find(root, 1, true) ~= nil, "candidate preparation reads no payload bytes: " .. tostring(path))
+  end
+  for _, path in ipairs(writes) do
+    Assert.isFalse(path:find(root, 1, true) ~= nil, "candidate preparation copies no payload bytes: " .. tostring(path))
+  end
+  Assert.equal(live:read(root .. "/nested/value.bin"), payload, "the moved payload lands intact")
+  Assert.notNil(backend:getInfo("heartgold/" .. root .. "/empty"), "empty directories move with the tree")
+  Assert.isNil(backend:getInfo("staging/heartgold/move-maps"), "the consumed stage leaves no residue")
+  assertAttemptResidueAbsent(backend)
+  assertPortableRenames(backend)
+end
+
+function T.candidate_move_failure_cleans_partial_candidates_without_touching_live()
   local backend = FakeCache.new()
   local live = cache("heartgold", backend)
   local root = "data/generated/field/maps"
@@ -464,19 +506,19 @@ function T.candidate_copy_failure_cleans_partial_candidates_without_touching_liv
   tx.stage:write(root .. "/first.bin", "first")
   tx.stage:write(root .. "/second.bin", "second")
 
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
-    if path:find(".__g4next", 1, true) and path:find("second.bin", 1, true) then
-      return false, "injected candidate write failure"
+  local originalReplace = backend.replace
+  backend.replace = function(self, sourcePath, destinationPath)
+    if destinationPath:find(".__g4next", 1, true) and destinationPath:find("second.bin", 1, true) then
+      return false, "injected candidate move failure"
     end
-    return originalWrite(self, path, data)
+    return originalReplace(self, sourcePath, destinationPath)
   end
 
   local err = Assert.throws(function()
     tx:publish()
   end)
   Assert.isTrue(Errors.is(err))
-  Assert.equal(err.code, StorageErrors.CACHE_WRITE_FAILED)
+  Assert.equal(err.code, StorageErrors.CACHE_REPLACE_FAILED)
   Assert.equal(live:read(root .. "/old.bin"), "old")
   assertAttemptResidueAbsent(backend)
 end
@@ -493,20 +535,23 @@ function T.interrupted_old_siblings_are_not_guessed_without_metadata()
   local tx = ArtifactPublisher.begin(live, "field-world", { firstRoot, secondRoot })
   tx.stage:write(firstRoot .. "/replacement.bin", "replacement")
   tx.stage:write(secondRoot .. "/replacement.bin", "replacement")
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
+  local originalReplace = backend.replace
+  backend.replace = function(self, sourcePath, destinationPath)
     local versionPrefix = "heartgold/"
-    if path:sub(1, #versionPrefix) == versionPrefix and path:find(".__g4next.", #versionPrefix + 1, true) then
-      return false, "injected candidate write failure"
+    if
+      destinationPath:sub(1, #versionPrefix) == versionPrefix
+      and destinationPath:find(".__g4next.", #versionPrefix + 1, true)
+    then
+      return false, "injected candidate move failure"
     end
-    return originalWrite(self, path, data)
+    return originalReplace(self, sourcePath, destinationPath)
   end
 
   local err = Assert.throws(function()
     tx:publish()
   end)
   Assert.isTrue(Errors.is(err))
-  Assert.equal(err.code, StorageErrors.CACHE_WRITE_FAILED)
+  Assert.equal(err.code, StorageErrors.CACHE_REPLACE_FAILED)
   Assert.equal(live:read(firstRoot .. "/partial.bin"), "partial")
   Assert.equal(backend.files["heartgold/" .. firstRoot .. ".__g4old/previous.bin"], "previous-map")
   Assert.equal(backend.files["heartgold/" .. secondRoot .. ".__g4old/previous.bin"], "previous-cell")
@@ -793,12 +838,12 @@ function T.journals_manifest_before_file_candidate_materialization()
   tx.stage:write(root, "new-index")
 
   local observed = false
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
+  local originalReplace = backend.replace
+  backend.replace = function(self, sourcePath, destinationPath)
     local candidatePrefix = "heartgold/" .. root .. ".__g4next."
-    if not observed and path:sub(1, #candidatePrefix) == candidatePrefix then
+    if not observed and destinationPath:sub(1, #candidatePrefix) == candidatePrefix then
       observed = true
-      local attemptId = path:sub(#candidatePrefix + 1)
+      local attemptId = destinationPath:sub(#candidatePrefix + 1)
       local tempPath = "heartgold.__g4publish." .. attemptId .. ".__g4next"
       local manifestData = self:read(tempPath)
       Assert.notNil(manifestData, "attempt temp manifest must precede candidate materialization")
@@ -810,7 +855,7 @@ function T.journals_manifest_before_file_candidate_materialization()
       Assert.isTrue(manifest.roots[1].hadLive)
       Assert.isNil(self:getInfo("heartgold.__g4publish.lua"))
     end
-    return originalWrite(self, path, data)
+    return originalReplace(self, sourcePath, destinationPath)
   end
 
   tx:publish()

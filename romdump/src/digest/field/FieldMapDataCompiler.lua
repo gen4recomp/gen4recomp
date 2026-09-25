@@ -79,6 +79,25 @@ local NON_FIELD_MAP_SYMBOLS = {
   MAP_UNDERGROUND = true,
 }
 
+-- The source-defined eligibility for lightweight field records: every map
+-- header except the two placeholder symbols carries field data. Pure catalog
+-- membership, no source reads and no compilation, so controllers can decide
+-- membership without opening the dump. Direct compilation of an unsupported
+-- header stays strict; only aggregate enumeration skips them.
+---@return integer[] ascending unique supported map ids
+function FieldMapDataCompiler.supportedMapIds()
+  local ids = {}
+  local seen = {}
+  for map in MapCatalog.all() do
+    if not NON_FIELD_MAP_SYMBOLS[map.symbol] and not seen[map.id] then
+      seen[map.id] = true
+      ids[#ids + 1] = map.id
+    end
+  end
+  table.sort(ids)
+  return ids
+end
+
 local TRANSITION_ENVIRONMENT_BY_MAP_TYPE = {
   CAVE = "cave",
   CITY_TOWN = "outdoors",
@@ -403,21 +422,66 @@ function FieldMapDataCompiler.compile(romFs, idOrSymbol, sha1hex, hashLua)
   error(result)
 end
 
+-- A worker-private source session: immutable archive identity and handles
+-- are loaded once, then each map compiles through the same single-map unit
+-- and its bundle is owned by the caller (the session retains no per-map
+-- state). Close is idempotent; a closed session compiles nothing. The
+-- session never publishes; staging stays with the cache writer.
+---@class FieldMapDataCompiler.Session
+---@field compile function
+---@field close function
+---@param romFs RomFs
+---@param sha1hex? fun(data: string): string
+---@param hashLua? fun(value: unknown): string
+---@return FieldMapDataCompiler.Session session with compile(idOrSymbol) and close()
+function FieldMapDataCompiler.newSession(romFs, sha1hex, hashLua)
+  assert(romFs and romFs.read and romFs.openNarc and romFs.resolvedNarc, "session requires a RomFs-shaped object")
+  sha1hex = sha1hex or Hashing.sha1hex
+  hashLua = hashLua or Hashing.hashLua
+  local source = loadSource(romFs, sha1hex)
+  local headerSource = loadHeaderSource(romFs, sha1hex)
+  local closed = false
+  local session = {}
+  ---@param idOrSymbol string|integer
+  ---@return table<string, unknown>|nil bundle
+  ---@return table<string, unknown>|nil failure
+  function session:compile(idOrSymbol)
+    if closed then
+      return nil
+    end
+    local ok, result = pcall(function()
+      return compileMap(romFs, MapCatalog.require(idOrSymbol), source, headerSource, sha1hex, hashLua)
+    end)
+    if ok then
+      return result
+    end
+    if Errors.is(result) then
+      return nil, result
+    end
+    error(result, 0)
+  end
+  function session:close()
+    closed = true
+  end
+  return session
+end
+
 function FieldMapDataCompiler.compileAll(romFs, sha1hex, hashLua)
   assert(romFs and romFs.read and romFs.openNarc and romFs.resolvedNarc, "compileAll requires a RomFs-shaped object")
   sha1hex = sha1hex or Hashing.sha1hex
   hashLua = hashLua or Hashing.hashLua
+  local session = nil
   local ok, result = pcall(function()
-    local source = loadSource(romFs, sha1hex)
-    local headerSource = loadHeaderSource(romFs, sha1hex)
+    session = FieldMapDataCompiler.newSession(romFs, sha1hex, hashLua)
     local bundles = {}
-    for map in MapCatalog.all() do
-      if not NON_FIELD_MAP_SYMBOLS[map.symbol] then
-        bundles[#bundles + 1] = compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
-      end
+    for _, mapId in ipairs(FieldMapDataCompiler.supportedMapIds()) do
+      bundles[#bundles + 1] = assert(session:compile(mapId))
     end
     return bundles
   end)
+  if session ~= nil then
+    session:close()
+  end
   if ok then
     return result
   end

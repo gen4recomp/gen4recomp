@@ -3,9 +3,11 @@
 local WindowConfig = require("game.src.WindowConfig")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
-local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
+local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
+local CacheService = require("app.src.CacheService")
 local HgssGame = require("game.hgss.src.HgssGame")
 local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local ImportState = require("app.src.launcher.ImportState")
 local VersionSelectState = require("app.src.launcher.VersionSelectState")
 
@@ -14,6 +16,9 @@ local VersionSelectState = require("app.src.launcher.VersionSelectState")
 ---@field state table<string, unknown>|nil
 ---@field importer RomImporter|nil
 ---@field provisioner DerivedAssetProvisioner|nil
+---@field service CacheService|nil process-owned cache controller service shared by every selection
+---@field epoch integer latest borrowed controller epoch, monotonically increasing
+---@field pendingQuiesce table<string, integer>|nil unacknowledged source-close barrier for import
 ---@field drawableWidth number?
 ---@field drawableHeight number?
 local App = {}
@@ -33,59 +38,262 @@ local function readyVersions()
 end
 
 local function provisionerOptions(versionId)
-  if App.opts.dev == true then
-    local repositoryRoot = love.filesystem.getSourceBaseDirectory()
-    local backend = ProducerFingerprint.checkoutBackend(repositoryRoot)
-    return {
-      versionId = versionId,
-      producerFingerprint = ProducerFingerprint.compute(backend, "romdump/src"),
-      developmentRepositoryRoot = repositoryRoot,
-    }
-  end
-
-  local backend = ProducerFingerprint.appBackend()
-  local info = assert(backend.getInfo, "producer VFS backend must expose getInfo")("romdump/src")
-  assert(info and info.type == "directory", "packaged producer tree romdump/src is missing or is not a directory")
-  return {
+  -- Every selection borrows a fresh controller epoch, even when the
+  -- logical generation is unchanged. Only selectors cross the channel:
+  -- the development producer digest and the generation identity are
+  -- derived below the controller thread, never on the game thread.
+  App._ensureService()
+  local options = {
     versionId = versionId,
-    producerFingerprint = ProducerFingerprint.compute(backend, "romdump/src"),
+    service = assert(App.service, "process cache service is unavailable"),
+    development = App.opts.dev == true,
   }
+  if App.opts.dev == true then
+    options.developmentRepositoryRoot = love.filesystem.getSourceBaseDirectory()
+  end
+  return options
 end
 
-local function launchHgss(versionId)
+function App._ensureService()
+  if App.service ~= nil then
+    return
+  end
+  App.service = CacheService.new()
+end
+
+-- Retires the selected source interest without joining controller work.
+-- The process service is reused; stale results cannot publish afterwards.
+function App._retireSelection()
+  local provisioner = App.provisioner
+  App.provisioner = nil
+  if provisioner then
+    provisioner:dispose()
+  end
+end
+
+-- Launches the menu on the current provisioner without touching source
+-- ownership: menu/Oak/field transitions within one selection never rotate
+-- the epoch. Background corpus completion is authorized once the menu
+-- game owns the process state; the authorization itself performs no
+-- cache work.
+function App._launchMenuWithProvisioner(versionId)
+  local provisioner = assert(App.provisioner, "selection has no provisioner")
   local function onExit(result)
     if result and result.kind == "quit" then
       love.event.quit(0)
     end
   end
-  local provisioner
-  local ok, result = pcall(function()
-    provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
-    return HgssGame.new({
-      versionId = versionId,
-      onExit = onExit,
-      development = App.opts.dev,
-      derivedAssets = provisioner:gameHost(),
-    })
-  end)
+  local ok, game = pcall(HgssGame.new, {
+    versionId = versionId,
+    onExit = onExit,
+    development = App.opts.dev,
+    derivedAssets = provisioner:gameHost(),
+  })
   if not ok then
-    if provisioner then
-      provisioner:dispose()
+    App._showVersionSelector()
+    error(game, 0)
+  end
+  App.setState(game)
+  provisioner:startBackgroundWarmup()
+end
+
+function App._showVersionSelector()
+  App._retireSelection()
+  local ready = readyVersions()
+  if #ready == 0 then
+    App._startImport()
+    return
+  end
+  App.setState(VersionSelectState.new(ready, function(versionId)
+    App._selectVersion(versionId)
+  end))
+end
+
+-- A pending source-close barrier blocks new selections behind a visible
+-- wait: no new session writes shared version roots before the controller
+-- acknowledges that every source reader closed successfully.
+---@param versionId string newly selected game version
+---@param options { freshImport: boolean? }? private selection mode
+---@return boolean
+function App._waitForQuiescence(versionId, options)
+  local pending = App.pendingQuiesce
+  local service = App.service
+  if pending == nil or service == nil then
+    return false
+  end
+  if service:barrierStatus(pending.epoch, pending.barrier) == "ready" then
+    App.pendingQuiesce = nil
+    return false
+  end
+  App.setState(CachePreparationState.new({
+    kind = "quiescence",
+    epoch = pending.epoch,
+    service = service,
+    barrier = pending.barrier,
+    isCurrent = function(_)
+      return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == pending.barrier
+    end,
+    onReady = function()
+      App.pendingQuiesce = nil
+      App._selectVersion(versionId, options)
+    end,
+    onCancel = function()
+      App.pendingQuiesce = nil
+      App._showVersionSelector()
+    end,
+  }))
+  return true
+end
+
+-- Durable first-play generation for one selection: the controller-derived
+-- token when known, else the synchronous release identity (pure constants,
+-- no producer scan). Development selections without a controller answer yet
+-- report unknown; the caller prepares again.
+---@param versionId string newly selected game version
+---@return string?
+function App._firstPlayGeneration(versionId)
+  local provisioner = App.provisioner
+  if provisioner ~= nil and type(provisioner.generationId) == "function" then
+    local known = provisioner:generationId()
+    if known ~= nil then
+      return known
     end
-    error(result, 0)
   end
-  local stateOk, stateError = pcall(App.setState, result)
-  if not stateOk then
-    provisioner:dispose()
-    error(stateError, 0)
+  if App.opts.dev == true then
+    return nil
   end
-  App.provisioner = assert(provisioner)
+  local ok, generation = pcall(FirstPlayCompletion.releaseGenerationId, versionId)
+  if ok then
+    return generation
+  end
+  return nil
+end
+
+-- Gateway handed to first-play preparation on the ordinary selection path:
+-- durable attestation answers owned by the import orchestration boundary.
+-- It captures the selecting provisioner, so the generation answer follows
+-- the selection epoch without reaching the game-facing host surface.
+---@param versionId string newly selected game version
+---@return table<string, function>
+function App._firstPlayGateway(versionId)
+  local provisioner = App.provisioner
+  return {
+    hasStored = function()
+      return FirstPlayCompletion.hasStored(versionId)
+    end,
+    isCurrent = function(generationId)
+      return FirstPlayCompletion.isCurrent(versionId, generationId)
+    end,
+    currentGeneration = function()
+      if provisioner == nil or type(provisioner.generationId) ~= "function" then
+        return nil
+      end
+      return provisioner:generationId()
+    end,
+  }
+end
+
+-- Publish the generation-scoped first-play completion after the closure
+-- succeeded, keeping the same provisioner epoch for the menu. A failed
+-- publication still launches: the closure is ready and only its
+-- attestation is missing, so the next boot prepares again. Failure and
+-- cancellation paths never reach this function, so they never publish.
+---@param versionId string newly selected game version
+function App._publishFirstPlay(versionId)
+  local generation = App._firstPlayGeneration(versionId)
+  if generation == nil then
+    return
+  end
+  pcall(FirstPlayCompletion.publish, versionId, generation)
+end
+
+-- Selects a game version: borrows a controller epoch through its
+-- provisioner, then launches the menu immediately when bootstrap is
+-- already ready or waits through a visible preparation state otherwise.
+-- A ready bootstrap never recompiles; broader warming starts only after
+-- the menu is installed. Raw extraction complete but first-play
+-- attestation missing or stale routes through the same bounded
+-- first-play preparation a fresh import uses; only a current
+-- generation-scoped attestation keeps the fast bootstrap/menu path.
+---@param versionId string newly selected game version
+---@param options { freshImport: boolean? }? private selection mode, default ordinary
+function App._selectVersion(versionId, options)
+  if App._waitForQuiescence(versionId, options) then
+    return
+  end
+  App._retireSelection()
+  local provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
+  App.provisioner = provisioner
+  App.epoch = assert(provisioner.epoch, "selection borrowed no epoch")
+  local epoch = App.epoch
+  local host = provisioner:gameHost()
+  local freshImport = options ~= nil and options.freshImport == true
+  if not freshImport and FirstPlayCompletion.isCurrent(versionId, App._firstPlayGeneration(versionId)) then
+    local checkOk, ready = pcall(host.requestMilestone, "bootstrap", "required")
+    if checkOk and ready then
+      App._launchMenuWithProvisioner(versionId)
+      return
+    end
+    -- A pending bootstrap waits visibly; a thrown readiness check is latched
+    -- as the preparation state's visible error on its first update.
+    App.setState(CachePreparationState.new({
+      kind = "bootstrap",
+      epoch = epoch,
+      provisioner = host,
+      isCurrent = function(selected)
+        return App.epoch == selected
+      end,
+      onReady = function()
+        App._launchMenuWithProvisioner(versionId)
+      end,
+      onCancel = function()
+        App._showVersionSelector()
+      end,
+    }))
+    return
+  end
+  -- One provisioner epoch owns the mandatory preparation and the
+  -- launched game: no retirement or reselection happens between them.
+  -- The fresh-import path always compiles the closure (raw extraction
+  -- replaced the version tree, so no attestation survives it) and
+  -- carries no gateway; the ordinary path carries the durable gateway so
+  -- preparation fast-transfers once the controller-derived generation
+  -- validates a stored attestation instead of recompiling the closure.
+  local gateway = nil
+  if not freshImport then
+    gateway = App._firstPlayGateway(versionId)
+  end
+  local preparation = HgssGame.newFirstPlayCachePreparation({
+    versionId = versionId,
+    derivedAssets = host,
+    completion = gateway,
+  })
+  App.setState(CachePreparationState.new({
+    kind = "first-play",
+    epoch = epoch,
+    preparation = preparation,
+    provisioner = host,
+    isCurrent = function(selected)
+      return App.epoch == selected
+    end,
+    onReady = function()
+      App._publishFirstPlay(versionId)
+      App._launchMenuWithProvisioner(versionId)
+    end,
+    onCancel = function()
+      App._showVersionSelector()
+    end,
+  }))
 end
 
 function App.load(opts)
   App.opts = opts or {}
   App.drawableWidth, App.drawableHeight = love.graphics.getDimensions()
   App.importer = nil
+  App.provisioner = nil
+  App.service = nil
+  App.epoch = 0
+  App.pendingQuiesce = nil
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
@@ -93,16 +301,14 @@ function App.load(opts)
   App._bootExisting()
 end
 
+-- Replaces only the UI state. Source ownership is explicit: selection,
+-- re-import, selector return and quit retire the session; the
+-- bootstrap-state to game handoff must not retire it.
 function App.setState(nextState)
   local previous = App.state
   App.state = nextState
   if previous and previous.dispose then
     previous:dispose()
-  end
-  if previous and App.provisioner then
-    local provisioner = assert(App.provisioner)
-    App.provisioner = nil
-    provisioner:dispose()
   end
 end
 
@@ -116,13 +322,12 @@ end
 
 function App._onImported(versionId)
   App.importer = nil
-  App.provisioner = nil
-  App._bootMainMenu({ versionId })
+  App._selectVersion(versionId, { freshImport = true })
 end
 
 function App._bootMainMenu(versions)
   assert(type(versions) == "table" and #versions == 1, "Main Menu needs exactly one selected version")
-  launchHgss(versions[1])
+  App._selectVersion(versions[1])
 end
 
 function App._bootExisting()
@@ -132,11 +337,11 @@ function App._bootExisting()
     return
   end
   if #ready == 1 then
-    App._bootMainMenu(ready)
+    App._selectVersion(ready[1])
     return
   end
   App.setState(VersionSelectState.new(ready, function(versionId)
-    App._bootMainMenu({ versionId })
+    App._selectVersion(versionId)
   end))
 end
 
@@ -147,6 +352,9 @@ function App.update(dt)
   end
   if App.importer and not App.importer:isBusy() and App.importer.state == RomImporter.STATES.ERROR then
     App.importer = nil
+  end
+  if App.service then
+    App.service:update()
   end
   if App.provisioner then
     App.provisioner:update()
@@ -191,6 +399,50 @@ end
 function App.filedropped(file)
   if App.importer and App.importer:isBusy() then
     return
+  end
+  local waiting = App.state
+  if waiting ~= nil and getmetatable(waiting) == CachePreparationState and waiting.kind == "quiescence" then
+    -- A replacement dropped while waiting stays queued behind quiescence;
+    -- reentering import here would retire the selection under the wait.
+    return
+  end
+  if App.service ~= nil then
+    -- Retire selected interest before the barrier so no new admission can
+    -- enter the quiescing controller, then wait visibly for actual source
+    -- closure. The import starts exactly once from successful barrier
+    -- completion, on every raw path including the selector with no
+    -- attached provisioner. Progress and input keep pumping while the
+    -- readers drain.
+    App._retireSelection()
+    local epoch = App.epoch or 0
+    local barrier = App.service:quiesce(epoch)
+    if barrier ~= nil then
+      App.pendingQuiesce = { epoch = epoch, barrier = barrier }
+      App.setState(CachePreparationState.new({
+        kind = "quiescence",
+        epoch = epoch,
+        service = App.service,
+        barrier = barrier,
+        isCurrent = function(_)
+          return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == barrier
+        end,
+        onReady = function()
+          App.pendingQuiesce = nil
+          local ok = App.service:importSource(epoch, barrier)
+          if ok then
+            App._startImport()
+            if App.importer then
+              App.importer:filedropped(file)
+            end
+          end
+        end,
+        onCancel = function()
+          App.pendingQuiesce = nil
+          App._showVersionSelector()
+        end,
+      }))
+      return
+    end
   end
   App._startImport()
   App.importer:filedropped(file)
@@ -292,6 +544,16 @@ end
 
 function App.quit()
   App.setState(nil)
+  App._retireSelection()
+  -- Process shutdown alone joins the controller thread; selection
+  -- switching only retires epochs while actual old work stays counted
+  -- below the controller.
+  local service = App.service
+  App.service = nil
+  App.pendingQuiesce = nil
+  if service then
+    service:shutdown()
+  end
 end
 
 return App

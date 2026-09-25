@@ -69,6 +69,22 @@ ownership from the plausible bug.
   present for them to run.
 - The exhaustive ROM check on a machine with a ready user-owned dump and
   derived cache is `PORTEMON_REQUIRE_ROM_TESTS=1 scripts/test.sh --slow`.
+- Seed the private ROM test cache once with
+  `scripts/test.sh --rom-source <path-to-nds-or-zip>`; later plain runs reuse
+  that last successful private selection and never prepare the product cache.
+  Repeat the seed command to rerun against the reused cache, and add `--fresh`
+  for a real cold import into an owned temporary root. Suites declare their
+  exact derived requirements in `derivedAssets`; only the selected union is
+  prepared, and only an explicitly selected complete scope builds the whole
+  corpus. Every preparation runs the common builder under the working-tree
+  development identity, which alone issues the invocation receipt the test
+  entrypoint validates before any suite setup; an explicit release smoke test
+  stays a separate CLI invocation.
+- Runner-prepared derived fixtures are read-only while suites run. A suite
+  that needs writes borrows the real dump read-only and directs its
+  cache/publication backend to a private fixture it owns; no suite rebuilds
+  the shared root, reacquires the parent lock, or mutates another process's
+  cache.
 - Test modules are discovered recursively from roots in `tests/run.lua`; do not add a manual
   registry. A suite's layer comes from its discovery root.
 - Suites declare required `capabilities`. Optional unavailable capability uses

@@ -1243,13 +1243,23 @@ end
 
 -- Script index and emitted resources
 
-local function writeGenerationIndex(c, generation, marker, resources)
+local function writeGenerationIndex(c, generation, marker, resources, memberAudioSequences)
+  local closures = memberAudioSequences
+  if closures == nil then
+    closures = {}
+    for _, entry in ipairs(resources) do
+      if type(entry) == "table" and type(entry.member) == "number" then
+        closures[tostring(entry.member)] = {}
+      end
+    end
+  end
   c:write(ScriptCache.generationMarkerPath(generation), marker)
   c:writeLua(ScriptCache.generationIndexPath(generation), {
     schema = ScriptCache.INDEX_SCHEMA,
     generation = generation,
     marker = marker,
     resources = resources,
+    memberAudioSequences = closures,
   })
 end
 
@@ -1272,7 +1282,9 @@ end
 
 function T.script_generation_readiness_does_not_require_active_selection()
   local c = cache()
-  writeGenerationIndex(c, SCRIPT_GENERATION, "m", { { id = "a.b", member = 1, scriptIndex = 0 } })
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", {
+    { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) },
+  })
   writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
 
   Assert.isTrue(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
@@ -1317,6 +1329,28 @@ function T.script_generation_with_missing_or_malformed_resource_is_not_ready()
   Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
 end
 
+function T.script_generation_without_resource_hashes_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0 } }
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources)
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
+  Assert.isFalse(
+    ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"),
+    "published resource hashes are required for readiness"
+  )
+end
+
+function T.script_generation_with_duplicate_entries_is_not_ready()
+  local c = cache()
+  local resources = {
+    { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("1", 64) },
+    { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("1", 64) },
+  }
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources)
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
+  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"), "duplicate index entries are not ready")
+end
+
 function T.script_index_missing_resources_is_not_ready()
   local c = cache()
   c:writeLua(ScriptCache.activeIndexPath(), {
@@ -1359,12 +1393,52 @@ end
 
 function T.script_valid_artifact_is_ready()
   local c = cache()
-  writeScriptIndex(c, { { id = "a.b", member = 1, scriptIndex = 0 } })
+  writeScriptIndex(c, { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } })
   c:write(
     ScriptCache.scriptPath(SCRIPT_GENERATION, 1, "a.b"),
     'local S = require("gen4.script")\nreturn S.script { api = 1, id = "a.b", steps = { S.stop() } }\n'
   )
   Assert.isTrue(ScriptCache.isReady(c, "m"))
+end
+
+function T.script_generation_without_member_audio_closure_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } }
+  c:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), "m")
+  c:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_GENERATION,
+    marker = "m",
+    resources = resources,
+  })
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
+  Assert.isFalse(
+    ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"),
+    "every generation member requires a published audio closure"
+  )
+end
+
+function T.script_generation_with_malformed_member_audio_closure_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } }
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources, { ["1"] = { "SEQ_B", "SEQ_A" } })
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
+  Assert.isFalse(
+    ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"),
+    "an unsorted audio closure cannot attest its member"
+  )
+end
+
+function T.script_member_audio_lookup_returns_the_published_closure()
+  local index = {
+    schema = ScriptCache.INDEX_SCHEMA,
+    memberAudioSequences = { ["1"] = { "SEQ_A", "SEQ_B" }, ["7"] = {} },
+  }
+  Assert.deepEqual(ScriptCache.audioSequencesForMember(index, 1), { "SEQ_A", "SEQ_B" })
+  Assert.deepEqual(ScriptCache.audioSequencesForMember(index, 7), {})
+  Assert.isNil(ScriptCache.audioSequencesForMember(index, 2))
+  Assert.isNil(ScriptCache.audioSequencesForMember({ memberAudioSequences = { ["1"] = { "B", "A" } } }, 1))
+  Assert.isNil(ScriptCache.audioSequencesForMember({}, 1))
 end
 
 function T.actor_valid_atlas_and_static_renders_are_ready()

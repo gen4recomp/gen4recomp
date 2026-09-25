@@ -75,7 +75,11 @@ function T.tests.vertical_profiles_return_from_staging_before_the_final_step()
       end,
     }
     local transition = FieldTransition.new({
-      loader = {},
+      loader = {
+        requestWarp = function()
+          return true
+        end,
+      },
       player = player,
       resolveDestination = function()
         return {
@@ -161,7 +165,11 @@ function T.tests.escalator_source_lifecycle_orders_effects_and_pause_ownership()
     end,
   }
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     player = player,
     escalatorAt = function()
       return prop
@@ -263,7 +271,11 @@ function T.tests.escalator_step_failure_releases_owned_animation_pause()
     end,
   }
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     player = player,
     escalatorAt = function()
       return {
@@ -317,7 +329,11 @@ function T.tests.all_fixed_profiles_are_explicit_and_panel_has_no_numeric_profil
   end, "unknown transition profiles are invalid")
 
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     prepare = function() end,
     commit = function() end,
   })
@@ -335,7 +351,11 @@ function T.tests.ordinary_profiles_share_source_exit_audio_and_fade()
   for _, profile in ipairs({ FieldTransitionProfile.ORDINARY, FieldTransitionProfile.ORDINARY_INDOOR }) do
     local sounds = {}
     local transition = FieldTransition.new({
-      loader = {},
+      loader = {
+        requestWarp = function()
+          return true
+        end,
+      },
       prepare = function() end,
       commit = function() end,
       playSound = function(sound)
@@ -381,7 +401,11 @@ local function ladderSourceFixture(profile)
     end,
   }
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     player = player,
     resolveDestination = function()
       return {
@@ -435,7 +459,11 @@ end
 function T.tests.ordinary_profile_exit_audio_is_played_once()
   local sounds = {}
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     resolveDestination = function()
       return { destinationMap = { mapId = 60 }, fieldX = 0, fieldZ = 0, surfaceId = 0, worldY = 0 }
     end,
@@ -456,7 +484,11 @@ end
 
 function T.tests.transition_motion_profiles_require_the_player_motion_contract()
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     prepare = function() end,
     commit = function() end,
   })
@@ -478,6 +510,9 @@ function T.tests.field_transition_consumes_trigger_profile_before_ownership()
     end,
     load = function()
       error("profile selection must not load a destination map", 0)
+    end,
+    requestWarp = function()
+      return true
     end,
   }
   local transition = FieldTransition.new({
@@ -509,6 +544,9 @@ function T.tests.field_transition_rejects_unsupported_environment_before_lock()
     loader = {
       transitionEnvironment = function()
         return "outdoors"
+      end,
+      requestWarp = function()
+        return true
       end,
     },
     prepare = function() end,
@@ -544,7 +582,11 @@ function T.tests.field_transition_uses_trigger_destination_facing()
     updateFixed = function() end,
   }
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     resolveDestination = function()
       return { destinationMap = { mapId = 60 }, fieldX = 0, fieldZ = 0, surfaceId = 0, worldY = 0 }
     end,
@@ -583,7 +625,11 @@ local function runTransition(options)
       updateFixed = function() end,
     }
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     resolveDestination = function()
       return {
         destinationMap = destination,
@@ -756,7 +802,11 @@ function T.tests.nonordinary_profiles_dispatch_exit_enter_and_camera_families()
     end,
   }
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     resolveDestination = function()
       return { destinationMap = { mapId = 60 }, fieldX = 0, fieldZ = 0, surfaceId = 0, worldY = 0 }
     end,
@@ -829,7 +879,11 @@ function T.tests.panel_lifecycle_notifies_each_side_once_without_profile_dispatc
   local panels = {}
   local profiles = {}
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     resolveDestination = function()
       return { destinationMap = { mapId = 60 }, fieldX = 0, fieldZ = 0, surfaceId = 0, worldY = 0 }
     end,
@@ -859,7 +913,11 @@ end
 function T.tests.profile_hook_failure_aborts_before_commit_but_after_commit_propagates()
   local commits = 0
   local before = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     onProfile = function(_, phase)
       if phase == "exit" then
         error("exit failed", 0)
@@ -885,7 +943,11 @@ function T.tests.profile_hook_failure_aborts_before_commit_but_after_commit_prop
   Assert.equal(commits, 0)
 
   local after = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     resolveDestination = function()
       return { destinationMap = { mapId = 60 }, fieldX = 0, fieldZ = 0, surfaceId = 0, worldY = 0 }
     end,

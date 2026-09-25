@@ -20,6 +20,7 @@ local PlayTime = require("libs.hgss.src.save.PlayTime")
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "map:67" },
     tags = { "field", "interaction", "zone" },
   },
   tests = {},

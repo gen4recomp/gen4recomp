@@ -121,8 +121,8 @@ end
 ---@param disabled boolean
 function PartyScreenRenderer:_drawIcon(record, region, icons, disabled)
   local graphics = self._graphics
-  local iconImage = icons:image()
   local iconKey = assert(record.iconKey, "occupied slots carry an icon key")
+  local iconImage = icons:image(iconKey)
   local quad = icons:quadFor(iconKey)
   local dims = icons:dimensions(record.iconKey)
   assert(
@@ -251,8 +251,8 @@ function PartyScreenRenderer:_drawSlot(record, rect, icons, disabled)
   end
   graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
 
-  local iconImage = icons:image()
   local iconKey = assert(record.iconKey, "occupied slots carry an icon key")
+  local iconImage = icons:image(iconKey)
   local quad = icons:quadFor(iconKey)
   local dims = icons:dimensions(record.iconKey)
   local iconX = rect.x + 6

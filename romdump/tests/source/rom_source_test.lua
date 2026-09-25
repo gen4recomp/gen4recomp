@@ -35,6 +35,46 @@ local function withPatched(target, field, makePatched, fn)
   end
 end
 
+-- One atomically acquired scratch directory per invocation holds this case's
+-- fixture file. The platform grants exclusivity; no guessed or shared path is
+-- used, and only the acquired root is ever removed.
+local function shellQuote(value)
+  return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+local function commandSucceeded(status)
+  return status == 0 or status == true
+end
+
+local function acquireScratchRoot()
+  local handle = assert(io.popen("mktemp -d"), "mktemp -d could not start")
+  local path = (handle:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local closed = handle:close()
+  assert(commandSucceeded(closed), "mktemp -d did not exit successfully")
+  assert(path ~= "", "mktemp -d produced no path")
+  return path
+end
+
+local function removeOwnedRoot(root)
+  assert(root ~= "" and root ~= "/", "refusing to remove an unowned path")
+  local status = os.execute("rm -rf -- " .. shellQuote(root))
+  assert(commandSucceeded(status), "owned scratch cleanup failed: " .. root)
+end
+
+-- Runs fn(root) with a fresh owned scratch root, always releasing exactly
+-- that root. A body failure keeps its original error; a cleanup failure
+-- after a passing body fails the case.
+local function withOwnedRoot(fn)
+  local root = acquireScratchRoot()
+  local ok, err = pcall(fn, root)
+  if ok then
+    removeOwnedRoot(root)
+    return
+  end
+  pcall(removeOwnedRoot, root)
+  error(err, 0)
+end
+
 function T.from_string_reports_size_and_name()
   local s = RomSource.fromString("abcdef", "sample.nds")
   Assert.equal(s:size(), 6)
@@ -71,6 +111,106 @@ function T.release_is_idempotent_and_frees_reads()
   local data, err = s:read(0, 1)
   Assert.isNil(data)
   Assert.notNil(err)
+end
+
+function T.from_path_reads_file_bytes()
+  local seenRoot = nil
+  withOwnedRoot(function(root)
+    seenRoot = root
+    local path = root .. "/input.nds"
+    local writer = assert(io.open(path, "wb"))
+    writer:write("abc")
+    assert(writer:close())
+
+    local s, err = RomSource.fromPath(path)
+    Assert.notNil(s, err and tostring(err))
+    assert(s)
+    local ok, readErr = pcall(function()
+      Assert.equal(s:size(), 3)
+      Assert.equal(s:read(0, 3), "abc")
+      Assert.equal(s:sha1(), ABC_SHA1)
+    end)
+    s:release()
+    if not ok then
+      error(readErr, 0)
+    end
+  end)
+  assert(seenRoot ~= nil, "the owned root must have been acquired")
+  Assert.isNil(io.open(seenRoot .. "/input.nds", "r"), "the owned fixture must not survive the case")
+end
+
+-- A body failure after acquisition still releases the owned root, and the
+-- original failure -- not cleanup -- is what the case reports.
+function T.owned_scratch_cleanup_preserves_the_body_failure()
+  local seenRoot = nil
+  local err = Assert.throws(function()
+    withOwnedRoot(function(root)
+      seenRoot = root
+      local writer = assert(io.open(root .. "/owned.txt", "w"))
+      writer:write("owned")
+      assert(writer:close())
+      error("injected body failure")
+    end)
+  end)
+  Assert.isTrue(tostring(err):find("injected body failure", 1, true) ~= nil, "the original error must survive")
+  assert(seenRoot ~= nil, "the owned root must have been acquired")
+  Assert.isNil(io.open(seenRoot .. "/owned.txt", "r"), "the owned root must be released after failure")
+end
+
+-- A cleanup failure after a passing body fails the case instead of
+-- passing silently. The stranded owned root is released by the case itself
+-- so the probe leaves no residue.
+function T.owned_scratch_reports_cleanup_failure_after_a_passing_body()
+  local realExecute = os.execute
+  local failedRoot = nil
+  local ok, err = pcall(function()
+    local thrown = Assert.throws(function()
+      withPatched(os, "execute", function()
+        return function(command)
+          failedRoot = command:match("^rm %-rf %-%- '(.*)'$")
+          return false
+        end
+      end, function()
+        withOwnedRoot(function(root)
+          local writer = assert(io.open(root .. "/owned.txt", "w"))
+          writer:write("owned")
+          assert(writer:close())
+        end)
+      end)
+    end)
+    Assert.isTrue(tostring(thrown):find("owned scratch cleanup failed", 1, true) ~= nil, "cleanup failure must surface")
+  end)
+  if failedRoot ~= nil then
+    realExecute("rm -rf -- '" .. failedRoot:gsub("'", "'\\''") .. "'")
+  end
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A failed acquisition never invokes the body and never removes anything.
+function T.owned_scratch_acquisition_failure_removes_nothing()
+  local removed = {}
+  withPatched(os, "execute", function(original)
+    return function(command)
+      removed[#removed + 1] = command
+      return original(command)
+    end
+  end, function()
+    withPatched(io, "popen", function()
+      return function()
+        return nil, "injected mktemp failure"
+      end
+    end, function()
+      local err = Assert.throws(function()
+        withOwnedRoot(function()
+          error("the body must never run without a root")
+        end)
+      end)
+      Assert.isTrue(tostring(err):find("mktemp", 1, true) ~= nil, "acquisition must fail loudly")
+    end)
+  end)
+  Assert.equal(#removed, 0, "a failed acquisition must not remove anything")
 end
 
 function T.from_path_missing_returns_nil_err()

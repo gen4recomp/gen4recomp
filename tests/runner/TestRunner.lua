@@ -93,7 +93,7 @@ end
 -- way a run reports it as one failed result — one broken suite must not replace
 -- the whole listing with a traceback.
 ---@param options table
----@return { module: string, layer: string, capabilities: string[], tags: string[], slow: boolean, tests: string[], error: string|nil }[]
+---@return { module: string, layer: string, capabilities: string[], derivedAssets: string[], tags: string[], slow: boolean, tests: string[], error: string|nil }[]
 function TestRunner.list(options)
   local config = resolve(options)
   local listing = {}
@@ -103,6 +103,7 @@ function TestRunner.list(options)
         module = item.failure.module,
         layer = item.failure.layer,
         capabilities = {},
+        derivedAssets = {},
         tags = {},
         slow = false,
         tests = {},
@@ -116,6 +117,7 @@ function TestRunner.list(options)
           module = suite.module,
           layer = suite.layer,
           capabilities = suite.capabilities,
+          derivedAssets = suite.derivedAssets,
           tags = suite.tags,
           slow = suite.slow,
           tests = tests,
@@ -124,6 +126,29 @@ function TestRunner.list(options)
     end
   end
   return listing
+end
+
+-- The deduplicated union of derived-cache requirements declared by listed
+-- suites with at least one selected test, in stable sorted order. Load-error
+-- rows carry no tests, so they contribute nothing; slow-gated suites never
+-- reach the listing, so hidden suites contribute nothing.
+---@param listing table[]
+---@return string[] union
+function TestRunner.selectedRequirements(listing)
+  local seen = {}
+  for _, suite in ipairs(listing) do
+    if suite.tests ~= nil and #suite.tests > 0 then
+      for _, requirement in ipairs(suite.derivedAssets or {}) do
+        seen[requirement] = true
+      end
+    end
+  end
+  local union = {}
+  for requirement in pairs(seen) do
+    union[#union + 1] = requirement
+  end
+  table.sort(union)
+  return union
 end
 
 ---@param run RunnerRun

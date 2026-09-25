@@ -462,7 +462,11 @@ function FieldStatePresentationFixture.cache()
   cache:write(FieldUiFixture.TRAINER_CARD_PATH, FieldUiFixture.cardBytes())
   cache:writeLua(MonCache.iconManifestPath(), {
     schema = MonCache.ICON_MANIFEST_SCHEMA,
-    image = MonCache.iconImagePath(),
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.iconPagePath(0), width = 256, height = 128 },
+    },
+    pageIds = { 0 },
     entries = {
       ["TEST/f0"] = {
         x = 0,
@@ -470,6 +474,7 @@ function FieldStatePresentationFixture.cache()
         width = 32,
         height = 32,
         frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
+        pageId = 0,
       },
     },
     representative = { "TEST/f0" },
@@ -478,7 +483,7 @@ function FieldStatePresentationFixture.cache()
   for _ = 1, 64 * 64 do
     pixels[#pixels + 1] = string.char(255, 0, 0, 255)
   end
-  cache:write(MonCache.iconImagePath(), PngWriter.encode(64, 64, table.concat(pixels)))
+  cache:write(MonCache.iconPagePath(0), PngWriter.encode(64, 64, table.concat(pixels)))
   -- Minimal item icon manifest/atlas and bag manifest/images so the eager
   -- bag presentation resources resolve during FieldState construction.
   cache:writeLua(ItemCache.iconManifestPath(), {
@@ -653,6 +658,67 @@ function FieldStatePresentationFixture.terrainEffects(cache)
     very_tall_grass = effect(),
     trainer_reveal = effect(),
   }
+end
+
+-- Explicit headless semantic host for presentation fixtures: mirrors the
+-- production derived-asset shapes, records every demand in the returned log,
+-- and reports ready without compiling, decoding, or touching the GPU.
+-- Fixtures boot from prepared caches where demanded artifacts are already
+-- compiled, so ready mirrors successful reuse; demand stays visible in the
+-- log instead of silently succeeding, so blanket enrollment would fail loudly.
+---@return { derivedAssets: table<string, function>, demands: table<integer, table<string, unknown>> }
+function FieldStatePresentationFixture.iconHost()
+  local host = { demands = {} }
+  local function note(kind, detail)
+    host.demands[#host.demands + 1] = { kind = kind, detail = detail }
+  end
+  host.derivedAssets = {
+    requestMilestone = function(name, _)
+      note("milestone", name)
+      return true
+    end,
+    milestoneStatus = function(name)
+      note("milestone-status", name)
+      return { state = "ready", ready = 1, total = 1, failure = nil }
+    end,
+    requestField = function(mapId, _)
+      note("field", mapId)
+      return true
+    end,
+    requestLogicalField = function(mapId, _)
+      note("logical-field", mapId)
+      return true
+    end,
+    ensureLogicalField = function(mapId)
+      note("ensure-logical-field", mapId)
+      return true
+    end,
+    ensureField = function(mapId)
+      note("ensure-field", mapId)
+      return true
+    end,
+    requestCell = function(descriptor, _)
+      note("cell", descriptor)
+      return true
+    end,
+    ensureCell = function(descriptor)
+      note("ensure-cell", descriptor)
+      return true
+    end,
+    requestMonPortraitPage = function(pageId, _)
+      note("portrait", pageId)
+      return true
+    end,
+    requestIconPage = function(pageId, urgency)
+      assert(type(pageId) == "number", "icon demand carries its page")
+      note("icon-page", { pageId = pageId, urgency = urgency })
+      return true
+    end,
+    status = function()
+      return { bootstrap = "ready" }
+    end,
+  }
+  return host
 end
 
 return FieldStatePresentationFixture

@@ -7,6 +7,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
 local T = {}
@@ -245,9 +246,46 @@ local function fakePreparationQueue()
     takes = 0,
     cancels = {},
     ready = false,
+    malformed = false,
     tokens = 0,
     live = {},
   }
+  -- One shared mesh upload payload for every mesh take, packed from real
+  -- cache bytes exactly like the worker packs them; image takes decode a
+  -- fresh blank ImageData each. Both are real-shaped worker payloads, so
+  -- realization matches the production path without starting a thread.
+  local sharedMeshPayload = nil
+  local function meshPayload()
+    if sharedMeshPayload == nil then
+      local MeshWriter = require("libs.assets.src.model.MeshWriter")
+      local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+      local function vertex(x, z)
+        return {
+          x = x,
+          y = 0,
+          z = z,
+          u = 0,
+          v = 0,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        }
+      end
+      sharedMeshPayload = SceneMesh.prepareUpload(
+        MeshWriter.encode({
+          vertices = { vertex(0, 0), vertex(2, 0), vertex(0, 2) },
+          indices = { 0, 1, 2 },
+        }),
+        "geometry/shared.g4mesh"
+      )
+    end
+    return sharedMeshPayload
+  end
   function queue:request(kind, logicalPath, priority)
     self.tokens = self.tokens + 1
     local token = self.tokens
@@ -263,11 +301,17 @@ local function fakePreparationQueue()
     return "pending"
   end
   function queue:take(token)
-    Assert.notNil(self.live[token], "take transfers a live preparation token")
+    local record = assert(self.live[token], "take transfers a live preparation token")
     Assert.isTrue(self.ready, "take transfers only prepared payloads")
     self.live[token] = nil
     self.takes = self.takes + 1
-    return { payload = token }
+    if self.malformed then
+      return { payload = token }
+    end
+    if record.kind == "mesh" then
+      return meshPayload()
+    end
+    return { imageData = love.image.newImageData(2, 2) }
   end
   function queue:cancel(token)
     self.live[token] = nil
@@ -298,17 +342,34 @@ local function readyHeadlessCache()
           width = 80,
           height = 80,
           frames = { { x = 0, y = 0, width = 80, height = 80, duration = 1 } },
+          pageId = 0,
         }
       end
     end
   end
   cacheFs:writeLua(MonCache.portraitManifestPath(), {
     schema = MonCache.PORTRAIT_MANIFEST_SCHEMA,
-    image = MonCache.portraitImagePath(),
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.portraitPagePath(0), width = 640, height = 320 },
+    },
+    pageIds = { 0 },
     entries = portraitEntries,
     representative = { MonCache.portraitSelector("CHIKORITA", 0, "male", false) },
   })
   cacheFs:write(cacheModule.markerPath(), marker)
+  -- The generated field-UI manifest the presentation window requires, with
+  -- real frame-strip bytes behind it: readiness must prove the full finish
+  -- path, never a stand-in window.
+  local FieldUiAssetCache =
+    requireModule("libs.assets.src.field.FieldUiAssetCache", "the generated field-UI cache owns the window manifest")
+  local uiManifest = FieldUiFixture.manifest()
+  uiManifest.reference = { width = 256, height = 192 }
+  FieldUiFixture.addStartMenuIconContract(uiManifest)
+  FieldUiFixture.addNamingSemantics(uiManifest)
+  Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), "the field-UI fixture validates")
+  cacheFs:writeLua(FieldUiAssetCache.manifestPath(), uiManifest)
+  cacheFs:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
   return cacheFs
 end
 
@@ -352,13 +413,14 @@ local function openHeadlessChoice()
     mapSection = 7,
     date = CatalogFixture.metDate(),
   })
+  local cacheFs = readyHeadlessCache()
   local host = StarterChoiceState.new({
     catalog = catalog,
-    cacheFs = readyHeadlessCache(),
+    cacheFs = cacheFs,
     frameIndex = 3,
     measureDisplay = headlessBox,
   })
-  return host, service
+  return host, service, cacheFs
 end
 
 local function openTrio(host, service)
@@ -742,6 +804,310 @@ function T.zero_budget_advances_nothing_and_disposal_ends_preparation()
     "disposal names itself: " .. tostring(disposedErr)
   )
   Assert.equal(host:advancePresentationPreparation(context, 1), 0, "the idle state stays quiet after disposal")
+end
+
+local function livePreparationTokens(queue)
+  local count = 0
+  for _ in pairs(queue.live) do
+    count = count + 1
+  end
+  return count
+end
+
+function T.chooser_holds_at_most_two_unconsumed_preparation_tokens()
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  local backend = stubBackend()
+  openTrio(host, service)
+  local context = { assetPreparation = queue, gxRenderer = backend }
+
+  -- The worker answers faster than the main thread uploads: every advance
+  -- below leaves preparation outstanding, so the submitted-but-unconsumed
+  -- window is fully stressed before anything is taken.
+  for _ = 1, 8 do
+    host:advancePresentationPreparation(context, 1)
+    Assert.isTrue(
+      livePreparationTokens(queue) <= 2,
+      "the chooser keeps at most two submitted-unconsumed tokens while preparation is outstanding"
+    )
+  end
+  queue.ready = true
+  Assert.isTrue(advanceToReady(host, queue, backend), "every staged asset still realizes once preparation completes")
+  Assert.isTrue(host:isPresentationReady(), "the chooser becomes drawable after bounded preparation")
+  host:close()
+  host:dispose()
+end
+
+function T.malformed_prepared_payloads_fail_preparation_without_blank_scene()
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  -- The fake hands back bare records that carry no mesh upload buffers and
+  -- no decoded image data: exactly the malformed shape production must fail
+  -- instead of rendering as a blank scene.
+  queue.malformed = true
+  queue.ready = true
+  local backend = stubBackend()
+  openTrio(host, service)
+  local context = { assetPreparation = queue, gxRenderer = backend }
+
+  local failure = Assert.throws(function()
+    for _ = 1, 64 do
+      host:advancePresentationPreparation(context, 1)
+    end
+  end, "a prepared payload without upload buffers fails instead of realizing a blank scene")
+  Assert.isTrue(
+    type(failure) == "string" or type(failure) == "table",
+    "the preparation failure carries a diagnosable cause"
+  )
+  Assert.isFalse(host:isPresentationReady(), "a failed preparation never reports the scene drawable")
+  host:close()
+  host:dispose()
+end
+
+local function pagedPortraitManifest(cacheFs, speciesForms, pageOf)
+  local MonCache = requireModule("libs.assets.src.MonCache", "the generated mon cache owns the portrait pages")
+  local entries = {}
+  local order = {}
+  for _, record in ipairs(speciesForms) do
+    for _, gender in ipairs({ "male", "female" }) do
+      for _, shiny in ipairs({ false, true }) do
+        local selector = MonCache.portraitSelector(record.species, record.form, gender, shiny)
+        order[#order + 1] = selector
+      end
+    end
+  end
+  table.sort(order)
+  for index, selector in ipairs(order) do
+    local cell = index - 1
+    entries[selector] = {
+      x = (cell % 8) * 80,
+      y = math.floor(cell / 8) * 80,
+      width = 80,
+      height = 80,
+      frames = {
+        {
+          x = (cell % 8) * 80,
+          y = math.floor(cell / 8) * 80,
+          width = 80,
+          height = 80,
+          duration = 8,
+        },
+      },
+      pageId = pageOf(selector),
+    }
+  end
+  local manifest = {
+    schema = MonCache.PORTRAIT_MANIFEST_SCHEMA,
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.portraitPagePath(0), width = 640, height = 320 },
+      [1] = { pageId = 1, image = MonCache.portraitPagePath(1), width = 640, height = 320 },
+    },
+    pageIds = { 0, 1 },
+    entries = entries,
+    representative = { order[1] },
+  }
+  cacheFs:writeLua(MonCache.portraitManifestPath(), manifest)
+  return manifest
+end
+
+local function candidateSelector(candidate, catalog, entries)
+  local MonCache = requireModule("libs.assets.src.MonCache", "the generated mon cache owns the portrait selectors")
+  local Personality = requireModule("libs.mons.src.gen4.Personality", "personality owns gender and shininess")
+  local ratio = catalog:species(candidate.species).genderRatio
+  local gender = Personality.gender(ratio, candidate.personality)
+  local shiny = Personality.shiny(candidate.origin.trainerId, candidate.personality)
+  if gender == "genderless" then
+    local maleSelector = MonCache.portraitSelector(candidate.species, candidate.form, "male", shiny)
+    if entries[maleSelector] ~= nil then
+      gender = "male"
+    else
+      gender = "female"
+    end
+  end
+  local selector = MonCache.portraitSelector(candidate.species, candidate.form, gender, shiny)
+  Assert.notNil(entries[selector], "the candidate selector stays planned: " .. selector)
+  return selector
+end
+
+function T.chooser_requests_only_the_pages_selected_by_its_candidates()
+  local MonCache = requireModule("libs.assets.src.MonCache", "the generated mon cache owns the portrait pages")
+  Assert.equal(type(MonCache.portraitPagePath), "function", "portrait pages have their own path constructor")
+  local host, service, cacheFs = openHeadlessChoice()
+  local catalog = CatalogFixture.makeCatalog()
+  local candidates = {
+    service:buildStarter("CHIKORITA"),
+    service:buildStarter("SHEDINJA"),
+    service:buildStarter("TOTODILE"),
+  }
+  local speciesForms = {
+    { species = "CHIKORITA", form = 0 },
+    { species = "TOTODILE", form = 0 },
+    { species = "EEVEE", form = 0 },
+    { species = "EEVEE", form = 1 },
+    { species = "SHEDINJA", form = 0 },
+  }
+  pagedPortraitManifest(cacheFs, speciesForms, function()
+    return 0
+  end)
+  host:open(0, candidates)
+  local portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the paged manifest stays staged")
+  local selectors = {}
+  for index, candidate in ipairs(candidates) do
+    selectors[index] = candidateSelector(candidate, catalog, portraits.entries)
+  end
+  Assert.isTrue(selectors[1] ~= selectors[2] and selectors[2] ~= selectors[3], "the trio carries distinct selectors")
+  pagedPortraitManifest(cacheFs, speciesForms, function(selector)
+    if selector == selectors[3] then
+      return 1
+    end
+    return 0
+  end)
+  host:close()
+  host:open(0, candidates)
+  portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the repaged manifest stays staged")
+  local queue = fakePreparationQueue()
+  queue.ready = true
+  local backend = stubBackend()
+  Assert.isTrue(advanceToReady(host, queue, backend), "the chooser prepares through bounded steps")
+  Assert.isTrue(host:isPresentationReady(), "the chooser becomes drawable from its selected pages")
+  local pagesByImage = {}
+  for pageId, page in pairs(assert(portraits.pages, "the staged manifest carries its pages")) do
+    pagesByImage[page.image] = pageId
+  end
+  local requestedPages = {}
+  for _, request in ipairs(queue.requests) do
+    Assert.isTrue(
+      request.path ~= MonCache.portraitImagePath(),
+      "the chooser never falls back to a whole portrait atlas"
+    )
+    if pagesByImage[request.path] ~= nil then
+      requestedPages[request.path] = true
+    end
+  end
+  local expected = {}
+  expected[MonCache.portraitPagePath(0)] = true
+  expected[MonCache.portraitPagePath(1)] = true
+  Assert.deepEqual(requestedPages, expected, "only the distinct pages of the actual candidates are requested")
+  host:close()
+  host:dispose()
+end
+
+function T.actual_portrait_pages_are_required_before_their_image_paths()
+  local MonCache = requireModule("libs.assets.src.MonCache", "the generated mon cache owns the portrait pages")
+  local host, service, cacheFs = openHeadlessChoice()
+  local catalog = CatalogFixture.makeCatalog()
+  local candidates = {
+    service:buildStarter("CHIKORITA"),
+    service:buildStarter("SHEDINJA"),
+    service:buildStarter("TOTODILE"),
+  }
+  local speciesForms = {
+    { species = "CHIKORITA", form = 0 },
+    { species = "TOTODILE", form = 0 },
+    { species = "EEVEE", form = 0 },
+    { species = "EEVEE", form = 1 },
+    { species = "SHEDINJA", form = 0 },
+  }
+  pagedPortraitManifest(cacheFs, speciesForms, function()
+    return 0
+  end)
+  host:open(0, candidates)
+  local portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the paged manifest stays staged")
+  local selectors = {}
+  for index, candidate in ipairs(candidates) do
+    selectors[index] = candidateSelector(candidate, catalog, portraits.entries)
+  end
+  pagedPortraitManifest(cacheFs, speciesForms, function(selector)
+    if selector == selectors[3] then
+      return 1
+    end
+    return 0
+  end)
+  host:close()
+  host:open(0, candidates)
+
+  local pagesPending = true
+  local pageRequests = {}
+  local derivedAssets = {
+    requestMonPortraitPage = function(pageId, urgency)
+      pageRequests[#pageRequests + 1] = { pageId = pageId, urgency = urgency }
+      if pagesPending then
+        return false
+      end
+      return true
+    end,
+  }
+  local queue = fakePreparationQueue()
+  queue.ready = true
+  local backend = stubBackend()
+  local context = { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets }
+  for _ = 1, 64 do
+    host:advancePresentationPreparation(context, 1)
+  end
+  Assert.isFalse(host:isPresentationReady(), "the chooser holds its input until its actual pages are ready")
+  local pendingPages = {}
+  for _, request in ipairs(pageRequests) do
+    pendingPages[request.pageId] = true
+    Assert.equal(request.urgency, "required", "actual pages ride required interest")
+  end
+  Assert.deepEqual(pendingPages, { [0] = true, [1] = true }, "only the actual candidates pages are requested")
+  for _, request in ipairs(queue.requests) do
+    Assert.isFalse(
+      request.path == MonCache.portraitPagePath(0) or request.path == MonCache.portraitPagePath(1),
+      "no page image reaches preparation while its page is pending"
+    )
+  end
+
+  pagesPending = false
+  local finished = false
+  for _ = 1, 256 do
+    host:advancePresentationPreparation(context, 1)
+    if host:isPresentationReady() then
+      finished = true
+      break
+    end
+  end
+  Assert.isTrue(finished, "the chooser becomes drawable once its actual pages are ready")
+  local submittedPages = {}
+  for _, request in ipairs(queue.requests) do
+    if request.path == MonCache.portraitPagePath(0) or request.path == MonCache.portraitPagePath(1) then
+      submittedPages[request.path] = true
+    end
+    Assert.isTrue(request.path ~= MonCache.portraitImagePath(), "ready pages never fall back to a whole portrait atlas")
+  end
+  local expectedReady = {}
+  expectedReady[MonCache.portraitPagePath(0)] = true
+  expectedReady[MonCache.portraitPagePath(1)] = true
+  Assert.deepEqual(submittedPages, expectedReady, "every actual page image submits once its page is current")
+  host:close()
+  host:dispose()
+end
+
+function T.absent_portrait_page_fails_preparation_without_substitution()
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  queue.ready = true
+  local backend = stubBackend()
+  openTrio(host, service)
+  local derivedAssets = {
+    requestMonPortraitPage = function(pageId, _)
+      return false, "test generation mon-portrait-page " .. tostring(pageId) .. ": source has no such page"
+    end,
+  }
+  local failure = Assert.throws(function()
+    host:advancePresentationPreparation(
+      { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets },
+      1
+    )
+  end, "an absent portrait page fails instead of substituting content")
+  Assert.isTrue(
+    tostring(failure):find("portrait page 0", 1, true) ~= nil,
+    "the failure names the unavailable page: " .. tostring(failure)
+  )
+  Assert.isFalse(host:isPresentationReady(), "a failed page never reports the scene drawable")
+  host:close()
+  host:dispose()
 end
 
 return { tests = T }

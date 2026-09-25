@@ -99,11 +99,16 @@ local function fixture(options)
   local loader = {
     maps = maps,
     loads = 0,
+    logicalLoads = 0,
     protections = {},
     protectionCalls = {},
   }
   function loader:load(mapId)
     self.loads = self.loads + 1
+    return assert(self.maps[mapId])
+  end
+  function loader:loadLogical(mapId)
+    self.logicalLoads = self.logicalLoads + 1
     return assert(self.maps[mapId])
   end
   function loader:definesMap(mapId)

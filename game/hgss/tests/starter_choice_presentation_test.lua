@@ -243,7 +243,7 @@ local function openPresentation(frameIndex)
         return nil
       end,
     },
-    portraits = { { selector = "a" }, { selector = "b" }, { selector = "c" } },
+    portraits = { { selector = "a", pageId = 0 }, { selector = "b", pageId = 0 }, { selector = "c", pageId = 1 } },
     frameIndex = frameIndex == nil and 3 or frameIndex,
   })
   presentation:reset()
@@ -485,7 +485,7 @@ function T.construction_carries_the_player_frame_choice()
         return nil
       end,
     },
-    portraits = { { selector = "a" }, { selector = "b" }, { selector = "c" } },
+    portraits = { { selector = "a", pageId = 0 }, { selector = "b", pageId = 0 }, { selector = "c", pageId = 1 } },
   })
   Assert.isFalse(ok, "a missing frame index fails instead of falling back to frame 0")
 end
@@ -515,12 +515,21 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
     }
   end
   local manifest = presentation._manifest
+  local MonCache = require("libs.assets.src.MonCache")
   presentation._backend = backend
+  local FieldUiFixture = require("tests.support.FieldUiFixture")
+  presentation._cacheFs.read = function(_, path)
+    if path == FieldUiFixture.STRIP_PATH then
+      return FieldUiFixture.stripBytes()
+    end
+    return nil
+  end
   presentation._imageEntries = {
     [manifest.backgrounds.host.image .. "|clamp|clamp"] = image(512, 192),
     [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
     [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
-    ["assets/generated/mon/portraits.png|clamp|clamp"] = image(80, 80),
+    [MonCache.portraitPagePath(0) .. "|clamp|clamp"] = image(80, 80),
+    [MonCache.portraitPagePath(1) .. "|clamp|clamp"] = image(80, 80),
   }
   presentation._cacheFs.loadLua = function(_, path)
     if path == "data/generated/mon/portraits.lua" then
@@ -531,6 +540,15 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
           c = { x = 0, y = 0, width = 80, height = 80 },
         },
       }
+    end
+    local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+    if path == FieldUiAssetCache.manifestPath() then
+      local fixture = require("tests.support.FieldUiFixture")
+      local uiManifest = fixture.manifest()
+      uiManifest.reference = { width = 256, height = 192 }
+      fixture.addStartMenuIconContract(uiManifest)
+      fixture.addNamingSemantics(uiManifest)
+      return uiManifest
     end
     return nil
   end
@@ -1017,19 +1035,21 @@ function T.starter_frames_draw_through_the_borrowed_field_window_primitive()
         end,
       }
     end
+    local MonCache = require("libs.assets.src.MonCache")
     presentation._imageEntries = {
       [manifest.backgrounds.host.image .. "|clamp|clamp"] = image(512, 192),
       [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
       [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
-      ["assets/generated/mon/portraits.png|clamp|clamp"] = image(80, 80),
+      [MonCache.portraitPagePath(0) .. "|clamp|clamp"] = image(80, 80),
+      [MonCache.portraitPagePath(1) .. "|clamp|clamp"] = image(80, 80),
     }
     presentation._cacheFs.loadLua = function(_, path)
       if path == "data/generated/mon/portraits.lua" then
         return {
           entries = {
-            a = { x = 0, y = 0, width = 80, height = 80 },
-            b = { x = 0, y = 0, width = 80, height = 80 },
-            c = { x = 0, y = 0, width = 80, height = 80 },
+            a = { x = 0, y = 0, width = 80, height = 80, pageId = 0 },
+            b = { x = 0, y = 0, width = 80, height = 80, pageId = 0 },
+            c = { x = 0, y = 0, width = 80, height = 80, pageId = 1 },
           },
         }
       end

@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
 local HgssGame = require("game.hgss.src.HgssGame")
 local RomImporter = require("romdump.src.source.RomImporter")
-local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
+local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 
 local T = {
@@ -16,28 +16,35 @@ local T = {
   tests = {},
 }
 
----@return InteractiveCacheBuild
-local function unusedBuildState()
-  local build = {} --[[@as unknown]]
-  return build --[[@as InteractiveCacheBuild]]
-end
-
 local function withApp(fn)
   local originalState = App.state
   local originalImporter = App.importer
   local originalProvisioner = App.provisioner
+  local originalService = App.service
   local originalOpts = App.opts
   local originalNew = HgssGame.new
   local originalReady = RomImporter.isReady
   local originalDimensions = love.graphics.getDimensions
   local originalQuit = love.event.quit
-  local originalBuildNew = InteractiveCacheBuild.new
   local originalAppBackend = ProducerFingerprint.appBackend
 
-  local result = { events = {}, launches = {} }
+  -- Attestation currency is not this suite's contract: ordinary selections
+  -- keep the bootstrap path while no real attestation file is touched.
+  local result = { events = {}, launches = {}, firstPlayCurrent = true }
+  local originalIsCurrent = FirstPlayCompletion.isCurrent
+  local originalHasStored = FirstPlayCompletion.hasStored
+  local originalPublish = FirstPlayCompletion.publish
+  FirstPlayCompletion.isCurrent = function(_, _)
+    return result.firstPlayCurrent
+  end
+  FirstPlayCompletion.hasStored = function()
+    return true
+  end
+  FirstPlayCompletion.publish = function() end
   App.state = nil
   App.importer = nil
   App.provisioner = nil
+  App.service = nil
   App.opts = { dev = false }
   App.drawableWidth, App.drawableHeight = 800, 600
   RomImporter.isReady = function(versionId)
@@ -63,24 +70,6 @@ local function withApp(fn)
       end,
     }
   end
-  InteractiveCacheBuild.new = function()
-    return {
-      update = function() end,
-      dispose = function() end,
-      requestField = function()
-        return true
-      end,
-      ensureField = function()
-        return true
-      end,
-      requestCell = function()
-        return true
-      end,
-      ensureCell = function()
-        return true
-      end,
-    }
-  end
   HgssGame.new = function(options)
     result.launches[#result.launches + 1] = options
     return {
@@ -98,12 +87,15 @@ local function withApp(fn)
   App.state = originalState
   App.importer = originalImporter
   App.provisioner = originalProvisioner
+  App.service = originalService
   App.opts = originalOpts
   HgssGame.new = originalNew
   RomImporter.isReady = originalReady
+  FirstPlayCompletion.isCurrent = originalIsCurrent
+  FirstPlayCompletion.hasStored = originalHasStored
+  FirstPlayCompletion.publish = originalPublish
   love.graphics.getDimensions = originalDimensions
   love.event.quit = originalQuit
-  InteractiveCacheBuild.new = originalBuildNew
   ProducerFingerprint.appBackend = originalAppBackend
   if not ok then
     error(err, 0)
@@ -112,26 +104,49 @@ end
 
 T.tests["the selected game receives only the semantic provisioning host"] = function()
   withApp(function(result)
+    local epoch = 0
+    local service = {}
+    function service:select(_)
+      epoch = epoch + 1
+      return epoch
+    end
+    function service:request(_, _) end
+    function service:observe(_, _)
+      return true, nil
+    end
+    function service:enableSweep(_)
+      result.warmups = (result.warmups or 0) + 1
+    end
+    function service:update() end
+    function service:retire(_) end
+    App.service = service
     App._bootMainMenu({ "heartgold" })
     local launch = assert(result.launches[1])
     local host = assert(launch.derivedAssets, "the running game must receive a derived-asset host")
-    Assert.keySet(host, "ensureCell,ensureField,requestCell,requestField")
+    Assert.keySet(
+      host,
+      "ensureCell,ensureField,ensureLogicalField,milestoneStatus,requestCell,requestField,requestIconPage,requestLogicalField,requestMilestone,requestMonPortraitPage,status"
+    )
     Assert.equal(type(host.requestField), "function")
     Assert.equal(type(host.ensureField), "function")
+    Assert.equal(type(host.requestLogicalField), "function")
+    Assert.equal(type(host.ensureLogicalField), "function")
     Assert.equal(type(host.requestCell), "function")
     Assert.equal(type(host.ensureCell), "function")
     Assert.isNil(host.update, "the game must not receive producer lifecycle control")
     Assert.isNil(host.dispose, "the game must not receive producer disposal control")
+    Assert.isNil(host.startBackgroundWarmup, "the game must not receive warmup lifecycle control")
+    Assert.isNil(host.enableSweep, "the game must not receive session authorization control")
+    Assert.equal(result.warmups or 0, 1, "menu installation authorizes background completion once after handoff")
   end)
 end
 
 T.tests["producer progress runs before the running game update"] = function()
   withApp(function(result)
     local order = {}
-    ---@type DerivedAssetProvisioner
     local provisioner = {
-      build = unusedBuildState(),
-      closed = false,
+      epoch = 1,
+      retired = false,
       host = nil,
       update = function()
         order[#order + 1] = "provisioner:update"
@@ -157,10 +172,9 @@ T.tests["game disposal precedes producer disposal"] = function()
         events[#events + 1] = "game:dispose"
       end,
     }
-    ---@type DerivedAssetProvisioner
     local provisioner = {
-      build = unusedBuildState(),
-      closed = false,
+      epoch = 1,
+      retired = false,
       host = nil,
       dispose = function()
         events[#events + 1] = "provisioner:dispose"

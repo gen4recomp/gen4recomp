@@ -1,73 +1,59 @@
--- Lightweight availability audit for the published derived cache. It checks
--- completion markers only; dependency freshness remains the cache builder's
--- responsibility when a developer explicitly rebuilds, and implementation
--- freshness belongs to the producer fingerprint.
+-- Exhaustive proof that one generation's derived cache is usable. The audit
+-- walks the complete canonical inventory for the exact current generation
+-- and checks every expected job through the dispatcher's readiness
+-- validation: a current-generation receipt plus a usable payload. Markers
+-- alone prove nothing, expected membership is never inferred from whichever
+-- directories happen to exist, and the full-build attestation is published
+-- only after this audit passes, so it is never consulted here. Read-only:
+-- the walk performs no writes.
 
-local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
-local AudioCache = require("libs.assets.src.audio.AudioCache")
-local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
-local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-local MapAssetCache = require("libs.assets.src.MapAssetCache")
-local ScriptCache = require("libs.assets.src.ScriptCache")
-local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
-local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
-local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
-local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
-local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
-local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
-local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
-local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
-local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
-local MonCache = require("libs.assets.src.MonCache")
-local ItemCache = require("libs.assets.src.ItemCache")
-local BagCache = require("libs.assets.src.BagCache")
+local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+local ArtifactState = require("romdump.src.build.ArtifactState")
+local StorageErrors = require("libs.storage.src.errors")
 
 local DerivedCacheAudit = {}
 
-local REQUIRED_MARKERS = {
-  FieldActorCache.markerPath(),
-  MonCache.markerPath(),
-  ItemCache.markerPath(),
-  BagCache.markerPath(),
-  AudioCache.markerPath(),
-  FieldCameraCache.markerPath(),
-  FieldFontCache.markerPath(),
-  FieldMessageCache.markerPath(),
-  FieldUiAssetCache.markerPath(),
-  IntroAssetCache.markerPath(),
-  StarterChoiceAssetCache.markerPath(),
-  FieldWeatherCache.markerPath(),
-  ScriptCache.markerPath(),
-  FieldEffectAssetCache.markerPath(),
-  FieldEmoteAssetCache.markerPath(),
-  NewGameInitCache.markerPath(),
-  FieldCellCache.markerPath(),
-}
+-- A receipt file that no longer parses is damaged data, not a storage
+-- failure: the job is unavailable and eligible for repair. Genuine
+-- backend read failures keep propagating instead of reading as absence.
+local function isUnusableReceipt(failure)
+  local message = tostring(failure)
+  return message:find(StorageErrors.CACHE_LUA_PARSE_FAILED, 1, true) ~= nil
+    or message:find(StorageErrors.CACHE_LUA_EVAL_FAILED, 1, true) ~= nil
+end
 
 ---@param cacheFs CacheFs
+---@param identity { versionId: string, generationId: string, producerId: string } current strict generation record
+---@param plans ArtifactJobs.Plans complete published inventory for that exact identity
 ---@return boolean, string|nil
-function DerivedCacheAudit.isAvailable(cacheFs)
+function DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
   assert(cacheFs and cacheFs.read and cacheFs.loadLua, "DerivedCacheAudit requires a CacheFs-shaped object")
-  for _, path in ipairs(REQUIRED_MARKERS) do
-    if cacheFs:read(path) == nil then
-      return false, "missing completion marker " .. path
-    end
+  assert(type(identity) == "table", "DerivedCacheAudit requires the current generation identity")
+  local generationId = identity.generationId
+  assert(type(generationId) == "string" and generationId ~= "", "DerivedCacheAudit requires a generation identity")
+  assert(type(plans) == "table", "DerivedCacheAudit requires the complete source inventory")
+  local jobsOk, jobs = pcall(ArtifactJobs.completeJobs, plans)
+  if not jobsOk or type(jobs) ~= "table" then
+    return false, "complete inventory is not available: " .. tostring(jobs)
   end
-
-  local world = cacheFs:loadLua(MapAssetCache.worldPath())
-  if type(world) ~= "table" or type(world.maps) ~= "table" then
-    return false, "missing world manifest"
-  end
-  for _, map in ipairs(world.maps) do
-    if type(map) ~= "table" or type(map.id) ~= "number" or map.id < 0 or map.id % 1 ~= 0 then
-      return false, "world manifest has an invalid map entry"
+  ---@cast jobs { kind: string, key: string }[]
+  for _, job in ipairs(jobs) do
+    -- The receipt read names the failure precisely without duplicating
+    -- family validation: a diagnosable storage failure propagates, a
+    -- missing, stale, or corrupt receipt fails the job, and only a present
+    -- receipt reaches the payload check.
+    local receiptOk, receipt, receiptReason = pcall(ArtifactState.read, cacheFs, generationId, job.kind, job.key)
+    if not receiptOk then
+      if isUnusableReceipt(receipt) then
+        return false, job.kind .. ":" .. job.key .. " has no usable receipt"
+      end
+      error(receipt, 0)
     end
-    if cacheFs:read(MapAssetCache.mapDir(map.id) .. "/complete") == nil then
-      return false, "map " .. map.id .. " has no completion marker"
+    if receipt == nil then
+      return false, job.kind .. ":" .. job.key .. " has no current receipt: " .. tostring(receiptReason)
     end
-    if cacheFs:read(FieldMapDataCache.markerPath(map.id)) == nil then
-      return false, "field map " .. map.id .. " has no completion marker"
+    if not ArtifactJobs.validate(cacheFs, generationId, job.kind, job.key, plans, identity) then
+      return false, job.kind .. ":" .. job.key .. " fails its family validator"
     end
   end
   return true

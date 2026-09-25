@@ -10,21 +10,52 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
-local CompiledAsset = require("tests.rom.support.CompiledAsset")
 
 local T = {}
 local SYMBOL = "MAP_NEW_BARK_ELMS_LAB_1F"
 local MAP_ID = 61
 
+-- One-shot staged map publication through the worker path. A staging failure
+-- aborts the stage; the raw dump is never touched.
+---@param cacheFs CacheFs
+---@param bundle table<string, unknown>
+local function stageMap(cacheFs, bundle)
+  local mapId = assert(bundle.mapId, "map bundle needs its map identity")
+  local key = tostring(mapId)
+  local prepared = PreparedArtifact.new({
+    cacheFs = cacheFs,
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+    stageName = "map-" .. key,
+  })
+  local ok, stageErr = pcall(MapCacheWriter.stage, prepared, bundle)
+  if not ok then
+    prepared:abort()
+    error(stageErr, 0)
+  end
+  prepared:finishSuccess({ marker = bundle.marker })
+  prepared:publish({
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+  })
+end
+
 local function compileInto(romFs, version)
   local c = CacheFs.forVersion(version, FakeCache.new())
   local bundle = assert(MapAssetCompiler.compile(romFs, SYMBOL))
-  local marker = MapCacheWriter.write(c, bundle)
-  return c, bundle, marker
+  stageMap(c, bundle)
+  return c, bundle, bundle.marker
 end
 
 local function sortedKeys(t)
@@ -143,8 +174,14 @@ end
 function T.uvs_are_normalized(romFs, version)
   local _, bundle = compileInto(romFs, version)
   local maxUV = 0
+  -- Finalized meshes are baked byte blobs, not Lua vertex tables: decode
+  -- each through the production mesh contract and bound the normalized UVs.
   for _, batch in pairs(bundle.meshes) do
-    for _, vtx in ipairs(CompiledAsset.mesh(batch).vertices) do
+    local bytes = batch
+    if type(bytes) ~= "string" then
+      bytes = assert(bytes:getString(), "a finalized mesh carries its bytes")
+    end
+    for _, vtx in ipairs(SceneMesh.decode(bytes).vertices) do
       maxUV = math.max(maxUV, math.abs(vtx[4]), math.abs(vtx[5]))
     end
   end
@@ -162,7 +199,8 @@ function T.cache_only_restart(romFs, version)
   do
     local c = CacheFs.forVersion(version, backend)
     local bundle = assert(MapAssetCompiler.compile(romFs, SYMBOL))
-    marker = MapCacheWriter.write(c, bundle)
+    marker = bundle.marker
+    stageMap(c, bundle)
   end
 
   -- ---- restart: everything below reads only the cache ----
@@ -209,7 +247,7 @@ function T.injected_failure_leaves_no_marker(romFs, version)
   c:write("rom-dump.complete", "raw-owned-by-earlier-run")
 
   local bundle = assert(MapAssetCompiler.compile(romFs, SYMBOL))
-  Assert.isTrue(not pcall(MapCacheWriter.write, c, bundle), "write raises")
+  Assert.isTrue(not pcall(stageMap, c, bundle), "staging raises")
   Assert.isTrue(not c:exists(MapAssetCache.mapDir(MAP_ID) .. "/complete"), "no false marker")
   Assert.isTrue(c:exists("rom-dump.complete"), "raw-dump marker preserved")
 end

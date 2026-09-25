@@ -50,6 +50,7 @@ local function withSpies(fn)
   local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
   local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
   local originalApply = NewGameInitialization.apply
+  local originalInitialLocation = NewGameInitialization.initialLocation
   local originalFieldStateNew = FieldState.new
   local originalValidationNew = GameSaveValidation.new
   local originalStoreNew = GameSaveStore.new
@@ -78,8 +79,24 @@ local function withSpies(fn)
         },
       },
       sourceDependency = { standardScriptMember = 0, sha1 = "0000000000000000000000000000000000000000" },
+      initialLocation = {
+        mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+        fieldX = 6,
+        fieldZ = 6,
+        facing = "south",
+      },
     }
     return originalApply(candidate, artifact)
+  end)
+  -- Same fake-ready-host seam as the routing suite: candidate reservation
+  -- observes the generated start location without touching the real cache.
+  rawset(NewGameInitialization, "initialLocation", function(_)
+    return {
+      mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+      fieldX = 6,
+      fieldZ = 6,
+      facing = "south",
+    }
   end)
   FieldState.new = function(game, options)
     fieldStateCalls[#fieldStateCalls + 1] = game
@@ -135,6 +152,7 @@ local function withSpies(fn)
     fn(applyCalls, fieldStateCalls, context)
   end)
   rawset(NewGameInitialization, "apply", originalApply)
+  rawset(NewGameInitialization, "initialLocation", originalInitialLocation)
   FieldState.new = originalFieldStateNew
   rawset(GameSaveValidation, "new", originalValidationNew)
   rawset(GameSaveStore, "new", originalStoreNew)
@@ -144,6 +162,58 @@ local function withSpies(fn)
   MainMenuRenderer.new = originalMenuRendererNew
   if not ok then
     error(err, 0)
+  end
+end
+
+local function readyHost()
+  return {
+    requestMilestone = function()
+      return true
+    end,
+    milestoneStatus = function()
+      return { state = "ready", ready = 1, total = 1 }
+    end,
+    requestField = function()
+      return true
+    end,
+    ensureField = function()
+      return true
+    end,
+    ensureLogicalField = function()
+      return true
+    end,
+    requestCell = function()
+      return true
+    end,
+    ensureCell = function()
+      return true
+    end,
+    requestMonPortraitPage = function()
+      return true
+    end,
+    requestLogicalField = function()
+      return true
+    end,
+    status = function()
+      return {}
+    end,
+  }
+end
+
+local function planningLoader()
+  return {
+    requestLocation = function()
+      return true
+    end,
+    globalPosition = function(_, _, fieldX, fieldZ)
+      return { x = fieldX, z = fieldZ }
+    end,
+  }
+end
+
+local function settle(game)
+  for _ = 1, 10 do
+    game:update(1 / 60)
   end
 end
 
@@ -162,6 +232,8 @@ local function newGame(context, candidate)
   local game = HgssGame.new({
     versionId = "heartgold",
     onExit = function() end,
+    derivedAssets = readyHost(),
+    fieldMapLoader = planningLoader(),
   })
   return game, controller
 end
@@ -169,9 +241,15 @@ end
 function T.fresh_oak_completion_applies_startup_initialization_before_field_state()
   withSpies(function(applyCalls, fieldStateCalls, context)
     local worldState = FieldEventState.new()
-    local candidate = { saveId = "save-00000001", versionId = "heartgold", playerData = {}, worldState = worldState }
+    local candidate = {
+      saveId = "save-00000001",
+      versionId = "heartgold",
+      playerData = {},
+      worldState = worldState,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
     context.store = {
-      list = function()
+      listMetadata = function()
         return {}
       end,
     }
@@ -179,6 +257,7 @@ function T.fresh_oak_completion_applies_startup_initialization_before_field_stat
     game.state:keypressed("return")
     controller.phase = "complete"
     game:update(0)
+    settle(game)
     Assert.equal(#applyCalls, 1, "fresh Oak completion must apply generated startup initialization exactly once")
     Assert.equal(applyCalls[1], candidate)
     Assert.equal(#fieldStateCalls, 1)
@@ -202,10 +281,13 @@ function T.continue_never_reapplies_fresh_startup_initialization()
       versionId = "heartgold",
       playerData = { profile = { name = "GOLD" } },
       playTimeSeconds = 0,
+      mapId = 60,
+      fieldX = 684,
+      fieldZ = 393,
       world = { flags = { [FieldScriptSymbols.flagsByName.FLAG_HIDE_NEW_BARK_FRIEND] = false } },
     }
     local store = {
-      list = function()
+      listMetadata = function()
         return { clearedFlagGame }
       end,
       load = function()
@@ -216,8 +298,11 @@ function T.continue_never_reapplies_fresh_startup_initialization()
     local game = HgssGame.new({
       versionId = "heartgold",
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     game.state:keypressed("return")
+    settle(game)
     Assert.equal(#applyCalls, 0, "Continue must never invoke fresh startup initialization")
     Assert.equal(#fieldStateCalls, 1)
     Assert.equal(fieldStateCalls[1], clearedFlagGame)
@@ -232,9 +317,15 @@ end
 function T.fresh_oak_completion_requests_the_covered_field_entry()
   withSpies(function(_, fieldStateCalls, context)
     local worldState = FieldEventState.new()
-    local candidate = { saveId = "save-00000001", versionId = "heartgold", playerData = {}, worldState = worldState }
+    local candidate = {
+      saveId = "save-00000001",
+      versionId = "heartgold",
+      playerData = {},
+      worldState = worldState,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
     context.store = {
-      list = function()
+      listMetadata = function()
         return {}
       end,
     }
@@ -242,6 +333,7 @@ function T.fresh_oak_completion_requests_the_covered_field_entry()
     game.state:keypressed("return")
     controller.phase = "complete"
     game:update(0)
+    settle(game)
     Assert.equal(#fieldStateCalls, 1)
     local options = assert(context.fieldOptions[1], "a new-game field entry must carry presentation options")
     Assert.isTrue(options.initialFadeIn == true, "a new-game Oak handoff must request the covered field entry")
@@ -260,10 +352,13 @@ function T.continue_enters_the_field_without_the_covered_entry()
       versionId = "heartgold",
       playerData = { profile = { name = "GOLD" } },
       playTimeSeconds = 0,
+      mapId = 60,
+      fieldX = 684,
+      fieldZ = 393,
       world = { flags = { [FieldScriptSymbols.flagsByName.FLAG_HIDE_NEW_BARK_FRIEND] = false } },
     }
     local store = {
-      list = function()
+      listMetadata = function()
         return { clearedFlagGame }
       end,
       load = function()
@@ -274,8 +369,11 @@ function T.continue_enters_the_field_without_the_covered_entry()
     local game = HgssGame.new({
       versionId = "heartgold",
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     game.state:keypressed("return")
+    settle(game)
     Assert.equal(#fieldStateCalls, 1)
     local options = context.fieldOptions[1] or {}
     Assert.isTrue(options.initialFadeIn ~= true, "an ordinary Continue must never request the new-game covered entry")
@@ -494,7 +592,7 @@ function T.presented_oak_black_draw_precedes_field_construction()
       mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
       fieldX = 6,
       fieldZ = 6,
-      sourceFacing = 1,
+      facing = "south",
     },
   })
   withSpies(function(applyCalls, fieldStateCalls, context)
@@ -503,7 +601,7 @@ function T.presented_oak_black_draw_precedes_field_construction()
     context.candidate = partialCandidate
     context.oakState = oakState
     context.store = {
-      list = function()
+      listMetadata = function()
         return {}
       end,
     }
@@ -526,8 +624,11 @@ function T.presented_oak_black_draw_precedes_field_construction()
     local game = HgssGame.new({
       versionId = "heartgold",
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     game.state:keypressed("return")
+    settle(game)
     local routedComplete = assert(oakState.onComplete, "the Oak handoff must carry the production completion route")
     oakState.onComplete = function(result)
       timeline[#timeline + 1] = { kind = "oak_complete" }
@@ -573,10 +674,13 @@ function T.continue_constructs_the_field_without_the_oak_handoff()
       versionId = "heartgold",
       playerData = { profile = { name = "GOLD" } },
       playTimeSeconds = 0,
+      mapId = 60,
+      fieldX = 684,
+      fieldZ = 393,
       world = { flags = { [FieldScriptSymbols.flagsByName.FLAG_HIDE_NEW_BARK_FRIEND] = false } },
     }
     context.store = {
-      list = function()
+      listMetadata = function()
         return { clearedFlagGame }
       end,
       load = function()
@@ -593,8 +697,11 @@ function T.continue_constructs_the_field_without_the_oak_handoff()
     local game = HgssGame.new({
       versionId = "heartgold",
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     game.state:keypressed("return")
+    settle(game)
     Assert.equal(composeCalls, 0, "Continue must never compose the Oak handoff")
     Assert.equal(#applyCalls, 0, "Continue must never invoke fresh startup initialization")
     Assert.equal(#fieldStateCalls, 1, "Continue must construct the field immediately without the handoff barrier")

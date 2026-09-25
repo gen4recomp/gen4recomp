@@ -39,8 +39,10 @@ and compilation into portemon assets.
   Nitro, overlay, packed-bitfield, or decomp knowledge.
 - Do not duplicate winner selection, schema validation, source resolution, or normalization in
   inspectors/debug tools. Inspection surfaces call the authoritative producer logic.
-- Compiler implementation freshness uses the `romdump/src` producer fingerprint. Do not add a
-  manual compiler version just to invalidate cache after source-code changes.
+- Development freshness follows the producer working-tree byte digest across
+  the configured source roots; release cache identity uses the explicit
+  per-game release counter. Do not add a manual compiler version just to
+  invalidate cache after source-code changes.
 - A real generated contract change updates the authoritative `DerivedAssetContract` identity
   in `libs/assets`; do not use contract versions as source-code revision counters.
 

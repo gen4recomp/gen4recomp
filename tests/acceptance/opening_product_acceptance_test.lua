@@ -15,6 +15,7 @@ local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "map:63", "map:64" },
     tags = { "product", "opening", "checkpoint" },
   },
   tests = {},
@@ -66,6 +67,37 @@ end
 
 local function tick(frames)
   for _ = 1, frames do
+    App.update(1 / 60)
+  end
+end
+
+local function waitForMainMenu()
+  -- The boot can install a preparation state while a compiler worker
+  -- validates its first demand off the game thread; worker threads run on
+  -- wall time, so the wait is clock-bounded while updates keep pumping.
+  local deadline = love.timer.getTime() + 60
+  while love.timer.getTime() < deadline do
+    local game = App.state
+    local inner = game and game.state or nil
+    local view = inner and inner.view and inner:view() or nil
+    if view ~= nil and view.kind == "main_menu" then
+      return
+    end
+    App.update(1 / 60)
+  end
+end
+
+local function waitForField()
+  -- Continue validates its field demand through worker-thread warmup while
+  -- game pumps stay cheap, so the wait is clock-bounded while updates
+  -- keep pumping.
+  local deadline = love.timer.getTime() + 600
+  while love.timer.getTime() < deadline do
+    local game = App.state
+    local inner = game and game.state or nil
+    if inner ~= nil and inner.runtime ~= nil then
+      return
+    end
     App.update(1 / 60)
   end
 end
@@ -250,7 +282,11 @@ local function completeOak(onDraw)
     name_confirm = true,
     final_dialogue = true,
   }
-  for _ = 1, 3600 do
+  -- Cache warmup and compilation now happen on worker threads while game
+  -- pumps stay cheap, so pump counts no longer imply wall time: the
+  -- handoff waits on the clock (bounded) while ticks keep driving it.
+  local deadline = love.timer.getTime() + 600
+  while love.timer.getTime() < deadline do
     Assert.notNil(App.state and App.state.state, "Oak must remain active until the profile is finalized")
     if App.state.state.runtime ~= nil then
       return
@@ -258,8 +294,18 @@ local function completeOak(onDraw)
     if onDraw then
       onDraw()
     end
-    local view = App.state.state:view()
-    if view.phase == "name_edit" then
+    -- The Oak-to-field handoff routes through a preparation state that
+    -- publishes no view (the Game host contract is update/draw only);
+    -- re-fetch after drawing since a presented frame can complete the
+    -- handoff, and drive viewless frames instead of observing them.
+    local current = assert(App.state and App.state.state, "Oak must remain active until the profile is finalized")
+    if current.runtime ~= nil then
+      return
+    end
+    local view = current.view and current:view() or nil
+    if view == nil then
+      tick(1)
+    elseif view.phase == "name_edit" then
       App.textinput("GOLD")
       -- Navigate keyboard focus onto the virtual Confirm key before
       -- activating it, matching the one confirm-capable-device contract:
@@ -488,23 +534,30 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     App.opts = {
       test = false,
       actors = false,
-      dev = false,
+      dev = true,
     }
     -- `love app/` mounts only app/ as its product VFS root. The repository
     -- source tree stands in for the packaged producer tree in this source-run
-    -- acceptance, while App remains on its product (no checkout metadata) path.
+    -- acceptance, and the boot selects the development generation the runner
+    -- prepared, so the single selection flow launches the menu synchronously.
     ProducerFingerprint.appBackend = function()
       return ProducerFingerprint.checkoutBackend(love.filesystem.getSourceBaseDirectory())
     end
     App.state = nil
     App._bootMainMenu({ AcceptanceHarness.defaultVersion() })
+    waitForMainMenu()
     Assert.equal(App.state.state:view().kind, "main_menu")
     Assert.equal(#saveStore:list(), 0)
     press("a")
     withDrawRecorder(handoffDraws, function()
       completeOak(function()
         local state = assert(App.state and App.state.state)
-        local view = state:view()
+        -- Preparation frames publish no view; only Oak frames contribute
+        -- to the phase trace and layout checks.
+        local view = state.view and state:view() or nil
+        if view == nil then
+          return
+        end
         if not seenPhases[view.phase] then
           phases[#phases + 1] = view.phase
           seenPhases[view.phase] = true
@@ -607,11 +660,13 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     local savedMap = checkpoint.mapId
     App.setState(nil)
     App._bootMainMenu({ AcceptanceHarness.defaultVersion() })
+    waitForMainMenu()
     local restoredView = App.state.state:view()
     Assert.equal(#restoredView.saves + #restoredView.globalActions, 2)
     -- A fresh boot focuses the first save body, so activating continues
     -- directly: moving down would leave the saves for the global action.
     press("a")
+    waitForField()
     tick(4)
     local continuedRuntime = assert(App.state.state.runtime, "Continue must enter the real FieldState")
     Assert.equal(continuedRuntime.runtimeMap.mapId, savedMap)

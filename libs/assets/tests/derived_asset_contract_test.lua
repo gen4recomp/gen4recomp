@@ -34,12 +34,15 @@ function T.contract_pins_the_current_asset_identities()
   -- revision identifies the current shared generated-asset contracts. The
   -- sequence initial-volume domain is the current NNS table domain.
   Assert.deepEqual(DerivedAssetContract, {
-    revision = 10,
+    revision = 12,
     map = {
       cacheFormat = "map-cache-v7",
       sceneSchema = "g4-map-scene-v10",
       terrainSchema = "g4-terrain-surfaces-v1",
       collisionVersion = 1,
+    },
+    world = {
+      schema = "g4-world-v1",
     },
     fieldCells = {
       cacheFormat = "field-cell-cache-v3",
@@ -70,8 +73,8 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-field-font-v4",
     },
     scripts = {
-      cacheFormat = "script-cache-v4",
-      indexSchema = "g4-script-index-v2",
+      cacheFormat = "script-cache-v5",
+      indexSchema = "g4-script-index-v4",
       provenanceSchema = "g4-script-provenance-v2",
     },
     fieldWeather = {
@@ -80,7 +83,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     newGameInit = {
       cacheFormat = "g4-new-game-init-cache-v1",
-      schema = "g4-new-game-init-v2",
+      schema = "g4-new-game-init-v3",
     },
     fieldEffects = {
       cacheFormat = "field-effect-cache-v8",
@@ -106,9 +109,9 @@ function T.contract_pins_the_current_asset_identities()
     mons = {
       cacheFormat = "mon-cache-v1",
       catalogSchema = "g4-mon-catalog-v3",
-      indexSchema = "g4-mon-index-v1",
-      iconManifestSchema = "g4-mon-icon-manifest-v1",
-      portraitManifestSchema = "g4-mon-portrait-manifest-v1",
+      indexSchema = "g4-mon-index-v2",
+      iconManifestSchema = "g4-mon-icon-manifest-v2",
+      portraitManifestSchema = "g4-mon-portrait-manifest-v2",
     },
     items = {
       cacheFormat = "item-cache-v1",

@@ -25,6 +25,7 @@ function T.defaults_are_all_off()
   Assert.isNil(o.importRom --[[@as any]])
   Assert.isFalse(o.forceDump)
   Assert.isFalse(o.allowCompileExclusions)
+  Assert.isFalse(o.dev)
   Assert.isNil(o.overlayId)
   Assert.isNil(o.outputPath)
   Assert.deepEqual(o.resourceDetails, {})
@@ -81,6 +82,16 @@ function T.parses_forcedump_with_required_rom()
   Assert.equal(o.command, "build-cache")
   Assert.isTrue(o.forceDump)
   Assert.equal(o.romPath, "/tmp/hg.nds")
+end
+
+function T.dev_flag_selects_the_development_identity_with_release_default()
+  Assert.isFalse(Cli.parse({ "--build-cache" }).dev, "direct CLI mode defaults to release")
+  local dev = Cli.parse({ "--build-cache", "--dev" })
+  Assert.equal(dev.command, "build-cache")
+  Assert.isTrue(dev.dev)
+  local withRom = Cli.parse({ "--dev", "--build-cache", "/tmp/hg.nds" })
+  Assert.isTrue(withRom.dev)
+  Assert.equal(withRom.romPath, "/tmp/hg.nds")
 end
 
 function T.unknown_tokens_are_rejected()
@@ -357,6 +368,131 @@ function T.discovery_only_flags_are_usage_errors_without_discover_app()
   end)
   Assert.throws(function()
     Cli.parse({ "--check-dump", "--rom-source", "/tmp/hg.nds" })
+  end)
+end
+
+function T.probe_rom_selects_a_probe_command_with_its_path()
+  local o = Cli.parse({ "--probe-rom", "/tmp/hg.nds" })
+  Assert.equal(o.command, "probe-rom")
+  Assert.equal(o.romPath, "/tmp/hg.nds")
+end
+
+function T.probe_rom_requires_a_path()
+  Assert.throws(function()
+    Cli.parse({ "--probe-rom" })
+  end)
+end
+
+function T.prepare_cache_requires_a_version_and_at_least_one_requirement()
+  local o = Cli.parse({ "--prepare-cache", "--version", "heartgold", "--require", "bootstrap" })
+  Assert.equal(o.command, "prepare-cache")
+  Assert.equal(o.version, "heartgold")
+  Assert.deepEqual(o.requirements, { "bootstrap" })
+  Assert.throws(function()
+    Cli.parse({ "--prepare-cache", "--require", "bootstrap" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--prepare-cache", "--version", "heartgold" })
+  end)
+end
+
+function T.prepare_cache_accepts_repeated_requirements_and_observation_flags()
+  local o = Cli.parse({
+    "--prepare-cache",
+    "--version",
+    "heartgold",
+    "--require",
+    "bootstrap",
+    "--require",
+    "map:7",
+    "--dev",
+    "--profile",
+    "/tmp/cache-profile.jsonl",
+  })
+  Assert.equal(o.command, "prepare-cache")
+  Assert.deepEqual(o.requirements, { "bootstrap", "map:7" })
+  Assert.isTrue(o.dev)
+  Assert.equal(o.profile, "/tmp/cache-profile.jsonl")
+  local rebuild = Cli.parse({
+    "--prepare-cache",
+    "--version",
+    "heartgold",
+    "--require",
+    "map:7",
+    "--rebuild",
+    "map:7",
+    "--dev",
+  })
+  Assert.deepEqual(rebuild.rebuild, { "map:7" })
+end
+
+function T.probe_and_prepare_conflict_with_other_commands()
+  Assert.throws(function()
+    Cli.parse({ "--build-cache", "--probe-rom", "/tmp/hg.nds" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--probe-rom", "/tmp/hg.nds", "--prepare-cache", "--version", "heartgold", "--require", "bootstrap" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--check-dump", "--prepare-cache", "--version", "heartgold", "--require", "bootstrap" })
+  end)
+end
+
+function T.prepare_cache_rejects_malformed_requirements_and_paths()
+  for _, argv in ipairs({
+    { "--prepare-cache", "--version", "heartgold", "--require", "maps/7/complete" },
+    { "--prepare-cache", "--version", "heartgold", "--require", "plan.lua" },
+    { "--prepare-cache", "--version", "heartgold", "--require", "map: 7" },
+    { "--prepare-cache", "--version", "heartgold", "--require", "fused:7" },
+    { "--prepare-cache", "--version", "heartgold", "--require", "bootstrap", "--rebuild", "map:7" },
+  }) do
+    Assert.throws(function()
+      Cli.parse(argv)
+    end)
+  end
+end
+
+function T.prepare_cache_accepts_an_invocation_receipt_output()
+  local o = Cli.parse({
+    "--prepare-cache",
+    "--version",
+    "heartgold",
+    "--require",
+    "map:7",
+    "--dev",
+    "--preparation-record",
+    "/tmp/preparation.lua",
+  })
+  Assert.equal(o.command, "prepare-cache")
+  Assert.equal(o.preparationRecord, "/tmp/preparation.lua")
+  Assert.isNil(Cli.parse({ "--prepare-cache", "--version", "heartgold", "--require", "map:7" }).preparationRecord)
+end
+
+function T.preparation_record_is_rejected_outside_preparation()
+  Assert.throws(function()
+    Cli.parse({ "--build-cache", "--preparation-record", "/tmp/preparation.lua" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--preparation-record", "/tmp/preparation.lua" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--probe-rom", "/tmp/hg.nds", "--preparation-record", "/tmp/preparation.lua" })
+  end)
+  Assert.throws(function()
+    Cli.parse({
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "map:7",
+      "--preparation-record",
+      "/tmp/one.lua",
+      "--preparation-record",
+      "/tmp/two.lua",
+    })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--prepare-cache", "--version", "heartgold", "--require", "map:7", "--preparation-record" })
   end)
 end
 

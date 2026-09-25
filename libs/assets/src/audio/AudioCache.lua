@@ -21,6 +21,7 @@ AudioCache.SEQUENCE_SCHEMA = Contract.audio.sequenceSchema
 AudioCache.BANK_SCHEMA = Contract.audio.bankSchema
 AudioCache.SAMPLE_SCHEMA = Contract.audio.sampleSchema
 AudioCache.PROVENANCE_SCHEMA = Contract.audio.provenanceSchema
+AudioCache.BANK_COMPLETION_SCHEMA = "g4-audio-bank-complete-v1"
 
 local DATA_DIR = "data/generated/audio"
 
@@ -37,6 +38,13 @@ function AudioCache.markerPath()
   return DATA_DIR .. "/complete"
 end
 
+-- The catalog completion record: proof that the runtime index was
+-- published and structurally validated on its own, never a claim that any
+-- bank/sequence/sample payload is present.
+function AudioCache.catalogMarkerPath()
+  return DATA_DIR .. "/catalog.complete"
+end
+
 function AudioCache.sequencePath(id)
   return string.format("%s/sequences/%04d.lua", DATA_DIR, id)
 end
@@ -51,6 +59,14 @@ end
 
 function AudioCache.sampleMetadataPath(key)
   return string.format("%s/sample-metadata/%s.lua", DATA_DIR, key)
+end
+
+-- The per-bank completion record: progress metadata for one independently
+-- staged bank closure, never a family readiness claim. It carries the
+-- closure marker plus the bank and sequence selection the closure validated,
+-- so bank readiness revalidates the exact closure without the family index.
+function AudioCache.bankCompletePath(bankId)
+  return string.format("%s/bank-complete/%s.lua", DATA_DIR, tostring(bankId))
 end
 
 function AudioCache.marker(romSha1, depHash)
@@ -74,6 +90,54 @@ function AudioCache.isReady(cacheFs, expectedMarker)
     return false
   end
   return require("libs.assets.src.audio.AudioCacheValidator").validate(cacheFs) == nil
+end
+
+-- True only if the catalog completion marker is exact and the published
+-- index passes structural catalog validation (AudioCacheValidator): root
+-- schema and sections, self-identifying records, no stored payload paths,
+-- sequence bank/player references, player fields, and bidirectional symbol
+-- maps. No bank payload is read; catalog readiness never implies that any
+-- bank closure is ready.
+function AudioCache.isCatalogReady(cacheFs, expectedMarker)
+  if cacheFs:read(AudioCache.catalogMarkerPath()) ~= expectedMarker then
+    return false
+  end
+  local index = cacheFs:loadLua(AudioCache.indexPath()) ---@type table?
+  return require("libs.assets.src.audio.AudioCacheValidator").validateCatalog(index) == nil
+end
+
+-- True only if the bank's own completion marker is exact and the closure it
+-- names revalidates: the bank asset with its validator passing and matching
+-- identity, every named sequence asset with its validator passing and naming
+-- this bank, and every bank-referenced sample's metadata and PCM payload. A
+-- marker without its sequence/sample closure is never ready. The validator
+-- requires this module for its paths, so it is loaded here rather than at
+-- module scope. Reads staged or published files only; never source decoding.
+---@param cacheFs CacheFs
+---@param bankId integer
+---@param expectedMarker string
+---@return boolean
+function AudioCache.isBankReady(cacheFs, bankId, expectedMarker)
+  local completion = cacheFs:loadLua(AudioCache.bankCompletePath(bankId)) ---@type table?
+  if type(completion) ~= "table" then
+    return false
+  end
+  if completion.marker ~= expectedMarker then
+    return false
+  end
+  if completion.schema ~= AudioCache.BANK_COMPLETION_SCHEMA or completion.bankId ~= bankId then
+    return false
+  end
+  if type(completion.sequenceIds) ~= "table" then
+    return false
+  end
+  for _, sequenceId in ipairs(completion.sequenceIds) do
+    if type(sequenceId) ~= "number" or sequenceId % 1 ~= 0 or sequenceId < 0 then
+      return false
+    end
+  end
+  local sequenceIds = completion.sequenceIds ---@type integer[]
+  return require("libs.assets.src.audio.AudioCacheValidator").validateBankClosure(cacheFs, bankId, sequenceIds) == nil
 end
 
 return AudioCache

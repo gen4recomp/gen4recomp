@@ -9,7 +9,15 @@
 -- are deliberately not indexed), the assets, the samples, and the dependency
 -- pins; a malformed archive fails the whole compile with a structured error
 -- (an unsupported command in a referenced sequence is a build failure, never
--- a placeholder). Pure domain module; the marker and hashes are computed
+-- a placeholder). Catalog planning (plan) enumerates the deterministic
+-- per-bank closures without lowering sequences or decoding waves, and
+-- a retained worker-generation session (openSession) acquires the archive
+-- once and compiles every bank of its generation through that one view,
+-- and one-bank streaming compilation (compileBank) owns exactly one used bank,
+-- the used sequences naming it, and their referenced sample closure: each
+-- distinct source wave decodes once per job, its PCM streams through the
+-- caller sink, and the returned bundle holds keys and metadata, never
+-- retained PCM. Pure domain module; the marker and hashes are computed
 -- through the injectable sha1hex/hashLua helpers like the other compilers.
 
 local Errors = require("libs.errors.src.Errors")
@@ -24,6 +32,30 @@ local Swav = require("libs.nds.src.nitro.sound.Swav")
 local AudioCompiler = {}
 
 local SDAT_PATH = "data/sound/gs_sound_data.sdat"
+
+---@class AudioCompiler.BankPlan
+---@field bankId integer
+---@field sequenceIds integer[]
+
+---@class AudioCompiler.CatalogPlan
+---@field index table<string, unknown>
+---@field bankPlans AudioCompiler.BankPlan[]
+
+---@class AudioCompiler.BankBundle
+---@field bankId integer
+---@field bank table<string, unknown>
+---@field sequences table<integer, table<string, unknown>>
+---@field sampleMetadata table<string, table<string, unknown>>
+---@field samples table<string, string>?
+---@field marker string
+---@field dependencies table<string, unknown>
+
+---@class AudioCompiler.SoundIdentity
+---@field romSha1 string
+---@field sdatSha1 string
+---@field sdatFileId integer
+
+---@alias AudioCompiler.SampleSink fun(key: string, metadata: table<string, unknown>, pcm16le: string)
 
 local function must(value, err)
   if value == nil then
@@ -77,8 +109,8 @@ local function countOf(t)
 end
 
 -- The semantic voice for a direct/leaf record. Sample voices resolve their
--- wave member through the shared wave cache (decode once per member, dedupe
--- by semantic identity across every bank); PSG duties carry the discrete DS
+-- wave member through the job wave cache (decode once per member, dedupe
+-- by semantic identity); PSG duties carry the discrete DS
 -- duty index 0..7 from the source record (GBATEK: the SNDInstParam swav
 -- field selects the hardware duty pattern, index 7 the all-LOW special
 -- pattern); noise is a bare generator. Every leaf carries its source
@@ -111,19 +143,25 @@ local function voiceFromLeaf(leaf, waveCache, bankId, waveArchives)
   return voice
 end
 
--- Shared wave resolution: maps an instrument's swar slot through the bank
+-- Job-local wave resolution: maps an instrument's swar slot through the bank
 -- record's wave-archive slots to the SDAT wave archives, decodes each
--- referenced member exactly once, and dedupes samples by content key into
--- the bundle's global sample maps.
+-- referenced member exactly once per job, and streams its PCM through the
+-- staging sink. The sink consumes the bytes synchronously; the job retains
+-- only the parsed archive views and the small source-identity to semantic
+-- key mapping plus the keyed metadata, never decoded PCM.
 local WaveCache = {}
 WaveCache.__index = WaveCache
 
-function WaveCache.new(sdat)
+---@param sdat table<string, unknown>
+---@param sampleSink AudioCompiler.SampleSink
+---@return table<string, unknown>
+function WaveCache.new(sdat, sampleSink)
+  assert(type(sampleSink) == "function", "streaming wave resolution requires a sample sink")
   return setmetatable({
     sdat = sdat,
+    sampleSink = sampleSink,
     swars = {},
     decoded = {},
-    samples = {},
     sampleMetadata = {},
   }, WaveCache)
 end
@@ -162,6 +200,11 @@ function WaveCache:swarFor(waveId, bankId, slot)
   return parsed
 end
 
+---@param bankId integer
+---@param waveArchives table<integer, integer>
+---@param slot integer
+---@param member integer
+---@return string
 function WaveCache:resolve(bankId, waveArchives, slot, member)
   local waveId = waveArchives[slot]
   if waveId == nil then
@@ -172,7 +215,8 @@ function WaveCache:resolve(bankId, waveArchives, slot, member)
   end
   waveId = assert(waveId)
   local swar = self:swarFor(waveId, bankId, slot)
-  local key = self.decoded[waveId .. ":" .. member]
+  local sourceKey = waveId .. ":" .. member
+  local key = self.decoded[sourceKey]
   if key == nil then
     local memberBytes, memberErr = swar:readMember(member)
     if memberBytes == nil then
@@ -191,9 +235,8 @@ function WaveCache:resolve(bankId, waveArchives, slot, member)
     end
     key =
       AudioCompiler.sampleKey(wave.pcm16le, wave.baseTimer, wave.loopEnabled, wave.loop.startFrame, wave.loop.endFrame)
-    self.decoded[waveId .. ":" .. member] = key
-    if self.samples[key] == nil then
-      self.samples[key] = wave.pcm16le
+    self.decoded[sourceKey] = key
+    if self.sampleMetadata[key] == nil then
       -- The derived metadata carries only runtime-relevant identity: the
       -- content key (the payload path is derived from it), the frame count,
       -- the DS base timer, and the loop window. The source sample rate never
@@ -208,6 +251,11 @@ function WaveCache:resolve(bankId, waveArchives, slot, member)
         loop = wave.loop,
       }
     end
+    -- One source wave streams once: the sink stages the bytes synchronously
+    -- and the decoded PCM is discarded before the next wave decodes. A new
+    -- source identity with an already seen semantic key streams its identical
+    -- bytes again; shared staged paths deduplicate at publication.
+    self.sampleSink(key, self.sampleMetadata[key], wave.pcm16le)
   end
   return key
 end
@@ -234,7 +282,7 @@ local function compileSequence(sdat, symbols, id, record)
   }
 end
 
-local function compileBank(sdat, symbols, id, record, waveCache)
+local function compileBankRecord(sdat, symbols, id, record, waveCache)
   local bytes = must(sdat:readFile(record.fileId))
   local ir, err = Sbnk.decode(bytes, "SBNK " .. id)
   if ir == nil then
@@ -300,23 +348,32 @@ local function compileBank(sdat, symbols, id, record, waveCache)
   }
 end
 
-local function _compile(romFs, sha1hex, hashLua)
+---@param romFs table<string, unknown>
+---@return string
+local function openSdatBytes(romFs)
   assert(
     romFs and romFs.readSourcePath and romFs.metadata and romFs.version and romFs.fileIdForPath,
-    "compile requires a RomFs-shaped object"
+    "audio planning and compilation require a RomFs-shaped object"
   )
-  sha1hex = sha1hex or Hashing.sha1hex
-  hashLua = hashLua or Hashing.hashLua
+  return must(romFs:readSourcePath(SDAT_PATH))
+end
 
-  local sdatBytes = must(romFs:readSourcePath(SDAT_PATH))
+---@param sdatBytes string
+---@return table<string, unknown>
+local function openSdat(sdatBytes)
   local sdat, sdatErr = Sdat.open(sdatBytes, SDAT_PATH)
   if sdat == nil then
     error(sdatErr)
   end
-  sdat = assert(sdat)
+  return assert(sdat)
+end
+
+---@param sdat table<string, unknown>
+---@return table<string, table<string, unknown>>
+local function catalogSymbols(sdat)
   -- The SYMB block is optional; without it the compile emits no symbols.
   -- The fallback mirrors Sdat's symbol-section shape with empty sections.
-  local symbols = sdat.symbols
+  return sdat.symbols
     or {
       sequences = {},
       sequenceArchives = {},
@@ -327,11 +384,17 @@ local function _compile(romFs, sha1hex, hashLua)
       streamPlayers = {},
       streams = {},
     }
-  local waveCache = WaveCache.new(sdat)
+end
 
-  local sequences = {}
+-- The normalized catalog metadata both planning and compilation share: the
+-- existing sequence/bank/player/symbol sections, built without lowering
+-- sequences or decoding waves.
+---@param sdat table<string, unknown>
+---@param symbols table<string, table<string, unknown>>
+---@param version string
+---@return table<string, unknown>
+local function buildIndex(sdat, symbols, version)
   local indexSequences = {}
-  local banks = {}
   local indexBanks = {}
   local sequenceBySymbol = {}
   local bankBySymbol = {}
@@ -339,16 +402,15 @@ local function _compile(romFs, sha1hex, hashLua)
   for id = 0, sdat.counts.sequences - 1 do
     local record = sdat.sequences[id]
     if record.fileId ~= nil then
-      local sequence = compileSequence(sdat, symbols, id, record)
-      sequences[id] = sequence
+      local symbol = symbols.sequences[id]
       indexSequences[id] = {
         id = id,
-        symbol = sequence.symbol,
+        symbol = symbol,
         bankId = record.bankId,
         playerId = record.playerId,
       }
-      if sequence.symbol ~= nil then
-        sequenceBySymbol[sequence.symbol] = id
+      if symbol ~= nil then
+        sequenceBySymbol[symbol] = id
       end
     end
   end
@@ -356,14 +418,13 @@ local function _compile(romFs, sha1hex, hashLua)
   for id = 0, sdat.counts.banks - 1 do
     local record = sdat.banks[id]
     if record.fileId ~= nil then
-      local bank = compileBank(sdat, symbols, id, record, waveCache)
-      banks[id] = bank
+      local symbol = symbols.banks[id]
       indexBanks[id] = {
         id = id,
-        symbol = bank.symbol,
+        symbol = symbol,
       }
-      if bank.symbol ~= nil then
-        bankBySymbol[bank.symbol] = id
+      if symbol ~= nil then
+        bankBySymbol[symbol] = id
       end
     end
   end
@@ -383,15 +444,332 @@ local function _compile(romFs, sha1hex, hashLua)
     }
   end
 
-  local index = {
+  return {
     schema = AudioCache.INDEX_SCHEMA,
-    version = romFs:version(),
+    version = version,
     sequences = indexSequences,
     banks = indexBanks,
     players = players,
     sequenceBySymbol = sequenceBySymbol,
     bankBySymbol = bankBySymbol,
   }
+end
+
+-- The deterministic bank closures: one plan per used bank with the ascending
+-- used sequences naming it. A used sequence naming an absent or unused bank
+-- fails loudly with both identities; it is never silently omitted.
+---@param sdat table<string, unknown>
+---@return AudioCompiler.BankPlan[]
+local function planClosures(sdat)
+  local usedBanks = {}
+  for id = 0, sdat.counts.banks - 1 do
+    local record = sdat.banks[id]
+    if record ~= nil and record.fileId ~= nil then
+      usedBanks[id] = true
+    end
+  end
+  local owned = {}
+  for id = 0, sdat.counts.sequences - 1 do
+    local record = sdat.sequences[id]
+    if record ~= nil and record.fileId ~= nil then
+      if not usedBanks[record.bankId] then
+        Errors.raise(
+          "SEQUENCE_BANK_UNRESOLVED",
+          "used sequence names an absent or unused bank",
+          { sequenceId = id, bankId = record.bankId }
+        )
+      end
+      if owned[record.bankId] == nil then
+        owned[record.bankId] = {}
+      end
+      local sequenceIds = owned[record.bankId]
+      sequenceIds[#sequenceIds + 1] = id
+    end
+  end
+  local plans = {}
+  for id = 0, sdat.counts.banks - 1 do
+    if usedBanks[id] then
+      plans[#plans + 1] = { bankId = id, sequenceIds = owned[id] or {} }
+    end
+  end
+  return plans
+end
+
+--- One archive observation yielding both the catalog plan and the sound
+--- identity: a single SDAT read/open binds both records to the same bytes.
+---@param romFs table<string, unknown>
+---@return { plan: AudioCompiler.CatalogPlan, identity: AudioCompiler.SoundIdentity }
+local function _planSource(romFs)
+  local sdatBytes = openSdatBytes(romFs)
+  local sdat = openSdat(sdatBytes)
+  local symbols = catalogSymbols(sdat)
+  return {
+    plan = {
+      index = buildIndex(sdat, symbols, romFs:version()),
+      bankPlans = planClosures(sdat),
+    },
+    identity = {
+      romSha1 = romFs:metadata().sha1,
+      sdatSha1 = Hashing.sha1hex(sdatBytes),
+      sdatFileId = romFs:fileIdForPath(SDAT_PATH),
+    },
+  }
+end
+
+-- The source identity the derived audio binds: the version ROM identity and
+-- the sound archive bytes identity behind one read.
+---@param romFs table<string, unknown>
+---@return AudioCompiler.SoundIdentity
+local function _soundIdentity(romFs)
+  local sdatBytes = openSdatBytes(romFs)
+  return {
+    romSha1 = romFs:metadata().sha1,
+    sdatSha1 = Hashing.sha1hex(sdatBytes),
+    sdatFileId = romFs:fileIdForPath(SDAT_PATH),
+  }
+end
+
+-- The deterministic completion marker for one bank closure: the sound
+-- identity plus the closure's bank and sequence selection. Equal selections
+-- over equal source repair to the same marker.
+---@param identity AudioCompiler.SoundIdentity
+---@param bankPlan AudioCompiler.BankPlan
+---@return string
+local function bankMarkerFor(identity, bankPlan)
+  assert(type(identity.romSha1) == "string" and identity.romSha1 ~= "", "bank markers require the ROM identity")
+  assert(type(identity.sdatSha1) == "string" and identity.sdatSha1 ~= "", "bank markers require the archive identity")
+  assert(
+    type(identity.sdatFileId) == "number" and identity.sdatFileId % 1 == 0,
+    "bank markers require the archive file identity"
+  )
+  assert(type(bankPlan.bankId) == "number" and bankPlan.bankId % 1 == 0, "bank markers require a bank identity")
+  assert(type(bankPlan.sequenceIds) == "table", "bank markers require the closure sequence selection")
+  return AudioCache.marker(
+    identity.romSha1,
+    Hashing.hashLua({
+      cacheFormat = AudioCache.FORMAT,
+      versionRomSha1 = identity.romSha1,
+      soundArchive = {
+        path = SDAT_PATH,
+        fileId = identity.sdatFileId,
+        sha1 = identity.sdatSha1,
+      },
+      bankId = bankPlan.bankId,
+      sequenceIds = bankPlan.sequenceIds,
+    })
+  )
+end
+
+---@param bankPlan unknown
+---@return AudioCompiler.BankPlan
+local function checkBankPlan(bankPlan)
+  assert(type(bankPlan) == "table", "one-bank compilation requires a bank closure plan")
+  ---@cast bankPlan AudioCompiler.BankPlan
+  assert(
+    type(bankPlan.bankId) == "number" and bankPlan.bankId % 1 == 0 and bankPlan.bankId >= 0,
+    "a bank closure plan carries an invalid bankId"
+  )
+  assert(type(bankPlan.sequenceIds) == "table", "a bank closure plan carries no sequence selection")
+  for position, sequenceId in ipairs(bankPlan.sequenceIds) do
+    assert(
+      type(sequenceId) == "number" and sequenceId % 1 == 0 and sequenceId >= 0,
+      "a bank closure plan carries an invalid sequenceId at position " .. position
+    )
+  end
+  return bankPlan
+end
+
+-- The one-bank compile core shared by the one-shot entry point and the
+-- retained worker-generation session: the archive view, its symbols, and
+-- the verified source identity are already in hand, so compiling another
+-- closure performs no further source read, archive open, or identity hash.
+-- Each call owns a job-local wave cache; decoded PCM streams through the
+-- sink and no caller buffer is retained.
+local function compileBankAgainst(sdat, symbols, identity, bankPlan, sampleSink)
+  local ownedPlan = checkBankPlan(bankPlan)
+  assert(type(sampleSink) == "function", "one-bank compilation requires a sample sink")
+  local ok, bank, sequences, sampleMetadata = pcall(function()
+    local record = sdat.banks[ownedPlan.bankId]
+    if record == nil or record.fileId == nil then
+      Errors.raise("BANK_UNUSED", "one-bank compilation names an absent or unused bank", { bankId = ownedPlan.bankId })
+    end
+    for _, sequenceId in ipairs(ownedPlan.sequenceIds) do
+      local sequence = sdat.sequences[sequenceId]
+      if sequence == nil or sequence.fileId == nil or sequence.bankId ~= ownedPlan.bankId then
+        Errors.raise(
+          "SEQUENCE_BANK_MISMATCH",
+          "planned sequence is not a used record of this bank",
+          { sequenceId = sequenceId, bankId = ownedPlan.bankId }
+        )
+      end
+    end
+    local cache = WaveCache.new(sdat, sampleSink)
+    local compiledBank = compileBankRecord(sdat, symbols, ownedPlan.bankId, record, cache)
+    local compiledSequences = {}
+    for _, sequenceId in ipairs(ownedPlan.sequenceIds) do
+      compiledSequences[sequenceId] = compileSequence(sdat, symbols, sequenceId, sdat.sequences[sequenceId])
+    end
+    return compiledBank, compiledSequences, cache.sampleMetadata
+  end)
+  if not ok then
+    error(bank, 0)
+  end
+  return {
+    bankId = ownedPlan.bankId,
+    bank = bank,
+    sequences = sequences,
+    sampleMetadata = sampleMetadata,
+    marker = bankMarkerFor(identity, ownedPlan),
+    dependencies = {
+      cacheFormat = AudioCache.FORMAT,
+      versionRomSha1 = identity.romSha1,
+      soundArchive = {
+        path = SDAT_PATH,
+        fileId = identity.sdatFileId,
+        sha1 = identity.sdatSha1,
+      },
+    },
+  }
+end
+
+local function _compileBank(romFs, bankPlan, sampleSink)
+  -- Open the archive once, then compile the single closure against it: the
+  -- marker binds the bytes already in hand, so no second archive read.
+  local sdatBytes = openSdatBytes(romFs)
+  local sdat = openSdat(sdatBytes)
+  local symbols = catalogSymbols(sdat)
+  local identity = {
+    romSha1 = romFs:metadata().sha1,
+    sdatSha1 = Hashing.sha1hex(sdatBytes),
+    sdatFileId = romFs:fileIdForPath(SDAT_PATH),
+  }
+  return compileBankAgainst(sdat, symbols, identity, bankPlan, sampleSink)
+end
+
+---@param identity unknown
+---@return AudioCompiler.SoundIdentity
+local function checkExpectedIdentity(identity)
+  assert(type(identity) == "table", "an audio session requires the adopted sound identity")
+  ---@cast identity AudioCompiler.SoundIdentity
+  assert(
+    type(identity.romSha1) == "string" and identity.romSha1 ~= "",
+    "an audio session requires the adopted ROM identity"
+  )
+  assert(
+    type(identity.sdatSha1) == "string" and identity.sdatSha1 ~= "",
+    "an audio session requires the adopted archive identity"
+  )
+  assert(
+    type(identity.sdatFileId) == "number" and identity.sdatFileId % 1 == 0,
+    "an audio session requires the adopted archive file identity"
+  )
+  return identity
+end
+
+-- One immutable archive session for a worker source generation: a single
+-- source read, a single archive open, and a single identity hash serve
+-- every bank compiled through it. The ROM identity rejects before any
+-- acquisition; the archive digest and file identity verify against the
+-- bytes in hand. Closing drops the retained view and lookup; use after
+-- close refuses.
+local function _openSession(romFs, expectedIdentity)
+  local expected = checkExpectedIdentity(expectedIdentity)
+  assert(
+    romFs and romFs.readSourcePath and romFs.metadata and romFs.version and romFs.fileIdForPath,
+    "audio sessions require a RomFs-shaped object"
+  )
+  local metadata = romFs:metadata()
+  if metadata.sha1 ~= expected.romSha1 then
+    Errors.raise("AUDIO_SOURCE_IDENTITY_MISMATCH", "the adopted audio ROM identity disagrees with the source", {
+      expected = expected.romSha1,
+    })
+  end
+  local sdatBytes = openSdatBytes(romFs)
+  local sdat = openSdat(sdatBytes)
+  local identity = {
+    romSha1 = metadata.sha1,
+    sdatSha1 = Hashing.sha1hex(sdatBytes),
+    sdatFileId = romFs:fileIdForPath(SDAT_PATH),
+  }
+  if identity.sdatSha1 ~= expected.sdatSha1 or identity.sdatFileId ~= expected.sdatFileId then
+    Errors.raise("AUDIO_SOURCE_IDENTITY_MISMATCH", "the adopted audio archive identity disagrees with the source", {
+      expected = expected.sdatSha1,
+    })
+  end
+  local symbols = catalogSymbols(sdat)
+  ---@type table<string, unknown>?
+  local liveSdat = sdat
+  ---@type table<string, table<string, unknown>>?
+  local liveSymbols = symbols
+  local closed = false
+  local session = {}
+  function session:compileBank(bankPlan, sampleSink)
+    if closed then
+      error("the audio session is closed", 0)
+    end
+    local ok, bundle = pcall(compileBankAgainst, assert(liveSdat), assert(liveSymbols), identity, bankPlan, sampleSink)
+    if ok then
+      return bundle
+    end
+    if Errors.is(bundle) then
+      return nil, bundle --[[@as Errors.Error]]
+    end
+    error(bundle, 0)
+  end
+  function session:close()
+    closed = true
+    liveSdat = nil
+    liveSymbols = nil
+  end
+  return session
+end
+
+local function _compile(romFs, sha1hex, hashLua)
+  assert(
+    romFs and romFs.readSourcePath and romFs.metadata and romFs.version and romFs.fileIdForPath,
+    "compile requires a RomFs-shaped object"
+  )
+  sha1hex = sha1hex or Hashing.sha1hex
+  hashLua = hashLua or Hashing.hashLua
+
+  local sdatBytes = must(romFs:readSourcePath(SDAT_PATH))
+  local sdat = openSdat(sdatBytes)
+  local symbols = catalogSymbols(sdat)
+  -- One closure at a time: each bank compiles through its own job-local
+  -- wave cache whose decoded PCM is discarded after its samples stream into
+  -- the aggregate maps. No corpus-wide decoded-wave dictionary is retained.
+  local catalog = {
+    index = buildIndex(sdat, symbols, romFs:version()),
+    bankPlans = planClosures(sdat),
+  }
+
+  local sequences = {}
+  local banks = {}
+  local samples = {}
+  local sampleMetadata = {}
+  for _, bankPlan in ipairs(catalog.bankPlans) do
+    local collected = {}
+    local collectedMetadata = {}
+    local waveCache = WaveCache.new(sdat, function(key, metadata, pcm)
+      if collected[key] == nil then
+        collected[key] = pcm
+        collectedMetadata[key] = metadata
+      else
+        assert(collected[key] == pcm, "a repeated semantic sample streams identical bytes")
+      end
+    end)
+    local record = sdat.banks[bankPlan.bankId]
+    banks[bankPlan.bankId] = compileBankRecord(sdat, symbols, bankPlan.bankId, assert(record), waveCache)
+    for _, sequenceId in ipairs(bankPlan.sequenceIds) do
+      sequences[sequenceId] = compileSequence(sdat, symbols, sequenceId, sdat.sequences[sequenceId])
+    end
+    for key, pcm in pairs(collected) do
+      if samples[key] == nil then
+        samples[key] = pcm
+        sampleMetadata[key] = collectedMetadata[key]
+      end
+    end
+  end
 
   local dependencies = {
     cacheFormat = AudioCache.FORMAT,
@@ -406,13 +784,122 @@ local function _compile(romFs, sha1hex, hashLua)
   local marker = AudioCache.marker(romFs:metadata().sha1, hashLua(dependencies))
   return {
     marker = marker,
-    index = index,
+    index = catalog.index,
     sequences = sequences,
     banks = banks,
-    samples = waveCache.samples,
-    sampleMetadata = waveCache.sampleMetadata,
+    samples = samples,
+    sampleMetadata = sampleMetadata,
     dependencies = dependencies,
   }
+end
+
+-- Plans the deterministic bank closures without lowering sequences or
+-- decoding waves and binds the sound identity from the same single archive
+-- observation: the normalized catalog metadata plus one plan per used bank
+-- with its ascending used sequences. Producer-internal: generation
+-- scheduling owns the one planning pass per source; leaf jobs consume the
+-- published record. A used sequence naming an absent or unused bank fails
+-- with both identities.
+---@param romFs table<string, unknown>
+---@return { plan: AudioCompiler.CatalogPlan, identity: AudioCompiler.SoundIdentity }?|nil
+---@return Errors.Error?|nil
+function AudioCompiler.planSource(romFs)
+  local ok, result = pcall(_planSource, romFs)
+  if ok then
+    return result
+  end
+  if Errors.is(result) then
+    return nil, result --[[@as Errors.Error]]
+  end
+  error(result)
+end
+
+-- The catalog plan alone, derived through the same single observation as
+-- the sound identity. Preserves the standalone planning contract.
+---@param romFs table<string, unknown>
+---@return AudioCompiler.CatalogPlan?|nil
+---@return Errors.Error?|nil
+function AudioCompiler.plan(romFs)
+  local planned, err = AudioCompiler.planSource(romFs)
+  if planned == nil then
+    return nil, err
+  end
+  return planned.plan
+end
+
+-- Reads the sound source identity the derived audio binds. One archive read;
+-- batch clients read it once and derive every closure marker from it.
+---@param romFs table<string, unknown>
+---@return AudioCompiler.SoundIdentity?|nil
+---@return Errors.Error?|nil
+function AudioCompiler.soundIdentity(romFs)
+  local ok, result = pcall(_soundIdentity, romFs)
+  if ok then
+    return result
+  end
+  if Errors.is(result) then
+    return nil, result --[[@as Errors.Error]]
+  end
+  error(result)
+end
+
+-- The deterministic completion marker for one bank closure over an already
+-- read source identity. Pure: equal selections over equal source repair to
+-- the same marker.
+---@param identity AudioCompiler.SoundIdentity
+---@param bankPlan AudioCompiler.BankPlan
+---@return string
+function AudioCompiler.bankMarker(identity, bankPlan)
+  assert(type(identity) == "table", "bank markers require the sound source identity")
+  return bankMarkerFor(identity, checkBankPlan(bankPlan))
+end
+
+-- Compiles exactly one bank closure: the bank record, the planned sequences,
+-- and their referenced samples. Each distinct source wave decodes once in
+-- this job and streams its PCM through the sink, which must consume the
+-- bytes synchronously; the returned bundle holds the bank, the sequences,
+-- and the small keyed sample metadata, never retained PCM.
+---@param romFs table<string, unknown>
+---@param bankPlan AudioCompiler.BankPlan
+---@param sampleSink AudioCompiler.SampleSink
+---@return AudioCompiler.BankBundle?|nil
+---@return Errors.Error?|nil
+function AudioCompiler.compileBank(romFs, bankPlan, sampleSink)
+  local ok, result = pcall(_compileBank, romFs, bankPlan, sampleSink)
+  if ok then
+    return result
+  end
+  if Errors.is(result) then
+    return nil, result --[[@as Errors.Error]]
+  end
+  error(result)
+end
+
+---@class AudioCompiler.Session
+---@field compileBank fun(self: AudioCompiler.Session, bankPlan: AudioCompiler.BankPlan, sampleSink: AudioCompiler.SampleSink): AudioCompiler.BankBundle?|nil, Errors.Error?|nil
+---@field close fun(self: AudioCompiler.Session)
+
+-- Opens the one immutable archive session for a worker source generation
+-- over the adopted sound identity (the exact SourcePlan.audioIdentity,
+-- never a rederived identity). Exactly one source read, archive open, and
+-- identity hash serve every bank compiled through the session; warm reuse
+-- opens nothing further. A mismatched identity opens no session. The
+-- session owns archive bytes, the parsed view, and the symbol lookup for
+-- its generation; per-bank decoded waves stay job-local and stream
+-- through each call's sink.
+---@param romFs table<string, unknown>
+---@param expectedIdentity AudioCompiler.SoundIdentity
+---@return AudioCompiler.Session?|nil
+---@return Errors.Error?|nil
+function AudioCompiler.openSession(romFs, expectedIdentity)
+  local ok, result = pcall(_openSession, romFs, expectedIdentity)
+  if ok then
+    return result
+  end
+  if Errors.is(result) then
+    return nil, result --[[@as Errors.Error]]
+  end
+  error(result)
 end
 
 ---@param romFs table<string, unknown>

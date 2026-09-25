@@ -7,10 +7,14 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
+local LuaWriter = require("libs.codec.src.LuaWriter")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
+local ScriptSave = require("libs.script.src.ScriptSave")
+local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
 local GENERATION = string.rep("a", 40)
@@ -324,6 +328,159 @@ T["lazy build rejects an index without resources"] = function()
   throwsCode("SCRIPT_LOAD_FAILED", function()
     ScriptLoader.buildRegistry(cache, overrideFs({}), requireShim, { lazy = true })
   end)
+end
+
+-- A generated cache whose index entries carry the published canonical hash
+-- of each decoded resource: the hash is exactly what the registry
+-- fingerprint would compute by decoding the body itself.
+local HASHED_FILES = {
+  ["vanilla.hgss.scr_seq.0842.script_001"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "vanilla.hgss.scr_seq.0842.script_001", steps = { S.stop() } }\n',
+  ["new_bark.lab_sign"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.say { message = "msg.hgss.0543.00097" }, S.stop() } }\n',
+}
+
+local HASHED_OVERRIDE =
+  'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.noop(), S.stop() } }\n'
+
+local function builtinScripts()
+  local S = require("gen4.script")
+  return {
+    all = function()
+      return {
+        ["test.builtin.ping"] = S.script({ api = 1, id = "test.builtin.ping", steps = { S.stop() } }),
+      }
+    end,
+  }
+end
+
+-- `order` optionally reorders the index entries to prove the registry
+-- identity does not depend on index enumeration order.
+local function hashedCache(order)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local ids = {}
+  for id in pairs(HASHED_FILES) do
+    ids[#ids + 1] = id
+  end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    cache:write(ScriptCache.scriptPath(GENERATION, 0, id), HASHED_FILES[id])
+  end
+  local entries = {}
+  for index, id in ipairs(ids) do
+    local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim, { validate = false }))
+    entries[#entries + 1] = {
+      id = id,
+      member = 0,
+      scriptIndex = index - 1,
+      resourceHash = Sha256.hex(LuaWriter.encode(resource)),
+    }
+  end
+  if order == "reversed" then
+    local reversed = {}
+    for index = #entries, 1, -1 do
+      reversed[#reversed + 1] = entries[index]
+    end
+    entries = reversed
+  end
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+  })
+  cache:write(ScriptCache.markerPath(), MARKER)
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+    resources = entries,
+  })
+  return cache
+end
+
+local function hashedOverrideFs()
+  return overrideFs({ ["new_bark.lab_sign.lua"] = HASHED_OVERRIDE })
+end
+
+-- Count generated body reads through the cache backend from here on.
+local function countScriptReads(cache)
+  local reads = 0
+  local originalRead = cache.backend.read
+  cache.backend.read = function(self, path)
+    if path:find("/scripts/", 1, true) then
+      reads = reads + 1
+    end
+    return originalRead(self, path)
+  end
+  return function()
+    return reads
+  end
+end
+
+-- The decoded oracle: an eager registry that loads and hashes every body.
+local function decodedOracleFingerprint(order)
+  local registry = ScriptLoader.buildRegistry(hashedCache(order), hashedOverrideFs(), requireShim, {
+    builtins = builtinScripts(),
+  })
+  return registry:fingerprint()
+end
+
+-- 10. A registry built from published index hashes carries the exact
+-- decoded identity without decoding any generated body.
+T["published index hashes identify the registry without decoding generated bodies"] = function()
+  local oracle = decodedOracleFingerprint()
+  local cache = hashedCache()
+  local scriptReads = countScriptReads(cache)
+  local registry = ScriptLoader.buildRegistry(cache, hashedOverrideFs(), requireShim, {
+    lazy = true,
+    builtins = builtinScripts(),
+  })
+  Assert.equal(scriptReads(), 0, "building from published hashes must not read generated bodies")
+  Assert.equal(registry:fingerprint(), oracle)
+  Assert.equal(scriptReads(), 0, "fingerprint acquisition must not decode generated bodies")
+end
+
+-- 10b. The published-hash identity is stable under index enumeration order.
+T["published index hashes identify the registry regardless of index order"] = function()
+  local oracle = decodedOracleFingerprint()
+  local cache = hashedCache("reversed")
+  local scriptReads = countScriptReads(cache)
+  local registry = ScriptLoader.buildRegistry(cache, hashedOverrideFs(), requireShim, {
+    lazy = true,
+    builtins = builtinScripts(),
+  })
+  Assert.equal(registry:fingerprint(), oracle)
+  Assert.equal(scriptReads(), 0, "fingerprint acquisition must not decode generated bodies")
+end
+
+-- 10c. A save captured under the decoded registry validates unchanged under
+-- the published hashes, and content drift still mismatches.
+T["a save captured under decoded content validates under published hashes"] = function()
+  local oracle = decodedOracleFingerprint()
+  local cache = hashedCache()
+  local registry = ScriptLoader.buildRegistry(cache, hashedOverrideFs(), requireShim, {
+    lazy = true,
+    builtins = builtinScripts(),
+  })
+  local seeded = registry:fingerprint()
+  Assert.equal(seeded, oracle)
+  local bucket = {
+    schema = ScriptSave.SCHEMA_NAME,
+    registryFingerprint = oracle,
+    taskFingerprint = "test-tasks",
+    nextEnvironmentId = 0,
+    nextInstanceId = 0,
+    nextTaskId = 0,
+    environments = {},
+    instances = {},
+    tasks = {},
+  }
+  Assert.isNil(ScriptSave.validate(bucket, { expectedRegistryFingerprint = seeded }))
+  local mismatch = assert(
+    ScriptSave.validate(bucket, { expectedRegistryFingerprint = seeded .. "00" }),
+    "drifted content must mismatch the saved fingerprint"
+  )
+  Assert.isTrue(Errors.is(mismatch))
+  Assert.equal(mismatch.code, "SCRIPT_REGISTRY_FINGERPRINT_MISMATCH")
 end
 
 -- 9c. An explicitly empty resources array is schema-legal and installs

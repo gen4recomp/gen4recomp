@@ -12,6 +12,12 @@ local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
+local DerivedCacheState = require("romdump.src.DerivedCacheState")
+local GameVersion = require("romdump.src.source.GameVersion")
+local Schema = require("libs.script.src.Schema")
+local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
 
@@ -392,6 +398,129 @@ function T.compile_all_skips_non_field_placeholders_but_keeps_actual_records()
   Assert.isNil(byId[3], "MAP_UNDERGROUND has no field data, not a field record")
   Assert.notNil(byId[0])
   Assert.notNil(byId[2])
+end
+
+local HEARTGOLD_SHA1 = GameVersion.VERSIONS.heartgold.sha1
+
+local function generationIdFor(producerBody)
+  local identity = DerivedCacheState.current({
+    versionId = "heartgold",
+    romSha1 = HEARTGOLD_SHA1,
+    mode = "development",
+    producerId = "d" .. producerBody,
+    assetRevision = DerivedAssetContract.revision,
+    scriptApi = Schema.API_VERSION,
+  })
+  return assert(identity.generationId)
+end
+
+-- One worker source session compiles maps one at a time: each record matches
+-- the one-shot normalization exactly, repeated compiles stay independent (no
+-- shared per-map mutation leaks between bundles), and the session closes
+-- idempotently and compiles nothing afterwards.
+function T.field_map_data_session_compiles_one_map_at_a_time()
+  Assert.equal(type(FieldMapDataCompiler.newSession), "function", "per-map production reuses one source session")
+  local romFs = FieldMapDataFixture.build()
+  local session = assert(FieldMapDataCompiler.newSession(romFs))
+  local first = assert(session:compile(60))
+  local direct = assert(FieldMapDataCompiler.compile(romFs, 60))
+  Assert.equal(LuaWriter.encode(first.field), LuaWriter.encode(direct.field), "one-map field record matches")
+  Assert.equal(
+    LuaWriter.encode(first.dependencies),
+    LuaWriter.encode(direct.dependencies),
+    "one-map dependencies match"
+  )
+  local bySymbol = assert(session:compile("MAP_NEW_BARK"))
+  Assert.equal(LuaWriter.encode(bySymbol.field), LuaWriter.encode(first.field), "symbol and id resolve alike")
+  first.field.events.warps = "mutated"
+  local fresh = assert(session:compile(60))
+  Assert.equal(LuaWriter.encode(fresh.field), LuaWriter.encode(direct.field), "bundles share no per-map mutation")
+  session:close()
+  session:close()
+  local ok, leftover = pcall(function()
+    return session:compile(60)
+  end)
+  Assert.isTrue(not ok or leftover == nil, "a closed session compiles nothing")
+end
+
+-- The writer stages exactly its normalized field record through a
+-- caller-owned stage: field, dependencies, and marker land under the map's
+-- own directory with readback validation, never a sibling map's, and a
+-- malformed record fails the stage while the previous publication stands.
+function T.field_map_data_stage_writes_exactly_its_own_map_record()
+  Assert.equal(type(FieldMapDataCacheWriter.stage), "function", "field records stage through the stage-only boundary")
+  local romFs = FieldMapDataFixture.build()
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60))
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local generation = generationIdFor(Sha256.hex("field map data stage"))
+  local artifact = PreparedArtifact.new({
+    cacheFs = cache,
+    generationId = generation,
+    epoch = 1,
+    kind = "map-data",
+    key = "60",
+    jobKey = "map-data:60",
+    stageName = "map-data-60",
+  })
+  FieldMapDataCacheWriter.stage(artifact, bundle)
+  local stage = artifact:stageFs()
+  Assert.deepEqual(stage:loadLua(FieldMapDataCache.fieldPath(60)), bundle.field, "the staged record matches")
+  Assert.deepEqual(
+    stage:loadLua(FieldMapDataCache.dependenciesPath(60)),
+    bundle.dependencies,
+    "the staged dependencies match"
+  )
+  Assert.equal(stage:read(FieldMapDataCache.markerPath(60)), bundle.marker, "the marker stages with the record")
+  Assert.isFalse(stage:exists(FieldMapDataCache.mapDir(61)), "no sibling map record is staged")
+  artifact:finishSuccess({ marker = bundle.marker })
+  artifact:publish({
+    generationId = generation,
+    epoch = 1,
+    kind = "map-data",
+    key = "60",
+    jobKey = "map-data:60",
+  })
+  Assert.isTrue(FieldMapDataCache.isReady(cache, 60, bundle.marker), "the staged record publishes ready")
+
+  local malformed = {
+    mapId = 60,
+    marker = "malformed-marker",
+    field = { schema = "not-a-field-schema", mapId = 60 },
+    dependencies = {},
+  }
+  local retry = PreparedArtifact.new({
+    cacheFs = cache,
+    generationId = generation,
+    epoch = 1,
+    kind = "map-data",
+    key = "60",
+    jobKey = "map-data:60",
+    stageName = "field-map-data-60-retry",
+  })
+  local ok, stageErr = pcall(FieldMapDataCacheWriter.stage, retry, malformed)
+  Assert.isFalse(ok, "a malformed record fails its stage: " .. tostring(stageErr))
+  retry:abort()
+  Assert.isTrue(
+    FieldMapDataCache.isReady(cache, 60, bundle.marker),
+    "the failed stage leaves the previous record ready"
+  )
+  Assert.equal(cache:read(FieldMapDataCache.markerPath(60)), bundle.marker, "no malformed marker leaked")
+end
+
+-- A session rejection is a per-map diagnostic, not session poison: an
+-- unknown map fails with its structured identity and the same session keeps
+-- compiling known maps afterwards.
+function T.field_map_data_session_rejects_unknown_maps_without_poisoning_the_session()
+  local romFs = FieldMapDataFixture.build()
+  local session = assert(FieldMapDataCompiler.newSession(romFs))
+  local missing, err = session:compile("MAP_DOES_NOT_EXIST")
+  Assert.isNil(missing)
+  err = assert(err)
+  Assert.equal(err.code, "MAP_CATALOG_UNKNOWN")
+  local bundle = assert(session:compile(60))
+  Assert.equal(bundle.mapId, 60, "the session stays usable after a rejection")
+  session:close()
 end
 
 return { tests = T }

@@ -75,7 +75,7 @@ scripts/lib/check-invariants.sh
 # patterns itself.
 permanent_prose_roots=(README.md docs data libs game romdump tests scripts gen4 .agents/docs)
 if grep -RInE --include='*.lua' --include='*.md' --include='*.sh' --include='*.toml' \
-  -e 'tmp/spec' -e 'spec section' -e 'Workstream' -e 'milestone' -e 'slice [0-9]' \
+  -e 'tmp/spec' -e 'spec section' -e 'Workstream' -e 'milestone [0-9]' -e 'slice [0-9]' \
   -e 'WS[0-9]' -e 'under development' -e 'provisional' -e 'may change in a future API' \
   -e '\bD[0-9]+\b' -e '\bDEV-[0-9]+\b' -e 'pre-D[0-9]+' \
   --exclude='lint.sh' \

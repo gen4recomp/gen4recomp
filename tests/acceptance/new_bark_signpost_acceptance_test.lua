@@ -14,6 +14,7 @@ local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "map:60" },
     tags = { "field", "signpost", "text" },
   },
   tests = {},

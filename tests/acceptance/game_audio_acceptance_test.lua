@@ -8,6 +8,7 @@ local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "map:7" },
     tags = { "audio", "composition" },
   },
   tests = {},

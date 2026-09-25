@@ -287,7 +287,7 @@ function T.semantic_records_do_not_add_files_to_cache_readiness()
 end
 
 function T.intro_contract_revision_requires_the_new_obj_geometry()
-  Assert.equal(DerivedAssetContract.revision, 10)
+  Assert.equal(DerivedAssetContract.revision, 12)
 end
 
 return { tests = T }

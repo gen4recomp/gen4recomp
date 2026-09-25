@@ -28,7 +28,7 @@ local function candidate(catalog, seed)
       mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
       fieldX = 6,
       fieldZ = 6,
-      sourceFacing = 1,
+      facing = "south",
     },
     catalog = catalog,
     monSeed = seed,

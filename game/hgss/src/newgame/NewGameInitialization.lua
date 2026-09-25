@@ -84,4 +84,22 @@ function NewGameInitialization.apply(candidate, artifactOrOptions)
   return candidate
 end
 
+--- Reads the generated initial player-room location for a fresh New Game.
+--- Loads through the same strict artifact path as apply and returns a fresh
+--- caller-owned copy of the normalized record; stale or missing caches fail
+--- loudly instead of falling back to a default location.
+---@param versionId string
+---@return table<string, string|integer> location
+function NewGameInitialization.initialLocation(versionId)
+  local artifact = loadArtifact(versionId)
+  local location = artifact.initialLocation
+  assert(type(location) == "table", "fresh-game startup initializer cache has no initial location")
+  return {
+    mapSymbol = location.mapSymbol,
+    fieldX = location.fieldX,
+    fieldZ = location.fieldZ,
+    facing = location.facing,
+  }
+end
+
 return NewGameInitialization

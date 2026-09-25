@@ -44,6 +44,9 @@ local function fakeStore(entries)
   function store:list()
     return self.entries
   end
+  function store:listMetadata()
+    return self.entries
+  end
   function store:load(saveId)
     self.loads[#self.loads + 1] = saveId
     for _, entry in ipairs(self.entries) do
@@ -60,12 +63,67 @@ local function fakeStore(entries)
   return store
 end
 
+local function readyHost()
+  return {
+    requestMilestone = function()
+      return true
+    end,
+    milestoneStatus = function()
+      return { state = "ready", ready = 1, total = 1 }
+    end,
+    requestField = function()
+      return true
+    end,
+    ensureField = function()
+      return true
+    end,
+    ensureLogicalField = function()
+      return true
+    end,
+    requestCell = function()
+      return true
+    end,
+    ensureCell = function()
+      return true
+    end,
+    requestMonPortraitPage = function()
+      return true
+    end,
+    requestLogicalField = function()
+      return true
+    end,
+    status = function()
+      return {}
+    end,
+  }
+end
+
+local function planningLoader()
+  return {
+    requestLocation = function()
+      return true
+    end,
+    globalPosition = function(_, _, fieldX, fieldZ)
+      return { x = fieldX, z = fieldZ }
+    end,
+  }
+end
+
+local function settle(game)
+  for _ = 1, 10 do
+    game:update(1 / 60)
+  end
+end
+
 local function saveRecord(saveId)
   return {
     saveId = saveId,
     versionId = READY_VERSION,
     playerData = { profile = { name = "GOLD" } },
     playTimeSeconds = 0,
+    mapId = 60,
+    fieldX = 684,
+    fieldZ = 393,
   }
 end
 
@@ -90,6 +148,7 @@ local function withCompositionSpies(fn)
   local original = {
     fieldNew = modules.fieldState.new,
     apply = modules.initialization.apply,
+    initialLocation = modules.initialization.initialLocation,
     validationNew = modules.validation.new,
     storeNew = modules.store.new,
     candidate = modules.newGame.createCandidate,
@@ -136,6 +195,18 @@ local function withCompositionSpies(fn)
   rawset(modules.initialization, "apply", function(game)
     context.applyCalls[#context.applyCalls + 1] = game
     return game
+  end)
+  -- The generated start-location read is behind the same fake-ready host:
+  -- the stub returns the pinned record so routing observes the pass-through
+  -- without touching the real cache. Accessor behavior itself is covered in
+  -- new_game_initialization_test against a stubbed CacheFs.
+  rawset(modules.initialization, "initialLocation", function(_)
+    return {
+      mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+      fieldX = 6,
+      fieldZ = 6,
+      facing = "south",
+    }
   end)
   modules.validation.new = function(options)
     context.validationCalls[#context.validationCalls + 1] = options
@@ -202,6 +273,7 @@ local function withCompositionSpies(fn)
 
   modules.fieldState.new = original.fieldNew
   rawset(modules.initialization, "apply", original.apply)
+  rawset(modules.initialization, "initialLocation", original.initialLocation)
   modules.validation.new = original.validationNew
   rawset(modules.store, "new", original.storeNew)
   rawset(modules.newGame, "createCandidate", original.candidate)
@@ -224,8 +296,18 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     context.stores[1] = fakeStore({ continueRecord })
     context.stores[2] = fakeStore({})
     context.stores[3] = fakeStore({})
-    local candidate = { saveId = "save-00000003", versionId = READY_VERSION, playerData = nil }
-    local finalized = { saveId = candidate.saveId, versionId = READY_VERSION, playerData = {} }
+    local candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    local finalized = {
+      saveId = candidate.saveId,
+      versionId = READY_VERSION,
+      playerData = {},
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
     context.candidate = candidate
     context.candidateFactory = function(options)
       Assert.equal(options.saveService, context.stores[2])
@@ -236,7 +318,7 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
         mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
         fieldX = 6,
         fieldZ = 6,
-        sourceFacing = 1,
+        facing = "south",
       })
       return candidate
     end
@@ -254,6 +336,8 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
         exits[#exits + 1] = result
       end,
       development = false,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     Assert.equal(getmetatable(game).__index, modules.game)
     Assert.equal(getmetatable(game.state).__index, modules.menu)
@@ -262,8 +346,11 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     Assert.equal(#context.storeCalls, 1)
 
     game.state:keypressed("return")
+    Assert.equal(#context.fieldCalls, 0, "Continue waits for planning, runtime, and geometry before strict load")
+    settle(game)
     Assert.equal(#context.fieldCalls, 1)
     Assert.equal(context.fieldCalls[1].game, continueRecord)
+    Assert.deepEqual(context.stores[1].loads, { continueRecord.saveId })
     Assert.equal(type(context.storeCalls[1].options.recordValidate), "function")
     local firstField = game.state
     game:setState(nil)
@@ -275,13 +362,24 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
         exits[#exits + 1] = result
       end,
       development = true,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     newGame.state:keypressed("return")
+    Assert.equal(#context.candidateCalls, 0, "New Game waits for its intro milestone before reserving a candidate")
+    Assert.equal(#context.oakCalls, 0, "New Game waits for its intro milestone before composing Oak")
+    settle(newGame)
     Assert.equal(#context.candidateCalls, 1)
     Assert.equal(#context.oakCalls, 1)
     context.oakCalls[1].onComplete(finalized)
     Assert.equal(#context.applyCalls, 1)
     Assert.equal(context.applyCalls[1], finalized)
+    Assert.equal(
+      #context.fieldCalls,
+      1,
+      "the handoff requests planning, runtime, and geometry before constructing field"
+    )
+    settle(newGame)
     Assert.equal(#context.fieldCalls, 2)
     Assert.equal(context.fieldCalls[2].game, finalized)
     Assert.isTrue(context.fieldCalls[2].options.development)
@@ -293,10 +391,65 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
       onExit = function(result)
         exits[#exits + 1] = result
       end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     quitGame.state:keypressed("escape")
     Assert.deepEqual(exits, { { kind = "quit" } })
     quitGame:dispose()
+  end)
+end
+
+-- Choosing New Game while its intro closure is cold enters preparation
+-- instead of composing Oak: the milestone is requested as required, no
+-- candidate is reserved and no Oak state is composed until readiness, and
+-- the pending transfer then happens exactly once.
+function T.cold_new_game_waits_for_its_intro_milestone_before_oak()
+  withCompositionSpies(function(modules, context)
+    local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
+    context.stores[1] = fakeStore({})
+    local candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.candidate = candidate
+    context.oakState = disposableState("oak")
+    local introReady = false
+    local milestoneCalls = {}
+    local host = readyHost()
+    host.requestMilestone = function(name, urgency)
+      if name == "new-game-intro" then
+        milestoneCalls[#milestoneCalls + 1] = urgency
+        return introReady
+      end
+      return true
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    Assert.equal(getmetatable(game.state).__index, NewGamePreparationState, "cold New Game enters preparation")
+    settle(game)
+    Assert.equal(#milestoneCalls >= 2, true, "menu prefetch plus preparation request their intro milestone")
+    Assert.equal(milestoneCalls[1], "near", "menu installation prefetches the intro closure")
+    for index = 2, #milestoneCalls do
+      Assert.equal(milestoneCalls[index], "required")
+    end
+    Assert.equal(#context.candidateCalls, 0, "no candidate is reserved while the intro closure is cold")
+    Assert.equal(#context.oakCalls, 0, "Oak is never composed before milestone readiness")
+    introReady = true
+    settle(game)
+    Assert.equal(#context.candidateCalls, 1, "readiness reserves exactly one candidate")
+    Assert.equal(#context.oakCalls, 1, "readiness composes Oak exactly once")
+    settle(game)
+    Assert.equal(#context.candidateCalls, 1, "settling never reserves a second candidate")
+    Assert.equal(#context.oakCalls, 1, "settling never composes a second Oak")
+    game:setState(nil)
   end)
 end
 
@@ -306,6 +459,8 @@ function T.menu_presentation_is_wired_from_fakes_and_released_exactly_once()
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     Assert.equal(#context.textCalls, 1, "menu text construction must run once per game")
     Assert.equal(#context.menuRendererCalls, 1, "menu renderer construction must run once per game")
@@ -327,12 +482,230 @@ function T.menu_renderer_failure_releases_the_allocated_text_exactly_once()
     local ok, err = pcall(modules.hgssGame.new, {
       versionId = READY_VERSION,
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     Assert.isFalse(ok, "a menu renderer failure must fail game construction")
     Assert.isTrue(string.find(tostring(err), "injected menu renderer failure") ~= nil)
     Assert.equal(#context.texts, 1, "the text must be allocated before the renderer fails")
     Assert.equal(context.texts[1].releases, 1, "the allocated text must be released exactly once")
     Assert.equal(#context.menuRenderers, 0, "no menu renderer may escape a failed construction")
+  end)
+end
+
+-- Production loader observation for the cold-cache sequencing contract below.
+-- The fake version cache answers only the world-manifest read with a canned
+-- manifest; every other generated read fails loudly so the tests prove the
+-- composition never reaches past the manifest before field-runtime readiness.
+local function cannedWorld()
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
+  return {
+    schema = MapAssetCache.WORLD_SCHEMA,
+    maps = {
+      {
+        id = 60,
+        symbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+        mapSection = "TEST_SECTION",
+        mapSectionNativeId = 7,
+        followMode = "ALLOW",
+        worldOriginX = 0,
+        worldOriginZ = 0,
+        matrix = { memberId = 0 },
+      },
+    },
+    byId = { [60] = 1 },
+    bySymbol = { MAP_NEW_BARK_PLAYER_HOUSE_2F = 60 },
+    analysis = { mapHeaderCount = 1, excluded = {} },
+  }
+end
+
+local function withProductionLoaderObservation(worldOrNil, fn)
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+  local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
+  local originalForVersion = CacheFs.forVersion
+  local originalLoaderNew = FieldMapLoader.new
+  local observation = { worldReads = 0, loaderBuilds = 0, world = worldOrNil }
+  rawset(CacheFs, "forVersion", function(_)
+    local cacheFs = {}
+    -- Only the world-manifest path counts as a world read: entry geometry
+    -- demand reads sibling records (warp-exit field data) through the same
+    -- filesystem after readiness, and those must not masquerade as
+    -- manifest reads. Best-effort prewarming treats an unreadable record
+    -- as absent, so the count stays exact without weakening the contract.
+    function cacheFs.loadLua(_, path)
+      if path == MapAssetCache.worldPath() then
+        observation.worldReads = observation.worldReads + 1
+        return observation.world
+      end
+      if path == FieldCellCache.indexPath() then
+        return { schema = FieldCellCache.INDEX_SCHEMA, matrices = {} }
+      end
+      return nil
+    end
+    return cacheFs
+  end)
+  rawset(FieldMapLoader, "new", function(cacheFs, world, options)
+    observation.loaderBuilds = observation.loaderBuilds + 1
+    return originalLoaderNew(cacheFs, world, options)
+  end)
+  local ok, err = pcall(fn, observation)
+  rawset(CacheFs, "forVersion", originalForVersion)
+  rawset(FieldMapLoader, "new", originalLoaderNew)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Cold Continue must not touch generated world metadata before entry
+-- planning reports ready: selecting Continue with pending planning
+-- constructs preparation without reading the world, and the production
+-- loader is built exactly once after readiness before geometry is
+-- requested.
+function T.cold_continue_defers_world_read_until_field_planning_is_ready()
+  withCompositionSpies(function(modules, _)
+    withProductionLoaderObservation(cannedWorld(), function(observation)
+      local continueRecord = saveRecord("save-00000002")
+      local contextStores = { fakeStore({ continueRecord }) }
+      local storeModule = require("libs.hgss.src.save.GameSaveStore")
+      local originalStoreNew = storeModule.new
+      rawset(storeModule, "new", function()
+        return contextStores[1]
+      end)
+      local ok, err = pcall(function()
+        local planningReady = false
+        local host = readyHost()
+        host.requestMilestone = function(name, _)
+          if name == "field-planning" then
+            return planningReady
+          end
+          return true
+        end
+        local game = modules.hgssGame.new({
+          versionId = READY_VERSION,
+          onExit = function() end,
+          derivedAssets = host,
+        })
+        game.state:keypressed("return")
+        Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
+        Assert.equal(observation.loaderBuilds, 0, "selecting Continue builds no planning loader")
+        settle(game)
+        Assert.equal(observation.worldReads, 0, "pending planning never reads world metadata")
+        Assert.equal(observation.loaderBuilds, 0, "pending planning never builds the planning loader")
+        planningReady = true
+        settle(game)
+        Assert.equal(observation.worldReads, 1, "readiness reads the world manifest exactly once")
+        Assert.equal(observation.loaderBuilds, 1, "readiness builds the planning loader exactly once")
+        settle(game)
+        Assert.equal(observation.worldReads, 1, "settling never re-reads the world manifest")
+        Assert.equal(observation.loaderBuilds, 1, "settling never rebuilds the planning loader")
+        game:setState(nil)
+      end)
+      rawset(storeModule, "new", originalStoreNew)
+      if not ok then
+        error(err, 0)
+      end
+    end)
+  end)
+end
+
+-- Cold New Game must survive the Oak handoff without world metadata: the
+-- finalized candidate waits on entry planning with zero world reads, then
+-- builds the production loader exactly once after readiness.
+function T.cold_new_game_handoff_defers_world_read_until_field_planning_is_ready()
+  withCompositionSpies(function(modules, context)
+    withProductionLoaderObservation(cannedWorld(), function(observation)
+      context.stores[1] = fakeStore({})
+      local finalized = {
+        saveId = "save-00000003",
+        versionId = READY_VERSION,
+        playerData = {},
+        location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+      }
+      context.candidate = {
+        saveId = "save-00000003",
+        versionId = READY_VERSION,
+        playerData = nil,
+        location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+      }
+      context.oakState = disposableState("oak")
+      local planningReady = false
+      local host = readyHost()
+      host.requestMilestone = function(name, _)
+        if name == "field-planning" then
+          return planningReady
+        end
+        return true
+      end
+      local game = modules.hgssGame.new({
+        versionId = READY_VERSION,
+        onExit = function() end,
+        derivedAssets = host,
+      })
+      game.state:keypressed("return")
+      settle(game)
+      Assert.equal(#context.oakCalls, 1, "the intro closure composes Oak while core stays pending")
+      context.oakCalls[1].onComplete(finalized)
+      Assert.equal(observation.worldReads, 0, "the Oak handoff reads no world metadata")
+      Assert.equal(observation.loaderBuilds, 0, "the Oak handoff builds no planning loader")
+      settle(game)
+      Assert.equal(observation.worldReads, 0, "pending planning never reads world metadata after the handoff")
+      Assert.equal(#context.fieldCalls, 0, "field never constructs before planning readiness")
+      planningReady = true
+      settle(game)
+      Assert.equal(observation.worldReads, 1, "readiness reads the world manifest exactly once")
+      Assert.equal(observation.loaderBuilds, 1, "readiness builds the planning loader exactly once")
+      settle(game)
+      Assert.equal(#context.fieldCalls, 1, "field constructs once planning, runtime, and geometry are ready")
+      Assert.equal(context.fieldCalls[1].game, finalized)
+      game:setState(nil)
+    end)
+  end)
+end
+
+-- A world manifest that is still unavailable after entry readiness is a
+-- visible preparation failure, never an escaped composition error and
+-- never a manual full-cache instruction.
+function T.missing_world_after_readiness_fails_preparation_visibly()
+  withCompositionSpies(function(modules, _)
+    withProductionLoaderObservation(nil, function(observation)
+      local continueRecord = saveRecord("save-00000002")
+      local contextStores = { fakeStore({ continueRecord }) }
+      local storeModule = require("libs.hgss.src.save.GameSaveStore")
+      local originalStoreNew = storeModule.new
+      rawset(storeModule, "new", function()
+        return contextStores[1]
+      end)
+      local ok, err = pcall(function()
+        local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
+        local game = modules.hgssGame.new({
+          versionId = READY_VERSION,
+          onExit = function() end,
+          derivedAssets = readyHost(),
+        })
+        game.state:keypressed("return")
+        Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
+        settle(game)
+        Assert.equal(
+          getmetatable(game.state).__index,
+          FieldPreparationState,
+          "a missing world still enters preparation once core is ready"
+        )
+        Assert.equal(game.state.phase, "failed", "the missing world fails preparation visibly")
+        Assert.isTrue(game.state.error ~= nil, "the failure carries a diagnostic")
+        Assert.isTrue(
+          string.find(tostring(game.state.error), "buildcache", 1, true) == nil,
+          "the failure never instructs a manual full-cache build: " .. tostring(game.state.error)
+        )
+        Assert.equal(observation.worldReads, 1, "the failed attempt still read the world exactly once")
+        game:setState(nil)
+      end)
+      rawset(storeModule, "new", originalStoreNew)
+      if not ok then
+        error(err, 0)
+      end
+    end)
   end)
 end
 
@@ -361,9 +734,12 @@ function T.field_receives_the_shared_display_context_and_copied_overrides()
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
       presentationOverrides = overrides,
     })
     game.state:keypressed("return")
+    settle(game)
     Assert.equal(#context.fieldCalls, 1, "the continue route must reach the field")
     local fieldOptions = context.fieldCalls[1].options
     Assert.notNil(fieldOptions.displayContext, "the field shares the product display context")
@@ -382,8 +758,11 @@ function T.field_receives_the_shared_display_context_and_copied_overrides()
     local plain = modules.hgssGame.new({
       versionId = READY_VERSION,
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     plain.state:keypressed("return")
+    settle(plain)
     Assert.equal(#context.fieldCalls, 2, "the second game routes independently")
     Assert.isTrue(
       context.fieldCalls[2].options.presentationOverrides == nil,
@@ -403,6 +782,8 @@ function T.invalid_presentation_overrides_fail_game_construction()
     local okKey = pcall(modules.hgssGame.new, {
       versionId = READY_VERSION,
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
       presentationOverrides = {
         start_menu = {
           sideways = function(_, _) end,
@@ -413,11 +794,250 @@ function T.invalid_presentation_overrides_fail_game_construction()
     local okFn = pcall(modules.hgssGame.new, {
       versionId = READY_VERSION,
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
       presentationOverrides = {
         start_menu = { wide = "not-a-function" },
       },
     })
     Assert.isFalse(okFn, "a non-function override fails construction")
+  end)
+end
+
+function T.cancelling_field_preparation_returns_to_the_menu_without_publishing()
+  withCompositionSpies(function(modules, context)
+    local continueRecord = saveRecord("save-00000002")
+    context.stores[1] = fakeStore({ continueRecord })
+    local pending = true
+    local host = readyHost()
+    host.requestMilestone = function()
+      return not pending
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    settle(game)
+    Assert.equal(#context.fieldCalls, 0, "pending core never constructs the field")
+    game.state:keypressed("escape")
+    Assert.equal(getmetatable(game.state).__index, modules.menu, "cancellation returns to the owning menu")
+    Assert.equal(#context.fieldCalls, 0, "cancellation publishes no field")
+    pending = false
+    settle(game)
+    Assert.equal(#context.fieldCalls, 0, "a cancelled preparation never transfers late")
+    game:dispose()
+  end)
+end
+
+function T.cancelled_preparation_rebuilds_the_menu_at_the_current_viewport()
+  withCompositionSpies(function(modules, context)
+    local continueRecord = saveRecord("save-00000002")
+    context.stores[1] = fakeStore({ continueRecord })
+    local pending = true
+    local host = readyHost()
+    host.requestMilestone = function()
+      return not pending
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    local firstRenderer = context.menuRenderers[1]
+    local firstText = context.texts[1]
+    game.state:keypressed("return")
+    settle(game)
+    Assert.equal(#context.fieldCalls, 0, "pending core never constructs the field")
+    Assert.isTrue(
+      getmetatable(game.state).__index ~= modules.menu,
+      "Continue must leave the menu for preparation while core is pending"
+    )
+    Assert.equal(firstRenderer.disposed, 1, "entering preparation disposes the previous menu renderer")
+    Assert.equal(firstText.releases, 1, "entering preparation releases the previous menu text")
+    game:resize(960, 720)
+    game.state:keypressed("escape")
+    Assert.equal(getmetatable(game.state).__index, modules.menu, "cancellation returns to the owning menu")
+    Assert.equal(#context.fieldCalls, 0, "cancellation publishes no field")
+    local rebuilt = game.state
+    Assert.equal(rebuilt.width, 960, "the rebuilt menu must use the current drawable width")
+    Assert.equal(rebuilt.height, 720, "the rebuilt menu must use the current drawable height")
+    local frame = assert(
+      menuView(rebuilt).presentation.panes[1].placement.frame,
+      "the rebuilt menu must resolve its placement frame"
+    )
+    Assert.equal(frame.width, 960, "the rebuilt menu frame must cover the current viewport width")
+    Assert.equal(frame.height, 720, "the rebuilt menu frame must cover the current viewport height")
+    Assert.equal(#context.menuRenderers, 2, "cancellation constructs exactly one replacement renderer")
+    Assert.equal(#context.texts, 2, "cancellation constructs exactly one replacement text")
+    local secondRenderer = context.menuRenderers[2]
+    Assert.equal(secondRenderer.disposed, 0, "the replacement renderer must be live before disposal")
+    game:dispose()
+    Assert.equal(secondRenderer.disposed, 1, "final disposal releases the replacement renderer exactly once")
+    Assert.equal(context.texts[2].releases, 1, "final disposal releases the replacement text exactly once")
+    Assert.equal(firstRenderer.disposed, 1, "the first renderer must not be disposed twice")
+    Assert.equal(firstText.releases, 1, "the first text must not be released twice")
+  end)
+end
+
+function T.menu_installation_prefetches_the_new_game_closure_at_near()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    local requests = {}
+    local host = readyHost()
+    host.requestMilestone = function(name, urgency)
+      requests[#requests + 1] = { name = name, urgency = urgency }
+      return true
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    Assert.equal(getmetatable(game.state).__index, modules.menu, "construction installs the menu")
+    local prefetch = 0
+    for _, request in ipairs(requests) do
+      Assert.isTrue(request.name ~= "field-runtime", "menu installation prefetches no field demand")
+      if request.name == "new-game-intro" then
+        prefetch = prefetch + 1
+        Assert.equal(request.urgency, "near", "the New Game prefetch stays speculative")
+      end
+    end
+    Assert.equal(prefetch, 1, "menu installation prefetches the New Game closure exactly once")
+    game:dispose()
+  end)
+end
+
+-- Booting the Oak intro prefetches the static field runtime at near
+-- without waiting for it: Oak is composed while the runtime is still
+-- pending, the intro gate never demands the runtime as required, and the
+-- prewarm happens exactly once.
+function T.oak_boot_prefetches_field_runtime_without_waiting_for_it()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    local candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.candidate = candidate
+    context.oakState = disposableState("oak")
+    local requests = {}
+    local host = readyHost()
+    host.requestMilestone = function(name, urgency)
+      requests[#requests + 1] = { name = name, urgency = urgency }
+      if name == "new-game-intro" then
+        return true
+      end
+      return false
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    settle(game)
+    Assert.equal(#context.oakCalls, 1, "Oak is composed while field runtime is still pending")
+    local preOoakRuntime = {}
+    for _, request in ipairs(requests) do
+      if request.name == "field-runtime" then
+        preOoakRuntime[#preOoakRuntime + 1] = request
+      end
+      if request.name == "field-core" then
+        error("the Oak path must never demand a removed milestone", 0)
+      end
+    end
+    Assert.equal(#preOoakRuntime, 1, "Oak boot prefetches the field runtime exactly once")
+    Assert.equal(preOoakRuntime[1].urgency, "near", "the Oak prewarm stays speculative")
+    for _, request in ipairs(requests) do
+      if request.name == "field-runtime" and request.urgency == "required" then
+        error("the intro gate must not demand field runtime as required", 0)
+      end
+    end
+    game:setState(nil)
+  end)
+end
+
+-- Completing Oak promotes the runtime prewarm to required interest through
+-- the handoff preparation: planning and runtime are demanded as required
+-- exactly once each, initialization still applies exactly once while the
+-- handoff waits, and no second candidate is created by later updates.
+function T.oak_completion_promotes_the_runtime_prewarm_to_required()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    local candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    local finalized = {
+      saveId = candidate.saveId,
+      versionId = READY_VERSION,
+      playerData = {},
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.candidate = candidate
+    context.oakState = disposableState("oak")
+    local requests = {}
+    local host = readyHost()
+    host.requestMilestone = function(name, urgency)
+      requests[#requests + 1] = { name = name, urgency = urgency }
+      if name == "new-game-intro" then
+        return true
+      end
+      return false
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    settle(game)
+    Assert.equal(#context.oakCalls, 1, "Oak is composed before the handoff")
+    local oakCallCount = #context.oakCalls
+    context.oakCalls[oakCallCount].onComplete(finalized)
+    settle(game)
+    Assert.equal(#context.applyCalls, 1, "initialization applies exactly once")
+    local requiredPlanning = 0
+    local requiredRuntime = 0
+    local nearRuntime = 0
+    for _, request in ipairs(requests) do
+      if request.name == "field-planning" and request.urgency == "required" then
+        requiredPlanning = requiredPlanning + 1
+      end
+      if request.name == "field-runtime" and request.urgency == "required" then
+        requiredRuntime = requiredRuntime + 1
+      end
+      if request.name == "field-runtime" and request.urgency == "near" then
+        nearRuntime = nearRuntime + 1
+      end
+    end
+    Assert.equal(nearRuntime, 1, "the Oak prewarm fired exactly once")
+    Assert.isTrue(requiredPlanning >= 1, "the handoff demands planning as required")
+    Assert.isTrue(requiredRuntime >= 1, "the handoff promotes runtime to required")
+    for _, request in ipairs(requests) do
+      if request.name == "field-planning" then
+        Assert.equal(request.urgency, "required", "planning interest stays required while pending")
+      end
+      if request.name == "field-runtime" and request.urgency ~= "near" then
+        Assert.equal(request.urgency, "required", "runtime interest stays required once demanded")
+      end
+    end
+    Assert.equal(#context.fieldCalls, 0, "pending closures never construct the field")
+    settle(game)
+    Assert.equal(#context.applyCalls, 1, "waiting never reapplies initialization")
+    Assert.equal(#context.candidateCalls, 1, "waiting never reserves a second candidate")
+    game:setState(nil)
   end)
 end
 
