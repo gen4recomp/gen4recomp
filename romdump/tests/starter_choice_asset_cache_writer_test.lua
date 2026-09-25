@@ -87,12 +87,11 @@ local function publishedCache(versionId)
   return cacheFs
 end
 
-local function backdropImage(bundle)
+local function referencedImage(bundle)
   local backgrounds = assert(bundle.manifest.backgrounds, "background roles are present")
-  local entry = assert(backgrounds.host, "host decoration entry is present")
-  Assert.keySet(entry, "height,image,width", "the host decoration is one flat record")
-  Assert.isTrue(type(entry.image) == "string", "host entry carries a generated image path")
-  Assert.notNil(bundle.assets[entry.image], "host payload is compiled")
+  local entry = assert(backgrounds.info.base, "info artwork entry is present")
+  Assert.isTrue(type(entry.image) == "string", "info entry carries a generated image path")
+  Assert.notNil(bundle.assets[entry.image], "info payload is compiled")
   return entry.image
 end
 
@@ -113,7 +112,7 @@ function T.missing_reference_or_stale_marker_is_not_ready(romFs, versionId)
   Assert.isTrue(writer().write(cacheFs, bundle))
   Assert.isTrue(starter.isReady(cacheFs, bundle.marker), "the complete family reads ready first")
 
-  cacheFs:remove(backdropImage(bundle))
+  cacheFs:remove(referencedImage(bundle))
   Assert.isFalse(starter.isReady(cacheFs, bundle.marker), "a missing referenced file is not ready")
 
   local fresh = CacheFs.forVersion(versionId, FakeCache.new())
@@ -137,7 +136,7 @@ function T.failed_publication_preserves_the_previous_ready_family(romFs, version
   for path, bytes in pairs(bundle.assets) do
     brokenAssets[path] = bytes
   end
-  brokenAssets[backdropImage(bundle)] = nil
+  brokenAssets[referencedImage(bundle)] = nil
   local broken = {
     marker = bundle.marker .. ":replacement",
     manifest = bundle.manifest,

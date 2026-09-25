@@ -7,8 +7,8 @@
 -- runtime model unit; the visible info-surface artwork compiles from the
 -- retail sub BG1/BG2 tile resources; and the machine surface carries the
 -- retail 3D rear-plane clear color plus source window/portrait geometry. The
--- chooser window text palette compiles to source-independent text colors. The
--- host keeps one generated decorative backdrop. Candidate pictures are never
+-- chooser window text palette compiles to source-independent text colors.
+-- Candidate pictures are never
 -- compiled here: the mon presentation pipeline owns portrait identity. All
 -- Nitro/text decoding reuses the existing digest helpers; this module owns
 -- only source selection, semantic role assignment, unit normalization, and
@@ -102,11 +102,6 @@ local TIMING = {
   infoFadeTicks = 10,
   machineFadeTicks = 16,
 }
-
--- Chooser-owned backdrop dimensions: one widescreen surface the host
--- composition stretches over the drawable area behind both logical surfaces.
-local BACKDROP_WIDTH = 512
-local BACKDROP_HEIGHT = 192
 
 -- Visible info-surface artwork: sub BG1 (base) and sub BG2 (overlay)
 -- char/screen/palette members of the main chooser archive. The main BG2
@@ -516,29 +511,6 @@ local function compileChooserTextColors(paletteBytes)
   }
 end
 
--- Deterministic chooser-owned backdrop: a vertical gradient in muted lab
--- tones with a soft horizontal vignette, carrying no interaction state. The
--- bytes are a pure function of the fixed palette below so every build for
--- every ROM emits the identical surface.
----@return { width: integer, height: integer, rgba: string }
-local function renderBackdrop()
-  local top = { r = 46, g = 62, b = 96 }
-  local bottom = { r = 148, g = 132, b = 102 }
-  local rgba = {}
-  for y = 0, BACKDROP_HEIGHT - 1 do
-    local alpha = y / (BACKDROP_HEIGHT - 1)
-    for x = 0, BACKDROP_WIDTH - 1 do
-      local edge = math.abs(x / (BACKDROP_WIDTH - 1) - 0.5) * 2
-      local shade = 1 - edge * edge * 0.18
-      local r = math.floor((top.r + (bottom.r - top.r) * alpha) * shade + 0.5)
-      local g = math.floor((top.g + (bottom.g - top.g) * alpha) * shade + 0.5)
-      local b = math.floor((top.b + (bottom.b - top.b) * alpha) * shade + 0.5)
-      rgba[#rgba + 1] = string.char(r, g, b, 255)
-    end
-  end
-  return { width = BACKDROP_WIDTH, height = BACKDROP_HEIGHT, rgba = table.concat(rgba) }
-end
-
 ---@param romFs RomFs
 ---@return table<string, unknown>
 local function _compile(romFs)
@@ -666,8 +638,6 @@ local function _compile(romFs)
   local paletteBytes =
     readMember(main, MAIN_ARCHIVE, CHOOSER_WINDOW_PALETTE_MEMBER, "chooser-text-palette", dependencies)
   local textColors = compileChooserTextColors(paletteBytes)
-  local backdropImage = renderBackdrop()
-  local backdropPath = StarterChoiceAssetCache.assetDir() .. "/backdrop.png"
   local infoBase = compileInfoBackground(main, INFO_BG_BASE, "background:info-base", dependencies)
   local infoBasePath = StarterChoiceAssetCache.assetDir() .. "/info-base.png"
   local infoOverlay = compileInfoBackground(main, INFO_BG_OVERLAY, "background:info-overlay", dependencies)
@@ -753,11 +723,6 @@ local function _compile(romFs)
       },
     },
     backgrounds = {
-      host = {
-        image = backdropPath,
-        width = backdropImage.width,
-        height = backdropImage.height,
-      },
       info = {
         base = {
           image = infoBasePath,
@@ -801,7 +766,6 @@ local function _compile(romFs)
   for sha1, tex in pairs(textures) do
     assets[MapAssetCache.texturePath(sha1)] = assert(tex.data, "compiled texture is missing finalized PNG Data")
   end
-  assets[backdropPath] = PngWriter.encode(backdropImage.width, backdropImage.height, backdropImage.rgba)
   assets[infoBasePath] = PngWriter.encode(infoBase.width, infoBase.height, infoBase.rgba)
   assets[infoOverlayPath] = PngWriter.encode(infoOverlay.width, infoOverlay.height, infoOverlay.rgba)
 

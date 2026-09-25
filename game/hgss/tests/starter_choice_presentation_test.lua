@@ -191,11 +191,6 @@ local function semanticManifest()
       },
     },
     backgrounds = {
-      host = {
-        image = "assets/generated/starter_choice/backdrop.png",
-        width = 512,
-        height = 192,
-      },
       info = {
         base = {
           image = "assets/generated/starter_choice/info-base.png",
@@ -531,7 +526,6 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
   local manifest = presentation._manifest
   presentation._backend = backend
   presentation._imageEntries = {
-    [manifest.backgrounds.host.image .. "|clamp|clamp"] = image(512, 192),
     [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
     [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
     ["assets/generated/mon/portraits.png|clamp|clamp"] = image(80, 80),
@@ -572,14 +566,6 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
   presentation._renderer:release()
   Assert.equal(releaseCalls, 0, "releasing Starter's wrapper never releases the borrowed backend")
 
-  presentation._backdropImage = {
-    getWidth = function()
-      return 512
-    end,
-    getHeight = function()
-      return 192
-    end,
-  }
   presentation._staticDraws = {}
   presentation._renderMeshes = {
     turntable = {},
@@ -752,26 +738,26 @@ function T.turntable_slot_step_completes_on_the_eleventh_fixed_update()
   Assert.notNil(observation, "ten rotation ticks report observations")
   Assert.isFalse(observation.rotationComplete, "the slot step is still travelling after ten fixed updates")
   Assert.near(
-    math.abs(presentation:yawForSnapshot(forward)),
+    presentation:yawForSnapshot(forward),
     math.rad(112.5),
     1e-9,
-    "ten fixed updates reach 112.5 degrees"
+    "right turns counterclockwise through positive yaw"
   )
   observation = presentation:update(forward)
   Assert.isTrue(observation.rotationComplete, "the slot step completes on the eleventh fixed update")
   Assert.near(
-    math.abs(presentation:yawForSnapshot(forward)),
+    presentation:yawForSnapshot(forward),
     math.rad(120),
     1e-9,
-    "completion clamps to exactly 120 degrees"
+    "right turn completion clamps to positive 120 degrees"
   )
   observation = presentation:update(forward)
   Assert.isTrue(observation.rotationComplete, "a settled rotation never overshoots its slot")
   Assert.near(
-    math.abs(presentation:yawForSnapshot(forward)),
+    presentation:yawForSnapshot(forward),
     math.rad(120),
     1e-9,
-    "repeated ticks hold the clamped slot"
+    "repeated right ticks hold the positive clamped slot"
   )
 
   presentation:reset()
@@ -780,14 +766,21 @@ function T.turntable_slot_step_completes_on_the_eleventh_fixed_update()
     observation = presentation:update(backward)
   end
   Assert.isFalse(observation.rotationComplete, "the reverse slot step is still travelling after ten fixed updates")
+  Assert.near(
+    presentation:yawForSnapshot(backward),
+    -math.rad(112.5),
+    1e-9,
+    "left turns clockwise through negative yaw"
+  )
   observation = presentation:update(backward)
   Assert.isTrue(observation.rotationComplete, "the reverse slot step completes on the eleventh fixed update")
   Assert.near(
-    math.abs(presentation:yawForSnapshot(backward)),
-    math.rad(120),
+    presentation:yawForSnapshot(backward),
+    -math.rad(120),
     1e-9,
-    "the reverse step clamps to exactly 120 degrees"
+    "left turn completion clamps to negative 120 degrees"
   )
+  Assert.isTrue(presentation:yawForSnapshot(backward) < 0, "left turns clockwise through negative yaw")
 end
 
 -- Starter surfaces draw prepared lines through the generated chooser
@@ -1032,7 +1025,6 @@ function T.starter_frames_draw_through_the_borrowed_field_window_primitive()
       }
     end
     presentation._imageEntries = {
-      [manifest.backgrounds.host.image .. "|clamp|clamp"] = image(512, 192),
       [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
       [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
       ["assets/generated/mon/portraits.png|clamp|clamp"] = image(80, 80),

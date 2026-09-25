@@ -2,7 +2,7 @@
 -- validated starter-application manifest through the shared model stack
 -- (ModelDefinition/ModelInstance over a GpuAssetPool, drawn through
 -- FieldRenderer under the manifest's outside/inside camera poses), the
--- chooser-owned backdrop, the three candidate portraits borrowed from the
+-- cleared info surface, the three candidate portraits borrowed from the
 -- mon portrait atlas, and the shared HGSS window primitive for the framed
 -- message surfaces. Two logical 256x192 surfaces share one host drawable:
 -- the machine surface carries the 3D machine/balls plus the bottom prompt,
@@ -52,7 +52,6 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _instances table<string, ModelInstance> model instances by scene role
 ---@field _staticBatches table[] prepared tabletop batches
 ---@field _staticDraws table[] realized tabletop draw items, built once at readiness and reused by every draw
----@field _backdropImage GpuAssetPool.Image? chooser backdrop image once realized
 ---@field _infoBaseImage GpuAssetPool.Image? info-surface base artwork once realized
 ---@field _infoOverlayImage GpuAssetPool.Image? info-surface overlay artwork once realized
 ---@field _portraitImage GpuAssetPool.Image? mon portrait atlas image once realized
@@ -183,7 +182,6 @@ function StarterChoicePresentation.new(opts)
     _instances = {},
     _staticBatches = {},
     _staticDraws = {},
-    _backdropImage = nil,
     _infoBaseImage = nil,
     _infoOverlayImage = nil,
     _portraitImage = nil,
@@ -880,14 +878,6 @@ local function collectResources(manifest)
     end
   end
   local backgrounds = assert(manifest.backgrounds, "starter manifest is missing its backgrounds")
-  local hostBackdrop = assert(backgrounds.host, "starter manifest is missing its host backdrop")
-  addImage(
-    assert(hostBackdrop.image, "starter manifest is missing its backdrop image"),
-    "clamp",
-    "clamp",
-    hostBackdrop.width,
-    hostBackdrop.height
-  )
   local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
   local infoBase = assert(infoArtwork.base, "starter manifest is missing its info base layer")
   addImage(
@@ -1121,10 +1111,6 @@ function StarterChoicePresentation:_finishPreparation()
   self:_buildStaticDraws()
   local graphics = love and love.graphics
   local backgrounds = assert(self._manifest.backgrounds, "starter manifest is missing its backgrounds")
-  self._backdropImage = assert(
-    self._imageEntries[assert(backgrounds.host.image, "starter manifest is missing its backdrop image") .. "|clamp|clamp"],
-    "starter presentation owns no backdrop"
-  )
   local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
   self._infoBaseImage = assert(
     self._imageEntries[assert(infoArtwork.base, "starter manifest is missing its info base layer").image .. "|clamp|clamp"],
@@ -1310,7 +1296,7 @@ function StarterChoicePresentation:_detectEntry(snapshot)
   end
   if snapshot.transition == "rotate" then
     self._rotationAccum = 0
-    self._rotateSign = snapshot.direction == "left" and 1 or -1
+    self._rotateSign = snapshot.direction == "left" and -1 or 1
   elseif snapshot.transition == "zoomIn" then
     self._cameraStep = 0
     self._arcStep = 0
@@ -1603,12 +1589,12 @@ function StarterChoicePresentation:_drawInfoArtwork()
   graphics.setColor(red, green, blue, alpha)
 end
 
--- The native info pane owns its backing during source phases where both
--- retail info background layers are disabled.
+-- The native info pane is cleared between source phases where both retail
+-- info background layers are disabled.
 function StarterChoicePresentation:_drawInfoBackdrop()
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
-  graphics.setColor(1, 1, 1, 1)
-  graphics.draw(assert(self._backdropImage, "starter presentation owns no host backdrop"), 0, 0)
+  graphics.setColor(0, 0, 0, 1)
+  graphics.rectangle("fill", 0, 0, 256, 192)
 end
 
 -- Draws the sequential source white fade over the caller's full canonical
@@ -1960,7 +1946,6 @@ function StarterChoicePresentation:_releaseGpu()
   self._instances = {}
   self._staticBatches = {}
   self._staticDraws = {}
-  self._backdropImage = nil
   self._infoBaseImage = nil
   self._infoOverlayImage = nil
   self._portraitImage = nil

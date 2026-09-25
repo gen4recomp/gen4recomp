@@ -192,10 +192,10 @@ local function chooserTextColors()
   }
 end
 
-local function validV5Manifest()
+local function validV6Manifest()
   local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
   return {
-    schema = "g4-starter-choice-v5",
+    schema = "g4-starter-choice-v6",
     reference = { width = 256, height = 192 },
     models = {
       tabletop = staticDescriptor(),
@@ -256,11 +256,6 @@ local function validV5Manifest()
       },
     },
     backgrounds = {
-      host = {
-        image = "assets/generated/starter_choice/backdrop.png",
-        width = 512,
-        height = 192,
-      },
       info = {
         base = {
           image = "assets/generated/starter_choice/info-base.png",
@@ -306,7 +301,7 @@ local function cache()
 end
 
 local function reject(mutate, label)
-  local manifest = validV5Manifest()
+  local manifest = validV6Manifest()
   mutate(manifest)
   local ok, err = cache().validateManifest(manifest)
   Assert.isFalse(ok, label .. " must be rejected")
@@ -432,13 +427,13 @@ end
 
 function T.bad_reference_paths_are_rejected()
   reject(function(manifest)
-    manifest.backgrounds.host.image = "assets/generated/intro/backdrop.png"
+    manifest.backgrounds.info.base.image = "assets/generated/intro/backdrop.png"
   end, "backdrop outside the starter-choice subtree")
 end
 
 function T.source_archive_identities_are_rejected()
   reject(function(manifest)
-    manifest.backgrounds.host.image = "assets/generated/starter_choice/NARC_application_choose.png"
+    manifest.backgrounds.info.base.image = "assets/generated/starter_choice/NARC_application_choose.png"
   end, "source archive symbol in a backdrop path")
 end
 
@@ -502,7 +497,7 @@ end
 
 local function readyCache()
   local module = cache()
-  local manifest = validV5Manifest()
+  local manifest = validV6Manifest()
   local marker = module.marker("deadbeef", "feedface")
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   cacheFs:writeLua(module.manifestPath(), manifest)
@@ -528,7 +523,7 @@ end
 function T.missing_referenced_files_are_not_ready()
   local module = cache()
   local cacheFs, marker = readyCache()
-  cacheFs:remove("assets/generated/starter_choice/backdrop.png")
+  cacheFs:remove("assets/generated/starter_choice/info-base.png")
   Assert.isFalse(module.isReady(cacheFs, marker))
 end
 
@@ -540,7 +535,7 @@ function T.missing_manifests_are_not_ready()
 end
 
 local function rejectManifest(mutate, label)
-  local manifest = validV5Manifest()
+  local manifest = validV6Manifest()
   mutate(manifest)
   local ok, err = cache().validateManifest(manifest)
   Assert.isFalse(ok, label .. " must be rejected")
@@ -549,10 +544,10 @@ end
 
 function T.complete_normalized_manifest_is_accepted()
   local module = cache()
-  Assert.equal(module.SCHEMA, "g4-starter-choice-v5")
+  Assert.equal(module.SCHEMA, "g4-starter-choice-v6")
   Assert.equal(module.SCHEMA, DerivedAssetContract.starterChoice.schema)
   Assert.equal(module.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
-  Assert.isTrue(module.validateManifest(validV5Manifest()))
+  Assert.isTrue(module.validateManifest(validV6Manifest()))
 end
 
 function T.previous_schema_manifests_are_rejected()
@@ -649,7 +644,7 @@ function T.surface_rectangles_origins_and_frame_policy_are_exact()
 end
 
 function T.machine_clear_color_is_the_source_rear_plane_color()
-  local manifest = validV5Manifest()
+  local manifest = validV6Manifest()
   Assert.equal(manifest.surfaces.machine.clearColor.r, 1)
   Assert.equal(manifest.surfaces.machine.clearColor.g, 1)
   Assert.isTrue(math.abs(manifest.surfaces.machine.clearColor.b - 16 / 31) < 1e-9)
@@ -663,7 +658,7 @@ function T.machine_clear_color_is_the_source_rear_plane_color()
 end
 
 function T.info_background_roles_and_blend_are_exact()
-  local manifest = validV5Manifest()
+  local manifest = validV6Manifest()
   Assert.equal(manifest.backgrounds.info.overlayAlpha, 5 / 16)
   rejectManifest(function(candidate)
     candidate.backgrounds.info.overlayAlpha = 11 / 16
@@ -678,8 +673,12 @@ function T.info_background_roles_and_blend_are_exact()
     candidate.backgrounds.info.base.width = 512
   end, "base layer at host dimensions")
   rejectManifest(function(candidate)
-    candidate.backgrounds.host = nil
-  end, "missing host decoration")
+    candidate.backgrounds.host = {
+      image = "assets/generated/starter_choice/backdrop.png",
+      width = 512,
+      height = 192,
+    }
+  end, "obsolete host decoration")
 end
 
 function T.unknown_surface_fields_and_source_identities_are_rejected()
@@ -699,13 +698,13 @@ end
 
 function T.normalized_referenced_paths_cover_every_image()
   local module = cache()
-  local manifest = validV5Manifest()
+  local manifest = validV6Manifest()
   local paths = module.referencedPaths(manifest)
   local seen = {}
   for _, path in ipairs(paths) do
     seen[path] = (seen[path] or 0) + 1
   end
-  Assert.equal(seen["assets/generated/starter_choice/backdrop.png"], 1, "the host image is referenced exactly once")
+  Assert.isNil(seen["assets/generated/starter_choice/backdrop.png"], "no host image is referenced")
   Assert.equal(seen["assets/generated/starter_choice/info-base.png"], 1, "the base image is referenced exactly once")
   Assert.equal(
     seen["assets/generated/starter_choice/info-overlay.png"],
@@ -716,7 +715,7 @@ end
 
 function T.missing_normalized_images_are_not_ready()
   local module = cache()
-  local manifest = validV5Manifest()
+  local manifest = validV6Manifest()
   local marker = module.marker("deadbeef", "feedface")
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   cacheFs:writeLua(module.manifestPath(), manifest)
@@ -785,21 +784,21 @@ end
 
 function T.starter_contract_carries_the_inspect_pivot_and_rejects_the_previous_shape()
   local module = cache()
-  local withoutPivot = validV5Manifest()
+  local withoutPivot = validV6Manifest()
   withoutPivot.scene.ballLayout.inspectPivotYOffsetY = nil
   local ok, err = module.validateManifest(withoutPivot)
   Assert.isFalse(ok, "a manifest without the inspect pivot must be rejected")
   Assert.equal(assert(err).code, "STARTER_CHOICE_MANIFEST_INVALID", "the missing pivot has a typed error")
-  Assert.equal(module.SCHEMA, "g4-starter-choice-v5", "the starter schema carries the current contract")
-  Assert.equal(module.FORMAT, "starter-choice-cache-v5", "the starter cache format carries the current contract")
+  Assert.equal(module.SCHEMA, "g4-starter-choice-v6", "the starter schema carries the current contract")
+  Assert.equal(module.FORMAT, "starter-choice-cache-v6", "the starter cache format carries the current contract")
   Assert.equal(module.SCHEMA, DerivedAssetContract.starterChoice.schema, "the cache schema follows the shared contract")
   Assert.equal(
     module.FORMAT,
     DerivedAssetContract.starterChoice.cacheFormat,
     "the cache format follows the shared contract"
   )
-  local current = validV5Manifest()
-  current.schema = "g4-starter-choice-v5"
+  local current = validV6Manifest()
+  current.schema = "g4-starter-choice-v6"
   current.scene.ballLayout.inspectPivotYOffsetY = 13.453 / 16
   Assert.isTrue(module.validateManifest(current), "the current pivot shape validates")
   reject(function(manifest)

@@ -410,7 +410,7 @@ end
 ---@param label string
 ---@param entry table<string, unknown>
 ---@return boolean, Errors.Error?
-local function checkBackdropEntry(label, entry)
+local function checkImageEntry(label, entry)
   local ok, err = closedRecord(label, entry, { image = true, width = true, height = true })
   if not ok then
     return false, err
@@ -437,7 +437,7 @@ end
 ---@param height integer
 ---@return boolean, Errors.Error?
 local function checkSurfaceImage(label, entry, width, height)
-  local ok, err = checkBackdropEntry(label, entry)
+  local ok, err = checkImageEntry(label, entry)
   if not ok then
     return false, err
   end
@@ -450,13 +450,9 @@ end
 ---@param backgrounds table<string, unknown>
 ---@return boolean, Errors.Error?
 local function checkBackgrounds(backgrounds)
-  local ok, err = closedRecord("manifest backgrounds", backgrounds, { host = true, info = true })
+  local ok, err = closedRecord("manifest backgrounds", backgrounds, { info = true })
   if not ok then
     return false, err
-  end
-  local hostOk, hostErr = checkBackdropEntry("manifest backgrounds host", backgrounds.host)
-  if not hostOk then
-    return false, hostErr
   end
   local infoOk, infoErr = closedRecord("manifest backgrounds info", backgrounds.info, {
     base = true,
@@ -742,7 +738,7 @@ function M.validateManifest(manifest)
 end
 
 -- Every cache-relative path the manifest references: model geometry and
--- textures plus the host decoration and both info-surface images. Raises on
+-- textures plus both info-surface images. Raises on
 -- a malformed manifest, matching ModelAsset.referencedPaths.
 ---@param manifest table<string, unknown>
 ---@return string[]
@@ -755,7 +751,6 @@ function M.referencedPaths(manifest)
     end
   end
   local backgrounds = manifest.backgrounds
-  paths[#paths + 1] = backgrounds.host.image
   paths[#paths + 1] = backgrounds.info.base.image
   paths[#paths + 1] = backgrounds.info.overlay.image
   return paths

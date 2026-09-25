@@ -99,6 +99,7 @@ local function loadManifest(cacheModule, cacheFs)
   local manifest =
     assert(cacheFs:loadLua(cacheModule.manifestPath()), "the starter application cache carries its normalized manifest")
   Assert.isTrue(cacheModule.validateManifest(manifest), "the starter manifest validates read-only")
+  return manifest
 end
 
 -- The draw-time frame borrower: a real field window renderer built from
@@ -310,37 +311,24 @@ local function assertInfoPaneCoversField(image, host, versionId)
   )
 end
 
-local function backdropSample(scope, host)
-  local canvas = scope:own(love.graphics.newCanvas(REFERENCE_WIDTH, REFERENCE_HEIGHT))
-  love.graphics.setCanvas(canvas)
-  love.graphics.clear(0, 0, 0, 0)
-  love.graphics.setColor(1, 1, 1, 1)
-  love.graphics.draw(host._presentation._backdropImage, 0, 0)
-  love.graphics.setCanvas()
-  local image = scope:own(canvas:newImageData())
-  canvas:release()
-  return { image:getPixel(2, 2) }
-end
-
-local function assertInfoSampleMatchesBackdrop(image, host, expected, versionId, phase)
+local function assertInfoSampleIsBlack(image, host, versionId, phase)
   local x, y = infoSamplePoint(host)
   local actual = { image:getPixel(x, y) }
   for index = 1, 3 do
     Assert.isTrue(
-      math.abs(actual[index] - expected[index]) < 0.02,
-      versionId .. " " .. phase .. " exposes the chooser host backdrop at the info pane sample"
+      math.abs(actual[index]) < 0.02,
+      versionId .. " " .. phase .. " clears the inactive info pane to black"
     )
   end
 end
 
-local function assertInfoSampleShowsArtwork(image, host, backdrop, versionId)
+local function assertInfoSampleShowsArtwork(image, host, versionId)
   local x, y = infoSamplePoint(host)
   local actual = { image:getPixel(x, y) }
-  local difference = 0
-  for index = 1, 3 do
-    difference = difference + math.abs(actual[index] - backdrop[index])
-  end
-  Assert.isTrue(difference > 0.1, versionId .. " settled confirmation restores the info artwork")
+  Assert.isTrue(
+    math.max(actual[1], actual[2], actual[3]) > 0.1,
+    versionId .. " settled confirmation restores the info artwork"
+  )
 end
 
 function T.source_rate_rotation_renders_intermediate_frames_without_advancing_semantics(scope, context)
@@ -441,7 +429,7 @@ function T.source_rate_rotation_renders_intermediate_frames_without_advancing_se
   end
 end
 
-function T.native_info_pane_keeps_chooser_backing_through_bg_off_zoom_states(scope, context)
+function T.native_info_pane_clears_to_black_through_bg_off_zoom_states(scope, context)
   local versions = readyVersions()
   if #versions == 0 then
     context:skip("native info-pane backing needs a ready user-owned ROM with a derived cache")
@@ -457,7 +445,6 @@ function T.native_info_pane_keeps_chooser_backing_through_bg_off_zoom_states(sco
     local backend = prepareHost(host, cacheFs)
     local window = openWindowBorrower(cacheFs, versionId)
     local fieldColor = { 0.9, 0, 0.8, 1 }
-    local expectedBackdrop = backdropSample(scope, host)
     host:confirm()
     local inspected = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
     assertInfoPaneCoversField(inspected, host, versionId)
@@ -465,7 +452,7 @@ function T.native_info_pane_keeps_chooser_backing_through_bg_off_zoom_states(sco
     Assert.equal(host._controller:snapshot().transition, "zoomIn", versionId .. " confirmation starts zoom immediately")
     local zooming = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
     assertInfoPaneCoversField(zooming, host, versionId)
-    assertInfoSampleMatchesBackdrop(zooming, host, expectedBackdrop, versionId, "zoom-in")
+    assertInfoSampleIsBlack(zooming, host, versionId, "zoom-in")
     for _ = 1, 4 do
       host:update()
     end
@@ -476,7 +463,7 @@ function T.native_info_pane_keeps_chooser_backing_through_bg_off_zoom_states(sco
     )
     local waiting = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
     assertInfoPaneCoversField(waiting, host, versionId)
-    assertInfoSampleMatchesBackdrop(waiting, host, expectedBackdrop, versionId, "wait-zoom")
+    assertInfoSampleIsBlack(waiting, host, versionId, "wait-zoom")
     Assert.isTrue(
       stepHostUntil(host, function()
         local snapshot = host._controller:snapshot()
@@ -485,12 +472,12 @@ function T.native_info_pane_keeps_chooser_backing_through_bg_off_zoom_states(sco
       versionId .. " zoom settles at the existing confirmation boundary"
     )
     local confirmed = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
-    assertInfoSampleShowsArtwork(confirmed, host, expectedBackdrop, versionId)
+    assertInfoSampleShowsArtwork(confirmed, host, versionId)
     host:cancel()
     Assert.equal(host._controller:snapshot().transition, "backOut", versionId .. " cancel begins the source back-out")
     local backingOut = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
     assertInfoPaneCoversField(backingOut, host, versionId)
-    assertInfoSampleMatchesBackdrop(backingOut, host, expectedBackdrop, versionId, "back-out")
+    assertInfoSampleIsBlack(backingOut, host, versionId, "back-out")
 
     host:dispose()
     window:release()
@@ -515,7 +502,8 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
     local marker = cacheFs:read(cacheModule.markerPath())
     Assert.notNil(marker, versionId .. " publishes the starter application marker")
     Assert.isTrue(cacheModule.isReady(cacheFs, marker), versionId .. " starter cache is ready")
-    loadManifest(cacheModule, cacheFs)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    Assert.isNil(manifest.backgrounds.host, versionId .. " the generated chooser contains no synthetic host backdrop")
 
     local host = openProductionChoice(versionId, cacheFs, nil, function()
       return nativeWideBox()
@@ -526,6 +514,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
     local window = openWindowBorrower(cacheFs, versionId)
     local initial = drawFrame(scope, host, window, 536, 240)
     Assert.isTrue(brightPixels(initial, 536, 240) > 20, versionId .. " initial chooser state leaves visible pixels")
+    assertInfoSampleIsBlack(initial, host, versionId, "initial chooser")
 
     local seen = {}
     for y = 0, REFERENCE_HEIGHT - 1, 8 do

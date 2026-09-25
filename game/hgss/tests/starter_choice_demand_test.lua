@@ -197,11 +197,6 @@ local function semanticManifest()
       },
     },
     backgrounds = {
-      host = {
-        image = "assets/generated/starter_choice/backdrop.png",
-        width = 512,
-        height = 192,
-      },
       info = {
         base = {
           image = "assets/generated/starter_choice/info-base.png",
