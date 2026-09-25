@@ -293,6 +293,55 @@ function T.name_confirmation_keeps_a_final_pixel_margin_at_production_host_scale
   end
 end
 
+function T.vertical_name_confirmation_is_centered_with_complete_safe_chrome(scope)
+  local width, height = 390, 844
+  for _, entry in ipairs(readyManifests()) do
+    local renderer = rendererFor(scope, entry)
+    local backgroundView = confirmationView("name", 0)
+    backgroundView.confirmationChoice = nil
+    backgroundView.choiceLabels = nil
+    local background = renderProductionRoot(scope, renderer, backgroundView, entry.manifest, width, height)
+    local surface = assert(backgroundView.pixelSurface)
+    local layout = assert(backgroundView.layout)
+    local pixelScale = assert(surface.placement.pixelScale)
+    local safeFrame = assert(layout.safeFrame)
+    local safeLeft = surface.placement.origin.x + safeFrame.x * pixelScale
+    local safeTop = surface.placement.origin.y + safeFrame.y * pixelScale
+    local safeRight = surface.placement.origin.x + (safeFrame.x + safeFrame.width) * pixelScale
+    local safeBottom = surface.placement.origin.y + (safeFrame.y + safeFrame.height) * pixelScale
+    local choiceRegion = assert(layout.selectorRegion)
+
+    for _, selected in ipairs({ 0, 1 }) do
+      local view = confirmationView("name", selected)
+      local image = renderProductionRoot(scope, renderer, view, entry.manifest, width, height)
+      local yes = assert(view.layout.confirmationButtons[0])
+      local no = assert(view.layout.confirmationButtons[1])
+      local stackCenter = yes.rect.x + yes.rect.width / 2
+      local regionCenter = choiceRegion.x + choiceRegion.width / 2
+      local minX, minY, maxX, maxY
+      for y = 0, height - 1 do
+        for x = 0, width - 1 do
+          if not equalPixel(image, background, x, y) then
+            minX = math.min(minX or x, x)
+            minY = math.min(minY or y, y)
+            maxX = math.max(maxX or x, x)
+            maxY = math.max(maxY or y, y)
+          end
+        end
+      end
+      local label = string.format("%s vertical host focus %d", entry.versionId, selected)
+      Assert.near(stackCenter, regionCenter, 1, label .. " choices must remain centered")
+      Assert.notNil(minX, label .. " choices must produce rendered pixels")
+      Assert.isTrue(minX > safeLeft, label .. " rendered chrome must clear the left safe edge")
+      Assert.isTrue(minY > safeTop, label .. " rendered chrome must clear the top safe edge")
+      Assert.isTrue(maxX < safeRight - 1, label .. " rendered chrome must clear the right safe edge")
+      Assert.isTrue(maxY < safeBottom - 1, label .. " rendered chrome must clear the bottom safe edge")
+      Assert.notNil(yes.button, label .. " YES focus chrome must resolve")
+      Assert.notNil(no.button, label .. " NO focus chrome must resolve")
+    end
+  end
+end
+
 function T.unselected_text_button_face_has_light_separator_dark(scope)
   for _, entry in ipairs(readyManifests()) do
     local renderer = rendererFor(scope, entry)

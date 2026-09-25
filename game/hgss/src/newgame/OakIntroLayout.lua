@@ -224,109 +224,15 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
   return selectedSubject, oakRegion, selectorRegion, nameChoiceRegion, selectorActive
 end
 
-local function integerConfirmationEntries(region, preferredScale, alignRight, bounds, rightInset)
+local function integerConfirmationEntries(region, preferredScale)
   local stackWidth = TextButton.REFERENCE_WIDTH
   local stackHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
-  local fitRegion = region
-  if rightInset ~= nil then
-    local bound = assert(bounds)
-    local right = math.min(region.x + region.width, bound.x + bound.width - rightInset)
-    fitRegion = {
-      x = region.x,
-      y = region.y,
-      width = right - region.x,
-      height = region.height,
-    }
-    assert(fitRegion.width > 0, "Oak name confirmation inset region must be positive")
-  end
-  local scale = PixelScale.fitPreferred(fitRegion, stackWidth, stackHeight, preferredScale)
-  if alignRight then
-    local area = fitRegion
-    if bounds ~= nil then
-      local bound = assert(bounds)
-      local left = math.max(fitRegion.x, bound.x)
-      local right = math.min(fitRegion.x + fitRegion.width, bound.x + bound.width)
-      area = { x = left, y = bound.y, width = right - left, height = bound.height }
-    end
-    assert(area.width > 0 and area.height > 0, "Oak name confirmation bounds must be positive")
-
-    local visualYes, visualNo
-    while scale >= 1 do
-      local trialWidth = stackWidth * scale
-      local trialHeight = TextButton.REFERENCE_HEIGHT * scale
-      local trialGap = 8 * scale
-      local yesButton = TextButton.resolve({
-        rect = rect(0, 0, trialWidth, trialHeight),
-        scale = scale,
-        cornerRadius = 6,
-      })
-      local noButton = TextButton.resolve({
-        rect = rect(0, trialHeight + trialGap, trialWidth, trialHeight),
-        scale = scale,
-        cornerRadius = 6,
-      })
-      local yesBounds = TextButton.visualBounds(yesButton, true)
-      local noBounds = TextButton.visualBounds(noButton, true)
-      local unionWidth = math.max(yesBounds.x + yesBounds.width, noBounds.x + noBounds.width)
-        - math.min(yesBounds.x, noBounds.x)
-      local unionHeight = math.max(yesBounds.y + yesBounds.height, noBounds.y + noBounds.height)
-        - math.min(yesBounds.y, noBounds.y)
-      if unionWidth <= area.width and unionHeight <= area.height then
-        visualYes, visualNo = yesBounds, noBounds
-        break
-      end
-      scale = scale - 1
-    end
-    assert(
-      visualYes ~= nil and visualNo ~= nil,
-      string.format("Oak name confirmation focus bounds do not fit at 1x (%s x %s)", area.width, area.height)
-    )
-    local unionLeft = math.min(visualYes.x, visualNo.x)
-    local unionTop = math.min(visualYes.y, visualNo.y)
-    local unionRight = math.max(visualYes.x + visualYes.width, visualNo.x + visualNo.width)
-    local unionBottom = math.max(visualYes.y + visualYes.height, visualNo.y + visualNo.height)
-    local x = area.x + area.width - (unionRight - unionLeft) - unionLeft
-    local visualHeight = unionBottom - unionTop
-    local desiredTop = region.y + (region.height - visualHeight) / 2
-    local visualTop = math.max(area.y, math.min(desiredTop, area.y + area.height - visualHeight))
-    local y = visualTop - unionTop
-    local width = TextButton.REFERENCE_WIDTH * scale
-    local height = TextButton.REFERENCE_HEIGHT * scale
-    local yesRect = rect(x, y, width, height)
-    local noRect = rect(x, y + height + 8 * scale, width, height)
-    local yes = {
-      key = "yes",
-      rect = yesRect,
-      scale = scale,
-      button = TextButton.resolve({ rect = yesRect, scale = scale, cornerRadius = 6 }),
-    }
-    local no = {
-      key = "no",
-      rect = noRect,
-      scale = scale,
-      button = TextButton.resolve({ rect = noRect, scale = scale, cornerRadius = 6 }),
-    }
-    for _, entry in ipairs({ yes, no }) do
-      local visual = TextButton.visualBounds(entry.button, true)
-      assert(
-        visual.x >= area.x
-          and visual.y >= area.y
-          and visual.x + visual.width <= area.x + area.width
-          and visual.y + visual.height <= area.y + area.height,
-        "Oak name confirmation focus bounds exceed the safe region"
-      )
-    end
-    return { [0] = yes, [1] = no }
-  end
+  local scale = PixelScale.fitPreferred(region, stackWidth, stackHeight, preferredScale)
   local width, height = stackWidth * scale, TextButton.REFERENCE_HEIGHT * scale
   -- Snap the centered stack to the logical pixel grid so fractional button
   -- edges do not erase the shared ring pixels during rasterization.
   local x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
   local y = PixelScale.snapLogical(region.y + (region.height - (height * 2 + 8 * scale)) / 2)
-  if bounds ~= nil then
-    x = math.max(bounds.x, math.min(x, bounds.x + bounds.width - width))
-    y = math.max(bounds.y, math.min(y, bounds.y + bounds.height - height * 2 - 8 * scale))
-  end
   return {
     [0] = {
       key = "yes",
@@ -408,8 +314,7 @@ local function profileLayout(
   reference,
   manifest,
   nameChoiceRegion,
-  preferredScale,
-  gap
+  preferredScale
 )
   if selectorActive then
     local genderSlots = genderGroupEntries(assert(selectorRegion), reference, manifest, preferredScale)
@@ -426,8 +331,7 @@ local function profileLayout(
     end
   end
   if view.phase == "name_confirm" and view.confirmationChoice and view.confirmationChoice.kind == "name" then
-    result.confirmationButtons =
-      integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale), true, result.safeFrame, gap)
+    result.confirmationButtons = integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale))
   end
   -- The reusable Naming Screen child is placed by the parent-owned naming
   -- session, never by scene composition: OakIntroState publishes the
@@ -527,17 +431,7 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
     result.revealCanvas = canvas
     result.reveal = ordinaryReveal
   end
-  profileLayout(
-    result,
-    view,
-    selectorActive,
-    selectorRegion,
-    reference,
-    manifest,
-    nameChoiceRegion,
-    preferredScale,
-    gap
-  )
+  profileLayout(result, view, selectorActive, selectorRegion, reference, manifest, nameChoiceRegion, preferredScale)
   return result
 end
 

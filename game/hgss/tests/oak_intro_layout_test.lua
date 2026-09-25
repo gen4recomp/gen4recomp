@@ -1219,6 +1219,29 @@ function T.tests.name_confirmation_choices_keep_layout_gap_inside_safe_frame()
   end
 end
 
+function T.tests.name_confirmation_stack_is_centered_in_the_choice_region_on_four_by_three_hosts()
+  local layout, _ = computeForHost(1024, 768, {
+    phase = "name_confirm",
+    visual = "oak",
+    primaryWidget = "oak",
+    genderFocus = 0,
+    confirmationChoice = { kind = "name", selected = 0 },
+    genderCompositionProgress = 1,
+    nameCompositionProgress = 1,
+    oakBgScrollX = 0,
+  }, {}, manifest())
+  local choiceRegion = assert(layout.selectorRegion)
+  local yes = assert(layout.confirmationButtons[0])
+  local no = assert(layout.confirmationButtons[1])
+  local stackCenter = yes.rect.x + yes.rect.width / 2
+  local regionCenter = choiceRegion.x + choiceRegion.width / 2
+
+  Assert.near(stackCenter, regionCenter, 1, "name choices must center within their region")
+  for _, entry in ipairs({ yes, no }) do
+    Assert.isTrue(inside(TextButton.visualBounds(entry.button, true), layout.safeFrame))
+  end
+end
+
 -- The opening reveal swaps the ball for two Marill presentations and then
 -- clears the reveal entirely; Oak's vertical placement must not follow those
 -- swaps. The reveal widgets below use deliberately unequal bounds so a
