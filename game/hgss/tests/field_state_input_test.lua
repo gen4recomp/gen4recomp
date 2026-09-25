@@ -14,6 +14,15 @@ local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {}
 
+local function inactivePokemonNaming()
+  return {
+    isActive = function()
+      return false
+    end,
+    cancelPointerCapture = function() end,
+  }
+end
+
 local function stateWithInput(calls)
   local input = {}
   for _, name in ipairs({
@@ -31,10 +40,15 @@ local function stateWithInput(calls)
       calls[#calls + 1] = { name, ... }
     end
   end
-  return setmetatable(
-    { runtime = { input = input, actionKeys = {}, cancelKeys = {}, menuKeys = { tab = true } } },
-    FieldState
-  )
+  return setmetatable({
+    runtime = {
+      input = input,
+      actionKeys = {},
+      cancelKeys = {},
+      menuKeys = { tab = true },
+      pokemonNaming = inactivePokemonNaming(),
+    },
+  }, FieldState)
 end
 
 local joystick = {
@@ -221,8 +235,15 @@ end
 
 function T.focus_loss_discards_stale_stick_axes_before_refocus()
   local input = FieldInput.new()
-  local state =
-    setmetatable({ runtime = { input = input, actionKeys = {}, cancelKeys = {}, menuKeys = {} } }, FieldState)
+  local state = setmetatable({
+    runtime = {
+      input = input,
+      actionKeys = {},
+      cancelKeys = {},
+      menuKeys = {},
+      pokemonNaming = inactivePokemonNaming(),
+    },
+  }, FieldState)
 
   state:gamepadaxis(joystick, "leftx", -0.75)
   state:focus(false)
@@ -233,8 +254,15 @@ end
 
 function T.focus_loss_does_not_leave_a_keyboard_direction_stuck_after_refocus()
   local input = FieldInput.new()
-  local state =
-    setmetatable({ runtime = { input = input, actionKeys = {}, cancelKeys = {}, menuKeys = {} } }, FieldState)
+  local state = setmetatable({
+    runtime = {
+      input = input,
+      actionKeys = {},
+      cancelKeys = {},
+      menuKeys = {},
+      pokemonNaming = inactivePokemonNaming(),
+    },
+  }, FieldState)
 
   state:keypressed("down")
   state:focus(false)
@@ -250,8 +278,15 @@ end
 
 function T.open_bag_stays_controllable_across_window_blur()
   local input = FieldInput.new()
-  local state =
-    setmetatable({ runtime = { input = input, actionKeys = {}, cancelKeys = {}, menuKeys = {} } }, FieldState)
+  local state = setmetatable({
+    runtime = {
+      input = input,
+      actionKeys = {},
+      cancelKeys = {},
+      menuKeys = {},
+      pokemonNaming = inactivePokemonNaming(),
+    },
+  }, FieldState)
 
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   Assert.isTrue(bag:add("POTION", 5))
@@ -456,6 +491,7 @@ function T.focus_loss_clears_physical_input_and_cancels_presentation_capture()
           cancelled = cancelled + 1
         end,
       },
+      pokemonNaming = inactivePokemonNaming(),
     },
   }, FieldState)
   state:focus(false)

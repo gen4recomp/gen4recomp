@@ -75,7 +75,7 @@ function PokemonNicknameTask.create(spec, ctx)
   return {
     slot = slot,
     initialText = initialText,
-    currentText = initialText,
+    currentText = "",
     subject = subject,
     opened = false,
     closed = false,
@@ -90,7 +90,6 @@ function PokemonNicknameTask.poll(state, ctx)
   assert(type(host.isActive) == "function" and type(host.open) == "function", "Pokemon naming host is incomplete")
   if not host:isActive() then
     host:open({
-      initialText = assert(state.initialText --[[@as string]]),
       currentText = assert(state.currentText --[[@as string]]),
       maxLength = 10,
       subject = assert(state.subject --[[@as table<string, unknown>]]),
@@ -112,7 +111,7 @@ function PokemonNicknameTask.poll(state, ctx)
     return { complete = false, state = state }
   end
   local result = 1
-  if status.text ~= state.initialText then
+  if status.text:match("^%s*$") == nil and status.text ~= state.initialText then
     service(ctx, "mons"):setNickname(assert(state.slot --[[@as integer]]), status.text)
     result = 0
   end

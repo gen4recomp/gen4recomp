@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local PokemonNamingState = require("game.hgss.src.field.PokemonNamingState")
+local FieldState = require("game.hgss.src.field.FieldState")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
@@ -32,7 +33,6 @@ local function openState()
     end,
   })
   state:open({
-    initialText = "A",
     currentText = "A",
     maxLength = 10,
     subject = { kind = "pokemon", species = 152, form = 0, iconKey = "CHIKORITA_0" },
@@ -68,6 +68,39 @@ function T.tests.pointer_ok_submits_and_pointer_cancel_has_no_naming_meaning()
   Assert.isFalse(state:isActive())
 end
 
+function T.tests.field_blur_cancels_naming_capture_without_closing_the_session()
+  local state = openState()
+  local field = setmetatable({ runtime = { input = { clearAll = function() end }, pokemonNaming = state } }, FieldState)
+  local initial = assert(state:status())
+  local layout = assert(initial.presentation.content).layout
+  local firstCell = layout.cells[2][2]
+  local firstGlyph = initial.snapshot.grid[2][2].glyph
+  local firstX, firstY =
+    LayoutGeometry.logicalToHost(initial.presentation.panes[1].placement, firstCell.x + 1, firstCell.y + 1)
+
+  state:handleInput({ { type = "pointer_down", pointerId = "touch:1", x = firstX, y = firstY } })
+  local afterFirstPress = assert(state:status()).text
+  Assert.equal(afterFirstPress, "A" .. firstGlyph, "the first pointer press enters its naming glyph")
+
+  field:focus(false)
+  field:focus(true)
+  Assert.isTrue(state:isActive(), "blur leaves the naming session open")
+
+  local second = assert(state:status())
+  local secondCell = second.presentation.content.layout.cells[2][3]
+  local secondGlyph = second.snapshot.grid[2][3].glyph
+  local secondX, secondY =
+    LayoutGeometry.logicalToHost(second.presentation.panes[1].placement, secondCell.x + 1, secondCell.y + 1)
+  state:handleInput({ { type = "pointer_down", pointerId = "touch:2", x = secondX, y = secondY } })
+  local afterFreshPress = assert(state:status()).text
+  Assert.equal(afterFreshPress, afterFirstPress .. secondGlyph, "a fresh press works before the stale release")
+
+  state:handleInput({ { type = "pointer_up", pointerId = "touch:1", x = firstX, y = firstY } })
+  Assert.equal(assert(state:status()).text, afterFreshPress, "the stale release does not activate an old target")
+  state:handleInput({ { type = "pointer_up", pointerId = "touch:2", x = secondX, y = secondY } })
+  state:close()
+end
+
 function T.tests.display_reflow_republishes_and_close_releases_active_session()
   local state, size = openState()
   local before = state:status().presentation.panes[1].placement.frame.width
@@ -89,7 +122,6 @@ function T.tests.failed_open_does_not_publish_a_partial_active_state()
   })
   local ok = pcall(function()
     state:open({
-      initialText = "A",
       currentText = "A",
       maxLength = 10,
       subject = { kind = "pokemon", species = 152, form = 0, iconKey = "CHIKORITA_0" },

@@ -9,8 +9,8 @@ local function requireTask()
   return assert(task)
 end
 
-local function fixture(hostDone, currentText)
-  local mon = { species = "CHIKORITA", form = 0, nickname = nil }
+local function fixture(hostDone, currentText, nickname)
+  local mon = { species = "CHIKORITA", form = 0, nickname = nickname }
   local changes = 0
   local host = { active = false, opened = {}, updates = 0, closed = 0 }
   function host:isActive()
@@ -85,12 +85,40 @@ end
 
 function T.unchanged_name_preserves_nil_nickname_and_returns_one()
   local task = requireTask()
-  local ctx, host, mon, changes = fixture(true)
+  local ctx, host, mon, changes = fixture(true, "")
+  local state = task.create({ slot = 0 }, ctx)
+  local result = task.poll(state, ctx)
+  Assert.equal(host.opened[1].currentText, "", "a fresh naming session opens with an empty editing buffer")
+  Assert.isTrue(result.complete)
+  Assert.equal(result.result, 1)
+  Assert.isNil(mon.nickname)
+  Assert.equal(changes(), 0)
+  Assert.equal(host.closed, 1)
+end
+
+function T.whitespace_only_submission_does_not_write_a_nickname()
+  local task = requireTask()
+  local ctx, host, mon, changes = fixture(true, "   ")
   local state = task.create({ slot = 0 }, ctx)
   local result = task.poll(state, ctx)
   Assert.isTrue(result.complete)
   Assert.equal(result.result, 1)
   Assert.isNil(mon.nickname)
+  Assert.equal(changes(), 0)
+  Assert.equal(host.closed, 1)
+end
+
+function T.exact_existing_nickname_is_unchanged()
+  local task = requireTask()
+  local ctx, host, mon, changes = fixture(true, "SPROUT", "SPROUT")
+  local state = task.create({ slot = 0 }, ctx)
+  local result = task.poll(state, ctx)
+  Assert.equal(state.initialText, "SPROUT")
+  Assert.equal(host.opened[1].currentText, "")
+  Assert.isNil(host.opened[1].initialText)
+  Assert.isTrue(result.complete)
+  Assert.equal(result.result, 1)
+  Assert.equal(mon.nickname, "SPROUT")
   Assert.equal(changes(), 0)
   Assert.equal(host.closed, 1)
 end
@@ -103,7 +131,8 @@ function T.restored_task_reopens_with_current_text_and_original_comparison()
   host.active = false
   task.poll(state, ctx)
   Assert.equal(host.opened[#host.opened].currentText, "LE")
-  Assert.equal(host.opened[#host.opened].initialText, "CHIKORITA")
+  Assert.equal(state.initialText, "CHIKORITA")
+  Assert.isNil(host.opened[#host.opened].initialText)
 end
 
 function T.cancellation_closes_an_open_host_once()

@@ -440,8 +440,14 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
             game:pressAction()
             waitForNaming()
 
-            -- Submit the initial species display name unchanged. Source result
-            -- 1 is observed through the retail retry prompt and no party write.
+            Assert.equal(
+              game.runtime.pokemonNaming:status().text,
+              "",
+              "a fresh starter naming session opens with an empty editing buffer"
+            )
+
+            -- Submit no text. Source result 1 is observed through the retail
+            -- retry prompt and no party write.
             submitAtOk()
             Assert.equal(game.runtime.monService:partyMon(0).nickname, nil, "unchanged input leaves nickname nil")
             game:advanceUntil("unchanged nickname returns to the source retry prompt", function()

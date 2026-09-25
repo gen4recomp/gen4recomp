@@ -873,6 +873,10 @@ function FieldState:focus(focused)
     then
       starter:cancelPointerCapture()
     end
+    local pokemonNaming = assert(self.runtime.pokemonNaming, "field runtime Pokemon Naming Screen is unavailable")
+    if pokemonNaming:isActive() then
+      pokemonNaming:cancelPointerCapture()
+    end
   end
 end
 

@@ -136,6 +136,12 @@ local function boot(withCover)
           return { phase = "closed", fadeAlpha = 0 }
         end,
       },
+      pokemonNaming = {
+        isActive = function()
+          return false
+        end,
+        cancelPointerCapture = function() end,
+      },
       input = input,
       actionKeys = {},
       cancelKeys = {},
