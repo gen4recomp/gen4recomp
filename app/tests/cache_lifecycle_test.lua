@@ -17,6 +17,37 @@ local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
 local MonsSave = require("libs.mons.src.MonsSave")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local VersionSelectState = require("app.src.launcher.VersionSelectState")
+local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
+
+-- Hermetic completion answers for live-controller tests: the suites own
+-- controller/threading contracts, not attestation currency, so ordinary
+-- selections keep their established bootstrap paths while no real
+-- attestation file is read or written. Tests that own currency set the
+-- context fields before selecting.
+local function stubFirstPlayCompletion(context)
+  context.firstPlayCurrent = true
+  context.firstPlayStored = true
+  context.firstPlayPublished = {}
+  local originalIsCurrent = FirstPlayCompletion.isCurrent
+  local originalHasStored = FirstPlayCompletion.hasStored
+  local originalPublish = FirstPlayCompletion.publish
+  FirstPlayCompletion.isCurrent = function(_, _)
+    return context.firstPlayCurrent
+  end
+  FirstPlayCompletion.hasStored = function()
+    return context.firstPlayStored
+  end
+  FirstPlayCompletion.publish = function(versionId, generationId)
+    context.firstPlayPublished[#context.firstPlayPublished + 1] = { versionId = versionId, generationId = generationId }
+  end
+  return { isCurrent = originalIsCurrent, hasStored = originalHasStored, publish = originalPublish }
+end
+
+local function restoreFirstPlayCompletion(originals)
+  FirstPlayCompletion.isCurrent = originals.isCurrent
+  FirstPlayCompletion.hasStored = originals.hasStored
+  FirstPlayCompletion.publish = originals.publish
+end
 
 local T = {}
 
@@ -262,6 +293,9 @@ local function withAppStubs(fn)
     end
     return waiter.status
   end
+  function service:generationId(_)
+    return context.cannedGeneration
+  end
   function service:importSource(epochArg, barrierArg)
     local waiter = context.barriers[barrierArg]
     if waiter == nil or waiter.epoch ~= epochArg or waiter.status ~= "ready" then
@@ -289,6 +323,8 @@ local function withAppStubs(fn)
   RomImporter.isReady = function(_)
     return true
   end
+  context.cannedGeneration = "test-generation"
+  local completionOriginals = stubFirstPlayCompletion(context)
   love.graphics.getDimensions = function()
     return 640, 480
   end
@@ -312,6 +348,7 @@ local function withAppStubs(fn)
   local ok, err = pcall(fn, App, context)
   HgssGame.new = original.gameNew
   RomImporter.isReady = original.isReady
+  restoreFirstPlayCompletion(completionOriginals)
   rawset(Store, "new", original.storeNew)
   love.graphics.getDimensions = original.dimensions
   App.state = original.state
@@ -1039,6 +1076,10 @@ local function withLiveApp(context, fn)
   end
   local harness = { launches = {}, importers = {}, quitCodes = {}, prints = {}, threadHost = newControlledThreadHost() }
   local threadHost = harness.threadHost
+  -- Live-controller tests own threading contracts, never attestation
+  -- currency: stub the durable answers so no real file is read or
+  -- written and ordinary selections keep their bootstrap paths.
+  local completionOriginals = stubFirstPlayCompletion({})
   HgssGame.new = function(options)
     harness.launches[#harness.launches + 1] = options
     local game = { disposed = 0 }
@@ -1091,6 +1132,7 @@ local function withLiveApp(context, fn)
   )
   local ok, err = pcall(fn, App, harness)
   rawset(_G, "love", realLove)
+  restoreFirstPlayCompletion(completionOriginals)
   HgssGame.new = original.gameNew
   RomImporter.new = original.importerNew
   ProducerFingerprint.appBackend = original.appBackend

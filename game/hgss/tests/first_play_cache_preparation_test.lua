@@ -130,10 +130,27 @@ local function withSpies(script, fn)
   end
 end
 
-local function newPreparation(host, versionId)
+local function newPreparation(host, versionId, completion)
   local factory = HgssGame.newFirstPlayCachePreparation
   Assert.notNil(factory, "HgssGame must expose the first-play preparation factory used after a fresh import")
-  return factory({ versionId = versionId or "heartgold", derivedAssets = host })
+  return factory({ versionId = versionId or "heartgold", derivedAssets = host, completion = completion })
+end
+
+-- A completion gateway stand-in: the generation the controller has derived
+-- so far (nil while the selection answer is still in flight) plus the
+-- durable attestation answers owned by the import orchestration boundary.
+local function completionGateway(script)
+  return {
+    hasStored = function()
+      return script.stored == true
+    end,
+    isCurrent = function(_)
+      return script.current == true
+    end,
+    currentGeneration = function()
+      return script.generation
+    end,
+  }
 end
 
 local function milestoneNames(calls)
@@ -328,6 +345,55 @@ function T.construction_validates_its_selection_inputs()
   Assert.throws(function()
     factory({ derivedAssets = host })
   end, "preparation requires its selected version")
+end
+
+function T.current_completion_reports_ready_without_any_closure_demand()
+  local script = { ready = {}, failures = {}, generation = "current-generation", current = true, stored = true }
+  withSpies(script, function(loaderState, locationState)
+    local host, calls = fakeHost(script)
+    local preparation = newPreparation(host, "heartgold", completionGateway(script))
+    local ready, failure = preparation:poll()
+    Assert.isNil(failure, "a current completion carries no failure")
+    Assert.isTrue(ready == true, "a current completion transfers without compiling the closure")
+    Assert.equal(#calls, 0, "a current completion demands no milestone while transferring")
+    Assert.equal(locationState.reads, 0, "a current completion never reads the generated location")
+    Assert.equal(#loaderState.constructions, 0, "a current completion builds no planning loader")
+  end)
+end
+
+function T.unknown_generation_with_a_stored_completion_waits_without_demands()
+  local script = { ready = {}, failures = {}, generation = nil, current = false, stored = true }
+  withSpies(script, function(_, locationState)
+    local host, calls = fakeHost(script)
+    local preparation = newPreparation(host, "heartgold", completionGateway(script))
+    local ready, failure = preparation:poll()
+    Assert.isNil(failure, "waiting for the generation carries no failure")
+    Assert.isFalse(ready == true, "an unvalidated completion never transfers")
+    Assert.equal(#calls, 0, "no milestone is demanded while currency is still unknown")
+    Assert.equal(locationState.reads, 0, "no location is read while currency is still unknown")
+    script.generation = "current-generation"
+    script.current = true
+    local laterReady, laterFailure = preparation:poll()
+    Assert.isNil(laterFailure, "the validated completion carries no failure")
+    Assert.isTrue(laterReady == true, "the validated completion transfers without closure demands")
+    Assert.equal(#calls, 0, "the transfer demands no milestone")
+  end)
+end
+
+function T.stale_completion_demands_the_full_closure()
+  local script = { ready = {}, failures = {}, generation = "next-generation", current = false, stored = true }
+  withSpies(script, function(_, _)
+    local host, calls = fakeHost(script)
+    local preparation = newPreparation(host, "heartgold", completionGateway(script))
+    local ready, failure = preparation:poll()
+    Assert.isNil(failure, "a stale completion carries no failure")
+    Assert.isFalse(ready == true, "a stale completion never transfers directly")
+    Assert.deepEqual(
+      milestoneNames(calls),
+      { "bootstrap", "field-planning", "field-runtime", "new-game-intro" },
+      "a stale completion recompiles the exact first-play set"
+    )
+  end)
 end
 
 return { tests = T }

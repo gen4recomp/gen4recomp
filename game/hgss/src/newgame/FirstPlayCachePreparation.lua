@@ -24,9 +24,15 @@ local milestoneNames = {
   "field-runtime",
 }
 
+---@class FirstPlayCompletionGateway
+---@field hasStored fun(): boolean whether an attestation file exists for the version, current or stale
+---@field isCurrent fun(generationId: string): boolean the attestation matches this generation token
+---@field currentGeneration fun(): string? controller-derived token for the selection, nil while unknown
+
 ---@class FirstPlayCachePreparation
 ---@field versionId string selected game version, carried for diagnostics
 ---@field derivedAssets table<string, function>? borrowed semantic host, cleared on disposal
+---@field completion FirstPlayCompletionGateway? durable attestation gateway, owned by the import orchestration boundary
 ---@field loader table<string, unknown>? retained metadata-only planning loader, built once
 ---@field target { symbol: string, x: integer, z: integer }? retained globalized bedroom target
 ---@field failure unknown? latched terminal failure for this selection
@@ -34,7 +40,7 @@ local milestoneNames = {
 local FirstPlayCachePreparation = {}
 FirstPlayCachePreparation.__index = FirstPlayCachePreparation
 
----@param options { versionId: string, derivedAssets: table<string, function> }
+---@param options { versionId: string, derivedAssets: table<string, function>, completion: FirstPlayCompletionGateway? }
 ---@return FirstPlayCachePreparation
 function FirstPlayCachePreparation.new(options)
   assert(type(options) == "table", "first-play preparation requires its composition")
@@ -45,9 +51,20 @@ function FirstPlayCachePreparation.new(options)
     type(derivedAssets) == "table" and type(derivedAssets.requestMilestone) == "function",
     "first-play preparation requires its borrowed derived host"
   )
+  local completion = options.completion
+  if completion ~= nil then
+    assert(
+      type(completion) == "table"
+        and type(completion.hasStored) == "function"
+        and type(completion.isCurrent) == "function"
+        and type(completion.currentGeneration) == "function",
+      "first-play completion must answer hasStored, isCurrent, and currentGeneration"
+    )
+  end
   return setmetatable({
     versionId = versionId,
     derivedAssets = derivedAssets,
+    completion = completion,
     loader = nil,
     target = nil,
     failure = nil,
@@ -153,6 +170,36 @@ local function pollLocation(self)
   return ready == true
 end
 
+---@return string "ready" when the attestation is current, "wait" while currency is unknown, "demand" otherwise
+function FirstPlayCachePreparation:_completionDecision()
+  -- The durable attestation gates the closure demands: a current
+  -- completion transfers without any milestone or location demand, and a
+  -- stored-but-unvalidated completion waits without demands until the
+  -- controller-derived generation arrives. Only a missing or stale
+  -- completion falls through to the closure below. Gateway answers are
+  -- plain function fields invoked without a receiver, like the host, and
+  -- any gateway failure degrades to demanding the closure: preparing
+  -- again is always safe, skipping is not.
+  local completion = assert(self.completion, "completion requires its gateway")
+  local generation = nil
+  local okGeneration, current = pcall(completion.currentGeneration)
+  if okGeneration and type(current) == "string" and current ~= "" then
+    generation = current
+  end
+  if generation ~= nil then
+    local okCurrent, isCurrent = pcall(completion.isCurrent, generation)
+    if okCurrent and isCurrent == true then
+      return "ready"
+    end
+    return "demand"
+  end
+  local ok, stored = pcall(completion.hasStored)
+  if ok and stored == true then
+    return "wait"
+  end
+  return "demand"
+end
+
 ---@return boolean ready, unknown? failure
 function FirstPlayCachePreparation:poll()
   if self.disposed then
@@ -160,6 +207,14 @@ function FirstPlayCachePreparation:poll()
   end
   if self.failure ~= nil then
     return false, self.failure
+  end
+  if self.completion ~= nil then
+    local decision = self:_completionDecision()
+    if decision == "ready" then
+      return true, nil
+    elseif decision == "wait" then
+      return false, nil
+    end
   end
   local introReady = false
   local planningReady = false

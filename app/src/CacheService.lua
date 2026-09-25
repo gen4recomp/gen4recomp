@@ -36,6 +36,7 @@ local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
 ---@field _outstanding table<string, unknown>? the one in-flight poll round
 ---@field _barriers table<string, table<string, unknown>> "epoch:barrier" -> waiter
 ---@field _failure string? terminal controller failure, never restarted
+---@field _generations table<integer, string> controller-derived generation token by epoch
 ---@field _sweepSent table<integer, boolean> epochs with queued warmup authorization
 local CacheService = {}
 CacheService.__index = CacheService
@@ -74,6 +75,7 @@ function CacheService.new(options)
     _ordinary = {},
     _outstanding = nil,
     _barriers = {},
+    _generations = {},
     _failure = nil,
     _sweepSent = {},
   }, CacheService)
@@ -265,6 +267,22 @@ function CacheService:observe(epoch, selector)
   return nil, nil
 end
 
+-- Cached controller-derived generation token for the epoch, or nil while
+-- the selection answer is still in flight, the epoch is stale or retiring,
+-- or the controller failed. Never scans, never waits: durability checks
+-- treat an unknown generation as incomplete and prepare again.
+---@param epoch integer
+---@return string?
+function CacheService:generationId(epoch)
+  if type(epoch) ~= "number" or epoch ~= self._liveEpoch or self._retiring then
+    return nil
+  end
+  if self._failure ~= nil then
+    return nil
+  end
+  return self._generations[epoch]
+end
+
 -- Authorize lowest-priority background corpus completion for the epoch.
 -- Idempotent per epoch: the controller authorization itself is idempotent
 -- and performs no cache work in the call.
@@ -289,6 +307,7 @@ function CacheService:retire(epoch)
     return nil
   end
   self._retiring = true
+  self._generations[epoch] = nil
   for position = #self._ordinary, 1, -1 do
     if self._ordinary[position].epoch == epoch then
       table.remove(self._ordinary, position)
@@ -466,6 +485,9 @@ function CacheService:_absorbPollResult(packet)
   if packet.epoch ~= self._liveEpoch or self._retiring then
     return
   end
+  if type(packet.generationId) == "string" and packet.generationId ~= "" then
+    self._generations[packet.epoch] = packet.generationId
+  end
   local count = math.min(tonumber(packet.count) or 0, POLL_IDS_PER_ROUND)
   for position = 1, count do
     local tag = tostring(position)
@@ -505,6 +527,14 @@ function CacheService:_absorbSelectResult(packet)
       message = "controller selection failed"
     end
     self:_enterTerminalFailure(message)
+    return
+  end
+  -- The controller-derived generation token is the canonical identity for
+  -- durability decisions (first-play completion): it already reflects the
+  -- ROM SHA, producer identity/mode, asset revision, and script API the
+  -- game thread must never re-derive by scanning sources.
+  if type(packet.generationId) == "string" and packet.generationId ~= "" then
+    self._generations[packet.epoch] = packet.generationId
   end
 end
 

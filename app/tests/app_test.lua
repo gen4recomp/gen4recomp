@@ -8,6 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local RomImporter = require("romdump.src.source.RomImporter")
+local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local HgssGame = require("game.hgss.src.HgssGame")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
@@ -89,6 +90,11 @@ end
 ---@field quitCodes integer[]
 ---@field provisionerDisposals integer
 ---@field warmups integer
+---@field cannedGeneration string? controller-derived generation token answered for the selection
+---@field service table scripted process cache service behind the selection
+---@field firstPlayCurrent boolean scripted durable attestation currency
+---@field firstPlayStored boolean scripted durable attestation presence
+---@field firstPlayPublished table[] recorded attestation publications
 ---@param opts table|nil
 ---@param ready fun(id: string): boolean
 ---@param fn fun(result: AppStateHarness)
@@ -120,6 +126,10 @@ local function withAppHarness(opts, ready, fn)
     quitCodes = {},
     provisionerDisposals = 0,
     warmups = 0,
+    cannedGeneration = "test-generation",
+    firstPlayCurrent = true,
+    firstPlayStored = true,
+    firstPlayPublished = {},
   }
   local epoch = 0
   local service = {}
@@ -148,6 +158,9 @@ local function withAppHarness(opts, ready, fn)
   function service:barrierStatus(_, _)
     return "pending"
   end
+  function service:generationId(_)
+    return result.cannedGeneration
+  end
   function service:importSource(_, _)
     return false, "unacknowledged"
   end
@@ -164,6 +177,18 @@ local function withAppHarness(opts, ready, fn)
   })
   App.service = service
   RomImporter.isReady = ready
+  local originalIsCurrent = FirstPlayCompletion.isCurrent
+  local originalHasStored = FirstPlayCompletion.hasStored
+  local originalPublish = FirstPlayCompletion.publish
+  FirstPlayCompletion.isCurrent = function(_, _)
+    return result.firstPlayCurrent
+  end
+  FirstPlayCompletion.hasStored = function()
+    return result.firstPlayStored
+  end
+  FirstPlayCompletion.publish = function(versionId, generationId)
+    result.firstPlayPublished[#result.firstPlayPublished + 1] = { versionId = versionId, generationId = generationId }
+  end
   HgssGame.new = function(options)
     result.launches[#result.launches + 1] = options
     return result.state
@@ -180,6 +205,9 @@ local function withAppHarness(opts, ready, fn)
   local ok, err = pcall(fn, result)
   App.opts = originalOpts
   RomImporter.isReady = originalIsReady
+  FirstPlayCompletion.isCurrent = originalIsCurrent
+  FirstPlayCompletion.hasStored = originalHasStored
+  FirstPlayCompletion.publish = originalPublish
   HgssGame.new = originalNew
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions
@@ -569,6 +597,7 @@ local function installFirstPlayFactory(script)
   local original = HgssGame.newFirstPlayCachePreparation
   HgssGame.newFirstPlayCachePreparation = function(options)
     script.captured = options
+    script.constructions = (script.constructions or 0) + 1
     local preparation = {}
     function preparation:poll()
       script.polls = (script.polls or 0) + 1
@@ -658,10 +687,61 @@ function T.fresh_import_waits_for_the_first_play_closure_before_the_menu()
   end)
 end
 
--- Ordinary selection is untouched by the import frontload: a ready version
--- launches through the bootstrap path without constructing first-play
--- preparation. (Already green today; kept as the preservation contract.)
-function T.existing_selection_stays_on_the_bootstrap_path_without_first_play_preparation()
+-- Ordinary selection distinguishes raw-ready from first-play-complete: a
+-- raw-ready version without a current attestation enters the same bounded
+-- preparation a fresh import uses instead of launching the menu directly.
+-- A fresh harness models a process restart: no prior selection survives.
+function T.existing_selection_after_restart_without_a_completion_enters_preparation()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
+    local script = { ready = false }
+    local original = installFirstPlayFactory(script)
+    local ok, err = pcall(function()
+      App._bootExisting()
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
+    Assert.equal(#result.launches, 0, "an incomplete first-play closure never launches the menu directly")
+    Assert.equal(script.constructions, 1, "a restart with no completion prepares again")
+    Assert.equal(
+      getmetatable(App.state).__index,
+      CachePreparationState,
+      "the boot waits through the visible preparation state"
+    )
+    Assert.notNil(script.captured.completion, "ordinary preparation carries the durable gateway")
+  end)
+end
+
+-- A stored but stale attestation prepares again: the current generation
+-- ignores it exactly like a missing one.
+function T.existing_selection_with_a_stale_completion_prepares_again()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = true
+    local script = { ready = false }
+    local original = installFirstPlayFactory(script)
+    local ok, err = pcall(function()
+      App._bootExisting()
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
+    Assert.equal(#result.launches, 0, "a stale completion never launches the menu directly")
+    Assert.equal(script.constructions, 1, "a stale completion prepares again")
+  end)
+end
+
+-- Ordinary selection with a current attestation keeps the fast
+-- bootstrap/menu path: no first-play preparation is constructed.
+function T.existing_selection_with_a_current_completion_keeps_the_bootstrap_path()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -680,8 +760,130 @@ function T.existing_selection_stays_on_the_bootstrap_path_without_first_play_pre
     if not ok then
       error(err, 0)
     end
-    Assert.equal(#result.launches, 1, "an existing ready version still launches through selection")
-    Assert.equal(factoryCalls, 0, "ordinary selection never constructs first-play preparation")
+    Assert.equal(#result.launches, 1, "a completed first-play closure still launches through selection")
+    Assert.equal(factoryCalls, 0, "a current completion never reconstructs first-play preparation")
+  end)
+end
+
+-- Cancelling first-play preparation retires the selection without
+-- publishing: reselecting the same raw-ready version prepares again and
+-- the menu cannot launch directly.
+function T.cancelled_first_play_prepares_again_without_publishing()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
+    local script = { ready = false }
+    local original = installFirstPlayFactory(script)
+    local ok, err = pcall(function()
+      App._onImported("heartgold")
+      App.update(0.016)
+      Assert.equal(#result.launches, 0, "the menu waits while preparation is pending")
+      Assert.equal(script.constructions, 1, "the fresh import prepares once")
+      App.keypressed("escape")
+      Assert.equal(#result.firstPlayPublished, 0, "cancellation never publishes the completion")
+      local selector = App.state
+      Assert.equal(getmetatable(selector).__index, VersionSelectState, "cancellation returns to the version selector")
+      selector.onPick("heartgold")
+      App.update(0.016)
+      Assert.equal(script.constructions, 2, "reselecting the same version prepares again")
+      Assert.equal(#result.launches, 0, "the menu cannot launch directly after a cancel")
+      Assert.equal(#result.firstPlayPublished, 0, "reselection alone publishes nothing")
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+-- The completion publishes only after the full closure succeeds: pending
+-- preparation publishes nothing, and the success publishes the current
+-- generation exactly once before the menu launches on the same epoch.
+function T.first_play_completion_publishes_only_on_success()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
+    local script = { ready = false }
+    local original = installFirstPlayFactory(script)
+    local ok, err = pcall(function()
+      App._onImported("heartgold")
+      App.update(0.016)
+      Assert.equal(#result.firstPlayPublished, 0, "pending preparation publishes nothing")
+      script.ready = true
+      App.update(0.016)
+      assert(result.launches[1], "preparation readiness launches the game")
+      Assert.deepEqual(
+        result.firstPlayPublished,
+        { { versionId = "heartgold", generationId = "test-generation" } },
+        "success publishes the current generation exactly once"
+      )
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+-- Unknown generation with a stored attestation waits without demands,
+-- then transfers and publishes once the controller-derived generation
+-- validates it: the full production gateway composition, not a scripted
+-- preparation stand-in.
+function T.unknown_generation_waits_without_demands_then_transfers_on_validation()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    result.cannedGeneration = nil
+    result.firstPlayCurrent = false
+    result.firstPlayStored = true
+    local requests = 0
+    result.service.request = function()
+      requests = requests + 1
+    end
+    App._bootExisting()
+    App.update(0.016)
+    Assert.equal(#result.launches, 0, "an unvalidated completion never launches the menu")
+    Assert.equal(requests, 0, "no closure demand issues while the generation is unknown")
+    Assert.equal(getmetatable(App.state).__index, CachePreparationState)
+    Assert.equal(App.state.kind, "first-play")
+    result.cannedGeneration = "test-generation"
+    result.firstPlayCurrent = true
+    App.update(0.016)
+    assert(result.launches[1], "the validated completion transfers to the menu")
+    Assert.equal(requests, 0, "the transfer demands no closure work")
+    Assert.deepEqual(
+      result.firstPlayPublished,
+      { { versionId = "heartgold", generationId = "test-generation" } },
+      "the transfer publishes the validated generation"
+    )
+  end)
+end
+
+-- A failed preparation latches its error without publishing or launching.
+function T.failed_first_play_never_publishes()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
+    local script = { ready = false, failure = "intro milestone failed in the fixture" }
+    local original = installFirstPlayFactory(script)
+    local ok, err = pcall(function()
+      App._onImported("heartgold")
+      App.update(0.016)
+      App.update(0.016)
+      Assert.equal(#result.launches, 0, "a failed preparation never launches the menu")
+      Assert.equal(#result.firstPlayPublished, 0, "a failed preparation never publishes")
+      Assert.notNil(App.state.error, "the failure surfaces on the preparation state")
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
   end)
 end
 

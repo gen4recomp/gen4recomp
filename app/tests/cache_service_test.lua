@@ -316,6 +316,62 @@ function T.controller_death_fails_requests_and_shutdown_joins_exactly_once()
   Assert.equal(host.threads[1].waits, 1, "repeated shutdown joins nothing again")
 end
 
+function T.selection_answer_caches_the_controller_generation_token()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  Assert.isNil(service:generationId(epoch), "the generation is unknown before the selection answer lands")
+  service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
+  service:injectReply({ op = "select-result", epoch = epoch, ok = true, generationId = "g4:test:token" })
+  service:update()
+  Assert.equal(service:generationId(epoch), "g4:test:token", "the selection answer publishes its generation token")
+  service:injectReply({
+    op = "poll-result",
+    roundId = 1,
+    epoch = epoch,
+    count = 0,
+    generationId = "g4:test:rotated",
+  })
+  service:update()
+  Assert.equal(service:generationId(epoch), "g4:test:rotated", "later poll answers refresh the token")
+  service:shutdown()
+end
+
+function T.generation_token_grants_no_rights_to_stale_or_retired_epochs()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local first = assert(service:select({ versionId = "heartgold", development = true }))
+  service:injectReply({ op = "select-result", epoch = first, ok = true, generationId = "g4:test:first" })
+  service:update()
+  Assert.equal(service:generationId(first), "g4:test:first")
+  service:retire(first)
+  Assert.isNil(service:generationId(first), "a retiring epoch grants no generation rights")
+  local second = assert(service:select({ versionId = "heartgold", development = true }))
+  Assert.isNil(service:generationId(second), "a fresh epoch starts with an unknown generation")
+  service:injectReply({ op = "select-result", epoch = first, ok = true, generationId = "g4:test:late" })
+  service:update()
+  Assert.isNil(service:generationId(second), "a late answer for a retired epoch never enters the new selection")
+  service:shutdown()
+end
+
+function T.provisioner_exposes_the_selection_generation_without_scanning()
+  local Service = requireService()
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local epoch = assert(provisioner.epoch, "selection borrows an epoch")
+  Assert.isNil(provisioner:generationId(), "the generation is unknown before the controller answers")
+  service:injectReply({ op = "select-result", epoch = epoch, ok = true, generationId = "g4:test:token" })
+  service:update()
+  Assert.equal(provisioner:generationId(), "g4:test:token", "the provisioner exposes the derived token")
+  provisioner:dispose()
+  Assert.isNil(provisioner:generationId(), "a retired provisioner reports no generation")
+  service:shutdown()
+end
+
 function T.icon_page_requests_validate_selectors_and_never_alias_portraits()
   local Service = requireService()
   local host = newChannelHost()

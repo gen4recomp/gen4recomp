@@ -3,6 +3,7 @@
 local WindowConfig = require("game.src.WindowConfig")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
+local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local CacheService = require("app.src.CacheService")
 local HgssGame = require("game.hgss.src.HgssGame")
 local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
@@ -144,14 +145,78 @@ function App._waitForQuiescence(versionId, options)
   return true
 end
 
+-- Durable first-play generation for one selection: the controller-derived
+-- token when known, else the synchronous release identity (pure constants,
+-- no producer scan). Development selections without a controller answer yet
+-- report unknown; the caller prepares again.
+---@param versionId string newly selected game version
+---@return string?
+function App._firstPlayGeneration(versionId)
+  local provisioner = App.provisioner
+  if provisioner ~= nil and type(provisioner.generationId) == "function" then
+    local known = provisioner:generationId()
+    if known ~= nil then
+      return known
+    end
+  end
+  if App.opts.dev == true then
+    return nil
+  end
+  local ok, generation = pcall(FirstPlayCompletion.releaseGenerationId, versionId)
+  if ok then
+    return generation
+  end
+  return nil
+end
+
+-- Gateway handed to first-play preparation on the ordinary selection path:
+-- durable attestation answers owned by the import orchestration boundary.
+-- It captures the selecting provisioner, so the generation answer follows
+-- the selection epoch without reaching the game-facing host surface.
+---@param versionId string newly selected game version
+---@return table<string, function>
+function App._firstPlayGateway(versionId)
+  local provisioner = App.provisioner
+  return {
+    hasStored = function()
+      return FirstPlayCompletion.hasStored(versionId)
+    end,
+    isCurrent = function(generationId)
+      return FirstPlayCompletion.isCurrent(versionId, generationId)
+    end,
+    currentGeneration = function()
+      if provisioner == nil or type(provisioner.generationId) ~= "function" then
+        return nil
+      end
+      return provisioner:generationId()
+    end,
+  }
+end
+
+-- Publish the generation-scoped first-play completion after the closure
+-- succeeded, keeping the same provisioner epoch for the menu. A failed
+-- publication still launches: the closure is ready and only its
+-- attestation is missing, so the next boot prepares again. Failure and
+-- cancellation paths never reach this function, so they never publish.
+---@param versionId string newly selected game version
+function App._publishFirstPlay(versionId)
+  local generation = App._firstPlayGeneration(versionId)
+  if generation == nil then
+    return
+  end
+  pcall(FirstPlayCompletion.publish, versionId, generation)
+end
+
 -- Selects a game version: borrows a controller epoch through its
 -- provisioner, then launches the menu immediately when bootstrap is
 -- already ready or waits through a visible preparation state otherwise.
 -- A ready bootstrap never recompiles; broader warming starts only after
--- the menu is installed. A fresh import instead waits through the
--- mandatory first-play preparation before the menu may launch.
+-- the menu is installed. Raw extraction complete but first-play
+-- attestation missing or stale routes through the same bounded
+-- first-play preparation a fresh import uses; only a current
+-- generation-scoped attestation keeps the fast bootstrap/menu path.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean? }? private selection mode, default bootstrap-only
+---@param options { freshImport: boolean? }? private selection mode, default ordinary
 function App._selectVersion(versionId, options)
   if App._waitForQuiescence(versionId, options) then
     return
@@ -162,17 +227,18 @@ function App._selectVersion(versionId, options)
   App.epoch = assert(provisioner.epoch, "selection borrowed no epoch")
   local epoch = App.epoch
   local host = provisioner:gameHost()
-  if options ~= nil and options.freshImport == true then
-    -- One provisioner epoch owns the mandatory preparation and the
-    -- launched game: no retirement or reselection happens between them.
-    local preparation = HgssGame.newFirstPlayCachePreparation({
-      versionId = versionId,
-      derivedAssets = host,
-    })
+  local freshImport = options ~= nil and options.freshImport == true
+  if not freshImport and FirstPlayCompletion.isCurrent(versionId, App._firstPlayGeneration(versionId)) then
+    local checkOk, ready = pcall(host.requestMilestone, "bootstrap", "required")
+    if checkOk and ready then
+      App._launchMenuWithProvisioner(versionId)
+      return
+    end
+    -- A pending bootstrap waits visibly; a thrown readiness check is latched
+    -- as the preparation state's visible error on its first update.
     App.setState(CachePreparationState.new({
-      kind = "first-play",
+      kind = "bootstrap",
       epoch = epoch,
-      preparation = preparation,
       provisioner = host,
       isCurrent = function(selected)
         return App.epoch == selected
@@ -186,21 +252,32 @@ function App._selectVersion(versionId, options)
     }))
     return
   end
-  local checkOk, ready = pcall(host.requestMilestone, "bootstrap", "required")
-  if checkOk and ready then
-    App._launchMenuWithProvisioner(versionId)
-    return
+  -- One provisioner epoch owns the mandatory preparation and the
+  -- launched game: no retirement or reselection happens between them.
+  -- The fresh-import path always compiles the closure (raw extraction
+  -- replaced the version tree, so no attestation survives it) and
+  -- carries no gateway; the ordinary path carries the durable gateway so
+  -- preparation fast-transfers once the controller-derived generation
+  -- validates a stored attestation instead of recompiling the closure.
+  local gateway = nil
+  if not freshImport then
+    gateway = App._firstPlayGateway(versionId)
   end
-  -- A pending bootstrap waits visibly; a thrown readiness check is latched
-  -- as the preparation state's visible error on its first update.
+  local preparation = HgssGame.newFirstPlayCachePreparation({
+    versionId = versionId,
+    derivedAssets = host,
+    completion = gateway,
+  })
   App.setState(CachePreparationState.new({
-    kind = "bootstrap",
+    kind = "first-play",
     epoch = epoch,
+    preparation = preparation,
     provisioner = host,
     isCurrent = function(selected)
       return App.epoch == selected
     end,
     onReady = function()
+      App._publishFirstPlay(versionId)
       App._launchMenuWithProvisioner(versionId)
     end,
     onCancel = function()

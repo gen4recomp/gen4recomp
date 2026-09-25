@@ -6,6 +6,7 @@ local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
 local HgssGame = require("game.hgss.src.HgssGame")
 local RomImporter = require("romdump.src.source.RomImporter")
+local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 
 local T = {
@@ -27,7 +28,19 @@ local function withApp(fn)
   local originalQuit = love.event.quit
   local originalAppBackend = ProducerFingerprint.appBackend
 
-  local result = { events = {}, launches = {} }
+  -- Attestation currency is not this suite's contract: ordinary selections
+  -- keep the bootstrap path while no real attestation file is touched.
+  local result = { events = {}, launches = {}, firstPlayCurrent = true }
+  local originalIsCurrent = FirstPlayCompletion.isCurrent
+  local originalHasStored = FirstPlayCompletion.hasStored
+  local originalPublish = FirstPlayCompletion.publish
+  FirstPlayCompletion.isCurrent = function(_, _)
+    return result.firstPlayCurrent
+  end
+  FirstPlayCompletion.hasStored = function()
+    return true
+  end
+  FirstPlayCompletion.publish = function() end
   App.state = nil
   App.importer = nil
   App.provisioner = nil
@@ -78,6 +91,9 @@ local function withApp(fn)
   App.opts = originalOpts
   HgssGame.new = originalNew
   RomImporter.isReady = originalReady
+  FirstPlayCompletion.isCurrent = originalIsCurrent
+  FirstPlayCompletion.hasStored = originalHasStored
+  FirstPlayCompletion.publish = originalPublish
   love.graphics.getDimensions = originalDimensions
   love.event.quit = originalQuit
   ProducerFingerprint.appBackend = originalAppBackend

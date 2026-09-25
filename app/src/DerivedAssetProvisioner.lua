@@ -158,6 +158,21 @@ function DerivedAssetProvisioner:gameHost()
   return assert(self.host, "derived-asset host is unavailable")
 end
 
+-- The controller-derived generation token borrowed for this selection, or
+-- nil while the selection answer is still in flight or the provisioner is
+-- retired. The game thread never derives producer identity itself.
+---@return string?
+function DerivedAssetProvisioner:generationId()
+  if self.retired then
+    return nil
+  end
+  local service = self.service
+  if service == nil or type(service.generationId) ~= "function" then
+    return nil
+  end
+  return service:generationId(self.epoch)
+end
+
 -- Owner-only lifecycle authorization for background corpus completion.
 -- Delegates to the epoch-qualified service authorization, which stays
 -- idempotent and performs no cache work in the call itself. Never exposed

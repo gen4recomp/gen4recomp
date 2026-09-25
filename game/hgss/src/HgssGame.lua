@@ -231,11 +231,14 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
   derivedAssets.requestMilestone("new-game-intro", "near")
 end
 
--- App-facing first-play preparation for the fresh-import path: builds
+-- App-facing first-play preparation for the import path: builds
 -- the HGSS semantic-demand coordinator over the borrowed provisioner
 -- host. No milestone/location policy lives here; the coordinator owns
--- which closures constitute first play.
----@param options { versionId: string, derivedAssets: table<string, function> }
+-- which closures constitute first play. The optional completion gateway
+-- carries the durable attestation answers owned by the import
+-- orchestration boundary; the fresh-import path omits it and always
+-- compiles the closure.
+---@param options { versionId: string, derivedAssets: table<string, function>, completion: table<string, function>? }
 ---@return FirstPlayCachePreparation
 function HgssGame.newFirstPlayCachePreparation(options)
   return FirstPlayCachePreparation.new(options)
