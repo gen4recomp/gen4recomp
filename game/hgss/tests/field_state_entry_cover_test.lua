@@ -126,6 +126,13 @@ local function boot(withCover)
           return false
         end,
       },
+      scripts = {
+        dialogueHost = {
+          yesNoPresentation = function()
+            return nil
+          end,
+        },
+      },
       signpost = {
         isModal = function()
           return false

@@ -438,9 +438,10 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     return
   end
   local dialogueModal = self.runtime.dialogue:isModal()
+  local yesNo = self.runtime.scripts.dialogueHost:yesNoPresentation()
   local signpostModal = self.runtime.signpost:isModal()
   local fieldScale
-  if dialogueModal or signpostModal then
+  if dialogueModal or yesNo or signpostModal then
     fieldScale = self.runtime.fieldPixelScale:resolvedScale()
   end
   local bounds = self.runtime.viewport.worldViewport
@@ -455,6 +456,8 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       height = assert(self.runtime.viewport.height),
     }
   end
+  local dialogueBox
+  local yesNoPreferredScale = fieldScale
   if dialogueModal then
     local manifestPlacement = assert(self.runtime.uiManifest).dialogueFrames.continueCursor.placement
     local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, assert(fieldScale))
@@ -464,16 +467,17 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       cursorPlacement = manifestPlacement,
     })
     resources.dialogueRenderer:draw(self.runtime.dialogue, presentation)
-    local yesNo = self.runtime.scripts.dialogueHost:yesNoPresentation()
-    if yesNo then
-      local yesNoLayout = resources.yesNoRenderer:layout(
-        yesNo,
-        self.runtime.screenTopology,
-        presentation.outerRect,
-        { bounds = bounds, preferredScale = dialogueScale }
-      )
-      resources.yesNoRenderer:draw(yesNo, yesNoLayout)
-    end
+    dialogueBox = presentation.outerRect
+    yesNoPreferredScale = dialogueScale
+  end
+  if yesNo then
+    local yesNoLayout = resources.yesNoRenderer:layout(
+      yesNo,
+      self.runtime.screenTopology,
+      dialogueBox,
+      { bounds = bounds, preferredScale = assert(yesNoPreferredScale) }
+    )
+    resources.yesNoRenderer:draw(yesNo, yesNoLayout)
   end
   if signpostModal then
     local signpostScale = PixelScale.fitPreferred(bounds, 256, 192, assert(fieldScale))

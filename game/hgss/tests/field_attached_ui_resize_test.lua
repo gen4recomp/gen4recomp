@@ -59,6 +59,13 @@ local function drawState(topologyProvider, pollTopology)
         return false
       end,
     },
+    scripts = {
+      dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      },
+    },
     signpost = {
       isModal = function()
         return false

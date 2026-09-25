@@ -67,6 +67,13 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
         return false
       end,
     },
+    scripts = {
+      dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      },
+    },
     signpost = {
       isModal = function()
         return false

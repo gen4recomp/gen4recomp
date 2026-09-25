@@ -97,6 +97,8 @@ local function assertMenuComposition(scope, width, height, safeRect)
   end)
   local state
   local resolvedYesNoLayout
+  local resolvedYesNoInputs
+  local resolvedDialoguePresentation
   local ok, err = xpcall(function()
     state = FieldState.new(freshGame(readyVersion()), {
       topologyProvider = function()
@@ -112,8 +114,15 @@ local function assertMenuComposition(scope, width, height, safeRect)
     local yesNoRenderer = assert(state.presentationResources and state.presentationResources.yesNoRenderer)
     local layout = yesNoRenderer.layout
     yesNoRenderer.layout = function(self, status, screenTopology, dialogueBox, adaptedHost)
+      resolvedYesNoInputs = { dialogueBox = dialogueBox, adaptedHost = adaptedHost }
       resolvedYesNoLayout = layout(self, status, screenTopology, dialogueBox, adaptedHost)
       return resolvedYesNoLayout
+    end
+    local dialogueRenderer = assert(state.presentationResources.dialogueRenderer)
+    local drawDialogue = dialogueRenderer.draw
+    dialogueRenderer.draw = function(self, dialogue, presentation)
+      resolvedDialoguePresentation = presentation
+      return drawDialogue(self, dialogue, presentation)
     end
 
     local runtime = assert(state.runtime)
@@ -125,6 +134,49 @@ local function assertMenuComposition(scope, width, height, safeRect)
       state:update(1 / 60)
     end
     Assert.isNil(runtime.session.mapEntryStage, "the production field entry must settle before drawing")
+
+    local dialogueHost = assert(runtime.scripts.dialogueHost)
+    dialogueHost:askYesNo()
+    Assert.isFalse(runtime.dialogue:isModal(), "standalone choice must not require ordinary dialogue")
+    Assert.notNil(dialogueHost:yesNoPresentation(), "the script-owned standalone choice must be active")
+
+    local standaloneChoice = render(scope, state, width, height)
+    Assert.notNil(resolvedYesNoLayout, "active standalone choice must reach the field Yes/No renderer")
+    dialogueHost:closeYesNo()
+    local standaloneField = render(scope, state, width, height)
+    local standalonePixels = pixelEnvelope(standaloneChoice, standaloneField)
+
+    local bounds = assert(runtime.viewport.worldViewport)
+    local standaloneLayout = assert(resolvedYesNoLayout)
+    local standaloneInputs = assert(resolvedYesNoInputs)
+    Assert.isNil(standaloneInputs.dialogueBox, "standalone choice layout has no dialogue anchor")
+    Assert.equal(
+      standaloneInputs.adaptedHost.preferredScale,
+      runtime.fieldPixelScale:resolvedScale(),
+      "standalone choice layout uses the resolved field scale"
+    )
+    local standaloneFrame = assert(standaloneLayout.placement).frame
+    Assert.isTrue(standaloneFrame.x >= bounds.x, "complete standalone frame stays inside field UI bounds")
+    Assert.isTrue(standaloneFrame.y >= bounds.y, "complete standalone frame stays inside field UI bounds")
+    Assert.isTrue(
+      standaloneFrame.x + standaloneFrame.width <= bounds.x + bounds.width,
+      "complete standalone frame stays inside field UI bounds"
+    )
+    Assert.isTrue(
+      standaloneFrame.y + standaloneFrame.height <= bounds.y + bounds.height,
+      "complete standalone frame stays inside field UI bounds"
+    )
+    Assert.isTrue(standalonePixels.x >= bounds.x, "standalone choice pixels stay inside field UI bounds")
+    Assert.isTrue(standalonePixels.y >= bounds.y, "standalone choice pixels stay inside field UI bounds")
+    Assert.isTrue(
+      standalonePixels.x + standalonePixels.width <= bounds.x + bounds.width,
+      "standalone choice pixels stay inside field UI bounds"
+    )
+    Assert.isTrue(
+      standalonePixels.y + standalonePixels.height <= bounds.y + bounds.height,
+      "standalone choice pixels stay inside field UI bounds"
+    )
+
     openScriptDialogueAndChoice(state)
 
     local withChoice = render(scope, state, width, height)
@@ -135,8 +187,13 @@ local function assertMenuComposition(scope, width, height, safeRect)
     local fieldOnly = render(scope, state, width, height)
     local dialoguePixels = pixelEnvelope(dialogueOnly, fieldOnly)
 
-    local bounds = assert(runtime.viewport.worldViewport)
     local frame = assert(assert(resolvedYesNoLayout).placement).frame
+    local dialogueBox = assert(assert(resolvedYesNoInputs).dialogueBox)
+    local dialogueOuterRect = assert(assert(resolvedDialoguePresentation).outerRect)
+    Assert.equal(dialogueBox.x, dialogueOuterRect.x, "dialogue-attached choice keeps the dialogue horizontal anchor")
+    Assert.equal(dialogueBox.y, dialogueOuterRect.y, "dialogue-attached choice keeps the dialogue vertical anchor")
+    Assert.equal(dialogueBox.width, dialogueOuterRect.width, "dialogue-attached choice keeps dialogue width")
+    Assert.equal(dialogueBox.height, dialogueOuterRect.height, "dialogue-attached choice keeps dialogue height")
     Assert.near(
       frame.x + frame.width,
       bounds.x + bounds.width,
@@ -145,6 +202,11 @@ local function assertMenuComposition(scope, width, height, safeRect)
     )
     local resolvedScale = runtime.fieldPixelScale:resolvedScale()
     local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, resolvedScale)
+    Assert.equal(
+      assert(resolvedYesNoInputs).adaptedHost.preferredScale,
+      dialogueScale,
+      "dialogue-attached choice keeps the dialogue scale"
+    )
     local expectedScale = math.min(dialogueScale, math.floor(math.min(bounds.width / 88, bounds.height / 48)))
     Assert.isTrue(expectedScale >= 1, "the composed host must fit the complete menu at integer scale")
     Assert.isTrue(menuPixels.x >= bounds.x, "every changed menu pixel stays inside field UI bounds")
@@ -178,11 +240,11 @@ local function assertMenuComposition(scope, width, height, safeRect)
   end
 end
 
-function T.four_three_field_choice_uses_attached_bounds_and_dialogue_scale(scope)
+function T.four_three_standalone_choice_and_attached_dialogue_keep_their_layouts(scope)
   assertMenuComposition(scope, 640, 480)
 end
 
-function T.tall_field_choice_stays_anchored_to_the_attached_viewport(scope)
+function T.tall_standalone_choice_stays_complete_inside_the_attached_viewport(scope)
   assertMenuComposition(scope, 390, 844, { x = 12, y = 24, width = 366, height = 796 })
 end
 

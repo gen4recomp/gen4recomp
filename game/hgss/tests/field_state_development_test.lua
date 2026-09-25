@@ -65,6 +65,13 @@ local function drawableState(development)
           return false
         end,
       },
+      scripts = {
+        dialogueHost = {
+          yesNoPresentation = function()
+            return nil
+          end,
+        },
+      },
       signpost = {
         isModal = function()
           return false

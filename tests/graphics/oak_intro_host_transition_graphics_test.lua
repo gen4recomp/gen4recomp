@@ -331,6 +331,13 @@ local function bootCoveredField(scope)
           return false
         end,
       },
+      scripts = {
+        dialogueHost = {
+          yesNoPresentation = function()
+            return nil
+          end,
+        },
+      },
       signpost = {
         isModal = function()
           return false
