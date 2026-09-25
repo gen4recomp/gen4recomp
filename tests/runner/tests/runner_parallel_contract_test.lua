@@ -96,43 +96,6 @@ local function runData(results, overrides)
   return run
 end
 
-local function shellQuote(value)
-  return "'" .. value:gsub("'", "'\\''") .. "'"
-end
-
-local function commandSucceeded(status)
-  return status == 0 or status == true
-end
-
--- One atomically acquired directory per invocation holds every fragment
--- file this helper's body writes. The platform grants exclusivity; no
--- guessed or shared path is used, and only the acquired root is removed.
-local function acquireTempDirectory()
-  local handle = assert(io.popen("mktemp -d"), "mktemp -d could not start")
-  local path = (handle:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", "")
-  local closed = handle:close()
-  assert(commandSucceeded(closed), "mktemp -d did not exit successfully")
-  assert(path ~= "", "mktemp -d produced no path")
-  return path
-end
-
-local function removeOwnedDirectory(path)
-  assert(path ~= "" and path ~= "/", "refusing to remove an unowned path")
-  local status = os.execute("rm -rf -- " .. shellQuote(path))
-  assert(commandSucceeded(status), "owned temporary cleanup failed: " .. path)
-end
-
-local function withTempDirectory(fn)
-  local path = acquireTempDirectory()
-  local ok, message = pcall(fn, path)
-  if ok then
-    removeOwnedDirectory(path)
-    return
-  end
-  pcall(removeOwnedDirectory, path)
-  error(message, 0)
-end
-
 local function mixedCorpus(withBrokenRom)
   local function case()
     return function() end

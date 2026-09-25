@@ -1,5 +1,5 @@
 -- Warm first entry after a production fresh import: raw ROM import drives
--- the mandatory first-play preparation (C04) before the Main Menu, and the
+-- the mandatory first-play preparation before the Main Menu, and the
 -- first New Game after that preparation is the measured warm pass. The
 -- Oak-handoff to usable-bedroom interval is timed from the ownership
 -- transfer into FieldPreparationState (before any planning/runtime/location
@@ -387,7 +387,7 @@ end
 
 -- Drives the real production post-extraction import path
 -- (App._onImported -> mandatory first-play preparation -> menu) on an
--- isolated save namespace with a sparse derived root, and proves the C04
+-- isolated save namespace with a sparse derived root, and proves the import
 -- gate: the first-play preparation installs before the menu, requests the
 -- exact first-play milestone set at required urgency, requests no corpus
 -- work, and authorizes no background sweep before the menu installs.

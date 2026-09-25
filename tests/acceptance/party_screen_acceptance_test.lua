@@ -10,7 +10,6 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {
   metadata = {
@@ -233,22 +232,6 @@ function T.tests.reordered_party_persists_without_screen_state()
     game:waitForFieldEntry()
     Assert.deepEqual(partyOrder(game), order, "reloading must restore the reordered party")
   end)
-end
-
-local function nativeTopology(width, height)
-  return ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = width, height = height },
-    role = "world",
-    touch = false,
-  })
-end
-
-local function pressCancel(game)
-  game.runtime:pressCancel()
-  game:step()
-  game.runtime:releaseCancel()
-  game:step()
 end
 
 return T
