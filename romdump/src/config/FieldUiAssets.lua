@@ -252,7 +252,11 @@ return {
       slotSelected = 44,
       subjectMale = 48,
       subjectFemale = 49,
+      pokemonSubject = 50,
     },
+    -- Sequence 50's two source cells both use the one icon frame loaded by
+    -- NamingScreen_LoadMonIcon; only their OAM placement changes.
+    pokemonSubjectCells = { 52, 53 },
     -- Resting page placement: the active keyboard BG rests scrolled to
     -- X=-11, so the 256-wide page overlay draws displaced +11 screen pixels
     -- over the canonical surface.

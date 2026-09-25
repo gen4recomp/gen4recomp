@@ -121,10 +121,8 @@ local function animData(frames)
   return container("RNAN", { block("ABNK", anims .. anim .. table.concat(frameBlocks) .. table.concat(frameData)) })
 end
 
--- Multi-cell/multi-animation banks for the naming OBJ stack: fifty cells
--- and animations cover the semantic animation table (subjects at 48 and 49);
--- cell i references tile i % 16 through palette bank i % 9 of the nine-bank
--- palette below.
+-- Multi-cell/multi-animation banks for the naming OBJ stack: cells and
+-- animations cover the semantic animation table (subjects at 48, 49, and 50).
 local function namingCellBank(cellObjs)
   local meta, attr = {}, {}
   local offset = 0
@@ -156,19 +154,24 @@ end
 local function namingAnimBank(animCells)
   local count = #animCells
   local anims, frames, data = {}, {}, {}
-  for a, cell in ipairs(animCells) do
-    anims[#anims + 1] = u32(1) .. u16(0) .. u16(1) .. u32(1) .. u32((a - 1) * 8)
-    frames[#frames + 1] = u32((a - 1) * 2) .. u16(3) .. u16(0)
-    data[#data + 1] = u16(cell)
+  local frameOffset = 0
+  for _, animation in ipairs(animCells) do
+    local cells = type(animation) == "table" and animation or { animation }
+    anims[#anims + 1] = u32(#cells) .. u16(0) .. u16(1) .. u32(#cells) .. u32(frameOffset * 8)
+    for _, cell in ipairs(cells) do
+      frames[#frames + 1] = u32(frameOffset * 2) .. u16(3) .. u16(0)
+      data[#data + 1] = u16(cell)
+      frameOffset = frameOffset + 1
+    end
   end
   local animsOffset = 0x18
   local framesOffset = animsOffset + 16 * count
-  local dataOffset = framesOffset + 8 * count
+  local dataOffset = framesOffset + 8 * frameOffset
   return container("RNAN", {
     block(
       "ABNK",
       u16(count)
-        .. u16(count)
+        .. u16(frameOffset)
         .. u32(animsOffset)
         .. u32(framesOffset)
         .. u32(dataOffset)
@@ -339,10 +342,22 @@ local function fixture(opts)
   namein[11] = charData(16, 3)
   do
     local cells, animCells = {}, {}
-    for index = 0, 49 do
+    for index = 0, 53 do
       cells[index + 1] = { { x = 0, y = 0, tile = index % 16, pal = index % 9 } }
+    end
+    for index = 0, 49 do
       animCells[index + 1] = index
     end
+    -- Sequence 50 animates between source cells 52 and 53. Both cells point
+    -- at the dynamically loaded icon tile and its underlay; neither adds
+    -- Pokémon pixels to the naming OBJ character bank.
+    for cell = 52, 53 do
+      cells[cell + 1] = {
+        { x = 0, y = 0, tile = 0x57E0 / 32, pal = 6, size = 2 },
+        { x = 0, y = 0, tile = 0x57E0 / 32, pal = 5, size = 2 },
+      }
+    end
+    animCells[51] = { 52, 53 }
     namein[13] = namingCellBank(cells)
     namein[15] = namingAnimBank(animCells)
   end

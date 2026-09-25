@@ -1264,11 +1264,14 @@ function FieldUiAssetCache.validateManifest(manifest)
     then
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.entrySlots must start at (80,39) stepping 12px", {})
     end
-    for _, key in ipairs({ "normal", "selected" }) do
-      local slotOk, slotErr = spriteRecord(s.entrySlots[key], "namingScreen.entrySlots." .. key)
-      if not slotOk then
-        return false, slotErr
-      end
+    local normalSlotOk, normalSlotErr = spriteRecord(s.entrySlots.normal, "namingScreen.entrySlots.normal")
+    if not normalSlotOk then
+      return false, normalSlotErr
+    end
+    local selectedSlotOk, selectedSlotErr =
+      animationRecord(s.entrySlots.selected, "namingScreen.entrySlots.selected", false)
+    if not selectedSlotOk then
+      return false, selectedSlotErr
     end
 
     if type(s.playerSubjects) ~= "table" then
@@ -1290,6 +1293,67 @@ function FieldUiAssetCache.validateManifest(manifest)
       local subjectAnchor = s.playerSubjects[id].anchor
       if subjectAnchor.x ~= 24 or subjectAnchor.y ~= 8 then
         return false, Errors.new(MANIFEST_INVALID, "namingScreen.playerSubjects." .. id .. " must anchor at (24,8)", {})
+      end
+    end
+
+    local pokemonSubject = s.pokemonSubject
+    if type(pokemonSubject) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject must be a table", {})
+    end
+    if type(pokemonSubject.anchor) ~= "table" or pokemonSubject.anchor.x ~= 24 or pokemonSubject.anchor.y ~= 8 then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject must anchor at (24,8)", {})
+    end
+    if validPlayModes[pokemonSubject.playMode] ~= true then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject carries an unsupported play mode", {})
+    end
+    if type(pokemonSubject.frames) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject must carry animation frames", {})
+    end
+    local pokemonFrameCount = 0
+    for _ in pairs(pokemonSubject.frames) do
+      pokemonFrameCount = pokemonFrameCount + 1
+    end
+    if pokemonFrameCount ~= 2 or pokemonFrameCount ~= #pokemonSubject.frames then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject must carry two dense icon frames", {})
+    end
+    if
+      type(pokemonSubject.loopStartFrameIdx) ~= "number"
+      or pokemonSubject.loopStartFrameIdx % 1 ~= 0
+      or pokemonSubject.loopStartFrameIdx < 0
+      or pokemonSubject.loopStartFrameIdx >= pokemonFrameCount
+    then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject loop start is outside its frames", {})
+    end
+    for index, frame in ipairs(pokemonSubject.frames) do
+      if
+        type(frame) ~= "table"
+        or type(frame.iconFrame) ~= "number"
+        or frame.iconFrame % 1 ~= 0
+        or frame.iconFrame ~= 1
+      then
+        return false,
+          Errors.new(
+            MANIFEST_INVALID,
+            "namingScreen.pokemonSubject frame " .. index .. " has an invalid icon frame",
+            {}
+          )
+      end
+      if
+        type(frame.offset) ~= "table"
+        or type(frame.offset.x) ~= "number"
+        or frame.offset.x % 1 ~= 0
+        or type(frame.offset.y) ~= "number"
+        or frame.offset.y % 1 ~= 0
+      then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frame " .. index .. " has an invalid offset", {})
+      end
+      if type(frame.duration) ~= "number" or frame.duration % 1 ~= 0 or frame.duration < 1 then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frame " .. index .. " has an invalid duration", {})
+      end
+      if frame.asset ~= nil or frame.rect ~= nil or frame.pulseRect ~= nil then
+        return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frames carry no generated pixels", {})
       end
     end
     return true

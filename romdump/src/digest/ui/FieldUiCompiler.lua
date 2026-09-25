@@ -1613,11 +1613,11 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
 
   local slotNormal =
     publish("slot-normal", FieldUiAssetCache.ASSET.NAMING_SCREEN_SLOT_NORMAL, cfg.objAnims.slotNormal, cfg.entryOrigin)
-  local slotSelected = publish(
+  local slotSelected = publishAnimation(
     "slot-selected",
     FieldUiAssetCache.ASSET.NAMING_SCREEN_SLOT_SELECTED,
-    cfg.objAnims.slotSelected,
-    cfg.entryOrigin
+    nil,
+    cfg.objAnims.slotSelected
   )
   local subjectMale =
     publishAnimation("subject-male", FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_MALE, nil, cfg.objAnims.subjectMale)
@@ -1629,6 +1629,68 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     cfg.objAnims.subjectFemale
   )
   subjectFemale.anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y }
+
+  -- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
+  -- src/naming_screen.c::NamingScreen_LoadMonIcon uploads 0x200 bytes at
+  -- OBJ address 0x57E0: one 32x32 icon at tile 703. Sequence 50's NCER
+  -- cells both reference that tile; they animate the icon's placement, not
+  -- its image frame.
+  local pokemonIconTile = 0x57E0 / 32
+  local pokemonAnimation = objAnim.anims[cfg.objAnims.pokemonSubject + 1]
+  if pokemonAnimation == nil or #pokemonAnimation.frames == 0 then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation is missing frames", {
+      anim = cfg.objAnims.pokemonSubject,
+    })
+  end
+  assert(pokemonAnimation ~= nil, "the naming Pokémon animation is present")
+  local pokemonSubjectFrames = {}
+  for index, frame in ipairs(pokemonAnimation.frames) do
+    if cfg.pokemonSubjectCells[index] ~= frame.cell then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation selects an unsupported cell", {
+        anim = cfg.objAnims.pokemonSubject,
+        cell = frame.cell,
+      })
+    end
+    local cell = objCell.cells[frame.cell + 1]
+    if cell == nil or #cell.objs ~= 2 then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon cell is malformed", {
+        anim = cfg.objAnims.pokemonSubject,
+        cell = frame.cell,
+      })
+    end
+    assert(cell ~= nil, "the naming Pokémon cell is present")
+    local minX, minY = math.huge, math.huge
+    for _, obj in ipairs(cell.objs) do
+      if obj.tile ~= pokemonIconTile or obj.width ~= 32 or obj.height ~= 32 then
+        Errors.raise(
+          FieldUiCompiler.ERROR.SOURCE_INVALID,
+          "the naming Pokémon cell does not use the loaded icon frame",
+          {
+            anim = cfg.objAnims.pokemonSubject,
+            cell = frame.cell,
+          }
+        )
+      end
+      minX, minY = math.min(minX, obj.x), math.min(minY, obj.y)
+    end
+    if frame.element ~= "none" and frame.element ~= "translate" then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation transform is unsupported", {
+        anim = cfg.objAnims.pokemonSubject,
+        element = frame.element,
+      })
+    end
+    pokemonSubjectFrames[index] = {
+      iconFrame = 1,
+      offset = { x = minX + frame.translateX, y = minY + frame.translateY },
+      duration = frame.duration,
+    }
+  end
+  local pokemonSubject = {
+    playMode = pokemonAnimation.playMode,
+    loopStartFrameIdx = pokemonAnimation.loopStartFrameIdx,
+    anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y },
+    frames = pokemonSubjectFrames,
+  }
 
   -- Keyboard text cells in final canonical coordinates: page placement
   -- plus the keyboard window origin plus the glyph inset below each row top.
@@ -1683,6 +1745,7 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
       male = subjectMale,
       female = subjectFemale,
     },
+    pokemonSubject = pokemonSubject,
   }
 end
 

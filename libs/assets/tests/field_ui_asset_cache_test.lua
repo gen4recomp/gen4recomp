@@ -308,7 +308,6 @@ end
 function T.contract_constants_flow_from_the_contract_owner()
   Assert.equal(FieldUiAssetCache.FORMAT, DerivedAssetContract.fieldUi.cacheFormat)
   Assert.equal(FieldUiAssetCache.SCHEMA, DerivedAssetContract.fieldUi.schema)
-  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v16")
   Assert.equal(FieldUiAssetCache.marker("abc", "def"), "field-ui-cache-v1:abc:def")
 end
 

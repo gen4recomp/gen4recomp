@@ -4,10 +4,13 @@
 -- transparent source-zero holes so the base shows through, and the producer
 -- fingerprint pins exactly the proven normal members. Asserts only structural
 -- facts and pixel alpha behavior, never copied source bytes or text.
+-- Pokémon icon placement follows pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
+-- src/naming_screen.c::NamingScreen_LoadMonIcon.
 
 local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+local Lz10 = require("romdump.src.digest.Lz10")
 local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 
@@ -16,6 +19,20 @@ local T = {}
 local function namingSelection()
   local config = require("romdump.src.config.FieldUiAssets")
   return assert(config.namingScreen, "the field-UI producer must select normal naming chrome")
+end
+
+local function sourceAnimation(romFs, animationIndex)
+  local config = namingSelection()
+  local archive = assert(romFs:openNarc(config.alias), "the naming archive opens")
+  local bytes = assert(archive:readMember(config.objAnimMember), "the naming animation member exists")
+  if string.byte(bytes, 1) == 0x10 then
+    bytes = assert(Lz10.decode(bytes), "the naming animation member decompresses")
+  end
+  local animation = assert(
+    G2dDecoder.decodeAnimation(bytes, { label = "HGSS naming OBJ animations" }),
+    "the naming OBJ animation member decodes"
+  )
+  return assert(animation.anims[animationIndex + 1], "the source naming animation exists")
 end
 
 local function compiledNaming(romFs)
@@ -202,6 +219,98 @@ function T.compiled_naming_semantics_follow_the_source_contract(romFs, _)
   local maleBytes = opaqueBytes(naming.playerSubjects.male)
   local femaleBytes = opaqueBytes(naming.playerSubjects.female)
   Assert.isTrue(maleBytes ~= femaleBytes, "the male and female subjects render distinct art")
+end
+
+-- The generated selected-slot record follows the real NANR animation rather
+-- than flattening its first frame. This test intentionally compares
+-- normalized playback facts to decoded source facts, not source member IDs.
+function T.selected_entry_slot_preserves_source_animation(romFs, _)
+  local config = namingSelection()
+  local source = sourceAnimation(romFs, config.objAnims.slotSelected)
+  Assert.isTrue(#source.frames > 1, "the active entry slot source animation has multiple frames")
+  local archive = assert(romFs:openNarc(config.alias))
+  local cellBytes = assert(archive:readMember(config.objCellMember))
+  if string.byte(cellBytes, 1) == 0x10 then
+    cellBytes = assert(Lz10.decode(cellBytes), "the naming cell member decompresses")
+  end
+  local cells = assert(G2dDecoder.decodeCell(cellBytes, { label = "HGSS naming OBJ cells" }))
+
+  local _, naming = compiledNaming(romFs)
+  local selected = assert(naming.entrySlots.selected, "the selected entry-slot record is required")
+  Assert.equal(selected.playMode, source.playMode, "selected slot playback mode")
+  Assert.equal(selected.loopStartFrameIdx, source.loopStartFrameIdx, "selected slot loop start")
+  Assert.equal(#selected.frames, #source.frames, "selected slot preserves every source frame")
+  for index, sourceFrame in ipairs(source.frames) do
+    local frame = assert(selected.frames[index], "selected slot frame " .. index .. " is required")
+    Assert.equal(frame.duration, sourceFrame.duration, "selected slot frame " .. index .. " duration")
+    local cell = assert(cells.cells[sourceFrame.cell + 1], "selected slot source cell exists")
+    local minX, minY = math.huge, math.huge
+    for _, obj in ipairs(cell.objs) do
+      minX, minY = math.min(minX, obj.x), math.min(minY, obj.y)
+    end
+    Assert.deepEqual(
+      frame.offset,
+      { x = minX + sourceFrame.translateX, y = minY + sourceFrame.translateY },
+      "selected slot frame " .. index .. " compositor offset"
+    )
+  end
+end
+
+-- Sequence 50 names dynamically uploaded Pokémon graphics. Its generated
+-- record therefore carries source anchor and per-frame icon selection data,
+-- while the field-UI asset table remains free of Pokémon pixel assets.
+function T.pokemon_subject_is_source_positioned_and_frame_addressable(romFs, _)
+  local source = sourceAnimation(romFs, 50)
+  local config = namingSelection()
+  local archive = assert(romFs:openNarc(config.alias), "the naming archive opens")
+  local cellBytes = assert(archive:readMember(config.objCellMember), "the naming cell member exists")
+  if string.byte(cellBytes, 1) == 0x10 then
+    cellBytes = assert(Lz10.decode(cellBytes), "the naming cell member decompresses")
+  end
+  local cells = assert(G2dDecoder.decodeCell(cellBytes, { label = "HGSS naming OBJ cells" }))
+
+  local bundle, naming = compiledNaming(romFs)
+  local subject = assert(naming.pokemonSubject, "the Pokémon naming subject record is required")
+  Assert.deepEqual(subject.anchor, { x = 24, y = 8 }, "the Pokémon subject source anchor")
+  Assert.equal(subject.playMode, source.playMode, "Pokémon subject playback mode")
+  Assert.equal(subject.loopStartFrameIdx, source.loopStartFrameIdx, "Pokémon subject loop start")
+  Assert.equal(#subject.frames, #source.frames, "Pokémon subject preserves every source frame")
+  for index, sourceFrame in ipairs(source.frames) do
+    local frame = assert(subject.frames[index], "Pokémon subject frame " .. index .. " is required")
+    Assert.equal(frame.duration, sourceFrame.duration, "Pokémon subject frame " .. index .. " duration")
+    Assert.equal(frame.iconFrame, 1, "the naming app loads one 32x32 icon frame")
+    local cell = assert(cells.cells[sourceFrame.cell + 1], "the Pokémon source cell exists")
+    Assert.equal(#cell.objs, 2, "the Pokémon source cell keeps its two OAM objects")
+    local iconObject = assert(cell.objs[1], "the icon OAM object is first")
+    local underlayObject = assert(cell.objs[2], "the icon underlay OAM object is second")
+    Assert.equal(iconObject.palette, 6, "the first naming OAM object uses the loaded mon icon palette")
+    Assert.equal(underlayObject.palette, 5, "the second naming OAM object is the source underlay")
+    local minX, minY = math.huge, math.huge
+    for _, obj in ipairs(cell.objs) do
+      Assert.equal(obj.tile, 0x57E0 / 32, "the Pokémon cell references the loaded icon tile base")
+      Assert.equal(obj.width, 32, "the Pokémon source object is 32 pixels wide")
+      Assert.equal(obj.height, 32, "the Pokémon source object is 32 pixels tall")
+      Assert.equal(obj.x, iconObject.x, "the two Pokémon source objects share their x placement")
+      Assert.equal(obj.y, iconObject.y, "the two Pokémon source objects share their y placement")
+      Assert.equal(obj.flipH, false, "the Pokémon icon is not horizontally flipped")
+      Assert.equal(obj.flipV, false, "the Pokémon icon is not vertically flipped")
+      minX, minY = math.min(minX, obj.x), math.min(minY, obj.y)
+    end
+    Assert.deepEqual(
+      frame.offset,
+      { x = minX + sourceFrame.translateX, y = minY + sourceFrame.translateY },
+      "Pokémon subject frame " .. index .. " preserves its source transform offset"
+    )
+  end
+  for _, frame in ipairs(subject.frames) do
+    Assert.isNil(frame.asset, "dynamic Pokémon pixels do not belong to the field-UI frame")
+  end
+  for assetId in pairs(bundle.manifest.assets) do
+    Assert.isFalse(
+      tostring(assetId):find("pokemon", 1, true) ~= nil or tostring(assetId):find("mon_icon", 1, true) ~= nil,
+      "the naming contract does not duplicate species icon pixels"
+    )
+  end
 end
 
 -- The real dump carries the dynamically constructed retail keyboard window

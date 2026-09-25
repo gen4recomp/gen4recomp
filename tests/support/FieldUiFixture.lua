@@ -1077,11 +1077,20 @@ function FieldUiFixture.namingSemanticsManifest()
         origin = { x = 80, y = 39 },
         stepX = 12,
         normal = sprite("slot-normal", 12, 16, { x = 80, y = 39 }, { x = 0, y = 0 }),
-        selected = sprite("slot-selected", 12, 16, { x = 80, y = 39 }, { x = 0, y = 0 }),
+        selected = animated("slot-selected", 12, 16, nil, { x = 0, y = 0 }),
       },
       playerSubjects = {
         male = animated("subject-male", 48, 56, { x = 24, y = 8 }, { x = 0, y = 0 }),
         female = animated("subject-female", 48, 56, { x = 24, y = 8 }, { x = 2, y = 0 }),
+      },
+      pokemonSubject = {
+        playMode = "forward_loop",
+        loopStartFrameIdx = 0,
+        anchor = { x = 24, y = 8 },
+        frames = {
+          { iconFrame = 1, offset = { x = 0, y = 0 }, duration = 20 },
+          { iconFrame = 1, offset = { x = 0, y = -6 }, duration = 3 },
+        },
       },
     },
   }

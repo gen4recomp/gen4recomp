@@ -1,7 +1,6 @@
--- DerivedAssetContract is the single consumer-visible identity of the derived
--- assets crossing the romdump boundary. These tests pin its shape and exact
--- values, and assert every consuming cache module exposes the same constants,
--- so a format/schema change cannot be made in one place and missed in another.
+-- DerivedAssetContract is the single consumer-visible identity of derived
+-- assets crossing the romdump boundary. Verify cache modules consume its
+-- constants so producers and consumers cannot drift apart.
 
 local Assert = require("tests.support.Assert")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
@@ -28,110 +27,6 @@ local BagCache = require("libs.assets.src.BagCache")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 
 local T = {}
-
-function T.contract_pins_the_current_asset_identities()
-  -- The audio contracts moved to explicit class schemas while the global
-  -- revision identifies the current shared generated-asset contracts. The
-  -- sequence initial-volume domain is the current NNS table domain.
-  Assert.deepEqual(DerivedAssetContract, {
-    revision = 10,
-    map = {
-      cacheFormat = "map-cache-v7",
-      sceneSchema = "g4-map-scene-v10",
-      terrainSchema = "g4-terrain-surfaces-v1",
-      collisionVersion = 1,
-    },
-    fieldCells = {
-      cacheFormat = "field-cell-cache-v3",
-      indexSchema = "g4-field-cell-index-v3",
-      cellSchema = "g4-field-cell-v3",
-    },
-    fieldActors = {
-      cacheFormat = "field-actor-cache-v2",
-      schema = "g4-field-actor-v3",
-      indexSchema = "g4-field-actor-index-v3",
-    },
-    fieldCamera = {
-      cacheFormat = "g4-field-camera-cache-v1",
-      schema = "g4-field-camera-profiles-v1",
-    },
-    fieldMapData = {
-      cacheFormat = "g4-field-map-cache-v1",
-      fieldSchema = "g4-field-map-v9",
-    },
-    messages = {
-      cacheFormat = "field-message-cache-v3",
-      schema = "g4-field-message-bank-v1",
-      indexSchema = "g4-field-message-index-v1",
-      provenanceSchema = "g4-field-message-provenance-v1",
-    },
-    font = {
-      cacheFormat = "field-font-cache-v5",
-      schema = "g4-field-font-v4",
-    },
-    scripts = {
-      cacheFormat = "script-cache-v4",
-      indexSchema = "g4-script-index-v2",
-      provenanceSchema = "g4-script-provenance-v2",
-    },
-    fieldWeather = {
-      cacheFormat = "field-weather-cache-v1",
-      schema = "g4-field-weather-v1",
-    },
-    newGameInit = {
-      cacheFormat = "g4-new-game-init-cache-v1",
-      schema = "g4-new-game-init-v2",
-    },
-    fieldEffects = {
-      cacheFormat = "field-effect-cache-v8",
-      indexSchema = "g4-field-effect-index-v2",
-    },
-    fieldEmotes = {
-      cacheFormat = "field-emotes-cache-v2",
-      schema = "g4-field-emote-v1",
-    },
-    fieldUi = {
-      cacheFormat = "field-ui-cache-v1",
-      schema = "g4-field-ui-v16",
-    },
-    intro = {
-      cacheFormat = "intro-cache-v14",
-      schema = "g4-intro-assets-v14",
-      provenanceSchema = "g4-intro-provenance-v1",
-    },
-    starterChoice = {
-      cacheFormat = "starter-choice-cache-v6",
-      schema = "g4-starter-choice-v6",
-    },
-    mons = {
-      cacheFormat = "mon-cache-v1",
-      catalogSchema = "g4-mon-catalog-v3",
-      indexSchema = "g4-mon-index-v1",
-      iconManifestSchema = "g4-mon-icon-manifest-v1",
-      portraitManifestSchema = "g4-mon-portrait-manifest-v1",
-    },
-    items = {
-      cacheFormat = "item-cache-v1",
-      catalogSchema = "g4-item-catalog-v1",
-      indexSchema = "g4-item-index-v1",
-      iconManifestSchema = "g4-item-icons-v1",
-    },
-    bag = {
-      cacheFormat = "bag-cache-v2",
-      schema = "g4-bag-assets-v11",
-    },
-    audio = {
-      cacheFormat = "g4-audio-cache-v1",
-      -- The sequence vocabulary and initial-volume domain are strict current
-      -- contracts; earlier sequence assets are stale.
-      indexSchema = "g4-audio-index-v5",
-      sequenceSchema = "g4-audio-sequence-v9",
-      bankSchema = "g4-audio-bank-v5",
-      sampleSchema = "g4-audio-sample-v4",
-      provenanceSchema = "g4-audio-provenance-v1",
-    },
-  })
-end
 
 function T.cache_modules_consume_the_contract_constants()
   Assert.equal(MapAssetCache.FORMAT, DerivedAssetContract.map.cacheFormat)

@@ -348,24 +348,36 @@ local function cellBank(cellObjs)
   })
 end
 
--- A multi-animation bank: animation a drives one frame selecting cell
--- animCells[a]. Mirrors the single-animation helper's header layout.
+-- A multi-animation bank: each entry is either a cell index or a list of
+-- frames. Mirrors the source animation table while keeping simple fixtures
+-- compact.
 local function animBank(animCells)
   local count = #animCells
+  local totalFrames = 0
+  for _, frames in ipairs(animCells) do
+    totalFrames = totalFrames + (type(frames) == "table" and #frames or 1)
+  end
   local anims, frames, data = {}, {}, {}
-  for a, cell in ipairs(animCells) do
-    anims[#anims + 1] = u32(1) .. u16(0) .. u16(1) .. u32(1) .. u32((a - 1) * 8)
-    frames[#frames + 1] = u32((a - 1) * 2) .. u16(3) .. u16(0)
-    data[#data + 1] = u16(cell)
+  local frameCursor = 0
+  local dataCursor = 0
+  for _, sourceFrames in ipairs(animCells) do
+    local animationFrames = type(sourceFrames) == "table" and sourceFrames or { { cell = sourceFrames, duration = 3 } }
+    anims[#anims + 1] = u32(#animationFrames) .. u16(0) .. u16(1) .. u32(1) .. u32(frameCursor * 8)
+    for _, frame in ipairs(animationFrames) do
+      frames[#frames + 1] = u32(dataCursor * 2) .. u16(frame.duration) .. u16(0)
+      data[#data + 1] = u16(frame.cell)
+      frameCursor = frameCursor + 1
+      dataCursor = dataCursor + 1
+    end
   end
   local animsOffset = 0x18
   local framesOffset = animsOffset + 16 * count
-  local dataOffset = framesOffset + 8 * count
+  local dataOffset = framesOffset + 8 * totalFrames
   return container("RNAN", {
     block(
       "ABNK",
       u16(count)
-        .. u16(count)
+        .. u16(totalFrames)
         .. u32(animsOffset)
         .. u32(framesOffset)
         .. u32(dataOffset)
@@ -403,10 +415,21 @@ local function namingObjMembers(members)
   members[11] = charData(16, 3)
   local cells = {}
   local animCells = {}
-  for index = 0, 49 do
+  for index = 0, 53 do
     cells[index + 1] = { { x = 0, y = 0, tile = index % 16, pal = index % 9 } }
-    animCells[index + 1] = index
+    if index < 51 then
+      animCells[index + 1] = index
+    end
   end
+  cells[53] = {
+    { x = 0, y = 0, tile = 703, pal = 6, shape = 0, size = 2 },
+    { x = 0, y = 0, tile = 703, pal = 5, shape = 0, size = 2 },
+  }
+  cells[54] = {
+    { x = 0, y = -6, tile = 703, pal = 6, shape = 0, size = 2 },
+    { x = 0, y = -6, tile = 703, pal = 5, shape = 0, size = 2 },
+  }
+  animCells[51] = { { cell = 52, duration = 20 }, { cell = 53, duration = 3 } }
   members[13] = cellBank(cells)
   members[15] = animBank(animCells)
   return members
@@ -1810,7 +1833,7 @@ end
 -- animation keeps one frame, so frame order, durations, mode, and loop
 -- start are observable in the generated subject record.
 local function multiFrameNamingAnim()
-  local animCount = 50
+  local animCount = 51
   local specs = {}
   for index = 0, animCount - 1 do
     specs[index + 1] = { playMode = 1, loopStart = 0, frames = { { cell = index, duration = 3 } } }
@@ -1822,6 +1845,14 @@ local function multiFrameNamingAnim()
       { cell = 10, duration = 2 },
       { cell = 11, duration = 1 },
       { cell = 12, duration = 4 },
+    },
+  }
+  specs[51] = {
+    playMode = 1,
+    loopStart = 0,
+    frames = {
+      { cell = 52, duration = 20 },
+      { cell = 53, duration = 3 },
     },
   }
   local totalFrames = 0
