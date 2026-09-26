@@ -65,7 +65,7 @@ local function driveSetup(options)
     return assert(log.demandCommand, "the blocking wait must answer a command")
   end
   local reply = {}
-  function reply.push(message)
+  function reply:push(message)
     log.replies[#log.replies + 1] = message
   end
   local worker = CacheControllerWorker.Worker.new(control, reply)
@@ -187,6 +187,161 @@ function T.queued_command_outranks_a_session_clock_wait()
   Assert.equal(session.pumps, 1, "the command path pumps the session immediately")
   Assert.equal(#timer.sleeps, 0, "a queued command waits for no sleep")
   Assert.equal(log.demands, 0, "a queued command waits for no demand")
+end
+
+-- Terminal request/barrier/failure facts are pushed over the existing reply
+-- channel: fake control/reply channels plus a fake selected session prove the
+-- controller emits each terminal event without any status probe round-trip.
+local function pushChannels()
+  local queued = {}
+  local control = {}
+  function control.pop()
+    if #queued == 0 then
+      return nil
+    end
+    return table.remove(queued, 1)
+  end
+  function control.demand()
+    return table.remove(queued, 1)
+  end
+  local replies = {}
+  local reply = {}
+  function reply:push(message)
+    replies[#replies + 1] = message
+  end
+  return control, reply, replies, queued
+end
+
+local function terminalSession(outcomes)
+  local session = { pumps = 0, milestoneCalls = 0, ready = true }
+  if outcomes ~= nil and outcomes.ready ~= nil then
+    session.ready = outcomes.ready
+  end
+  function session.update()
+    session.pumps = session.pumps + 1
+  end
+  function session.requestMilestone(_, _)
+    session.milestoneCalls = session.milestoneCalls + 1
+    if session.ready then
+      return true, nil
+    end
+    return false, nil
+  end
+  function session.milestoneStatus(_)
+    return { ready = 1, total = 1 }
+  end
+  function session.requestField(_, _)
+    return true, nil
+  end
+  function session.requestLogicalField(_, _)
+    return true, nil
+  end
+  function session.requestCell(_, _)
+    return true, nil
+  end
+  function session.requestMonPortraitPage(_, _)
+    return true, nil
+  end
+  function session.requestIconPage(_, _)
+    return true, nil
+  end
+  function session.hasRunnablePlanning()
+    return false
+  end
+  function session.nextPlanningWakeDelay()
+    return nil
+  end
+  return session
+end
+
+local function pushWorker(session, epoch)
+  local control, reply, replies, queued = pushChannels()
+  local worker = CacheControllerWorker.Worker.new(control, reply)
+  worker.session = session
+  worker.pool = nil
+  worker.liveEpoch = epoch
+  worker.lifecycle = "active"
+  return worker, replies, queued
+end
+
+local function packetsOf(replies, op)
+  local found = {}
+  for _, packet in ipairs(replies) do
+    if type(packet) == "table" and packet.op == op then
+      found[#found + 1] = packet
+    end
+  end
+  return found
+end
+
+-- An immediately settled external request emits one terminal event during
+-- request handling: no status probe is required for progress.
+function T.request_outcome_is_pushed_without_a_status_probe()
+  local worker, replies, queued = pushWorker(terminalSession(), 7)
+  queued[#queued + 1] =
+    { op = "request", epoch = 7, requestId = 11, requestKind = "milestone", name = "bootstrap", urgency = "required" }
+  worker:step()
+  local results = packetsOf(replies, "request-result")
+  Assert.equal(#results, 1, "an immediately ready request emits one terminal event without a status probe")
+  Assert.equal(results[1].requestId, 11, "the terminal event carries the request identity")
+  Assert.equal(results[1].state, "ready", "the terminal event carries the ready state")
+  Assert.equal(results[1].epoch, 7, "the terminal event carries the epoch identity")
+  queued[#queued + 1] = { op = "poll", epoch = 7, roundId = 3, count = 1, id1 = 11 }
+  worker:step()
+  Assert.equal(#packetsOf(replies, "poll-result"), 0, "no status probe is answered")
+end
+
+-- A request that settles after session progress emits exactly one terminal
+-- event on the settling pump and never duplicates it on later pumps.
+function T.delayed_readiness_emits_exactly_one_terminal_event()
+  local session = terminalSession({ ready = false })
+  local worker, replies, queued = pushWorker(session, 7)
+  queued[#queued + 1] =
+    { op = "request", epoch = 7, requestId = 12, requestKind = "milestone", name = "bootstrap", urgency = "required" }
+  worker:step()
+  Assert.equal(#packetsOf(replies, "request-result"), 0, "a pending request emits no terminal event yet")
+  session.ready = true
+  worker:step()
+  local results = packetsOf(replies, "request-result")
+  Assert.equal(#results, 1, "settling progress emits one terminal event")
+  Assert.equal(results[1].requestId, 12, "the terminal event carries the request identity")
+  Assert.equal(results[1].state, "ready", "the terminal event carries the ready state")
+  worker:step()
+  Assert.equal(#packetsOf(replies, "request-result"), 1, "later pumps never duplicate the terminal event")
+end
+
+-- Retirement and quiescence each push their own exact barrier event at the
+-- existing completion point instead of waiting for a status round-trip.
+function T.retirement_and_quiescence_push_exact_barrier_events()
+  local worker, replies, queued = pushWorker(terminalSession(), 9)
+  queued[#queued + 1] = { op = "retire", epoch = 9, barrierId = 4 }
+  worker:step()
+  local retired = packetsOf(replies, "barrier-result")
+  Assert.equal(#retired, 1, "retirement pushes one barrier event")
+  Assert.equal(retired[1].epoch, 9, "the retirement event carries the epoch identity")
+  Assert.equal(retired[1].barrierId, 4, "the retirement event carries the barrier identity")
+  Assert.equal(retired[1].kind, "retire", "the retirement event carries its kind")
+  queued[#queued + 1] = { op = "quiesce", epoch = 9, barrierId = 5 }
+  worker:step()
+  local settled = packetsOf(replies, "barrier-result")
+  Assert.equal(#settled, 2, "quiescence pushes its own barrier event")
+  Assert.equal(settled[2].epoch, 9, "the quiescence event carries the epoch identity")
+  Assert.equal(settled[2].barrierId, 5, "the quiescence event carries the barrier identity")
+  Assert.equal(settled[2].kind, "quiesce", "the quiescence event carries its kind")
+end
+
+-- A lifecycle failure pushes one terminal fact with the first cause; later
+-- failures never spam the channel or replace the primary cause.
+function T.lifecycle_failure_pushes_one_terminal_event()
+  local worker, replies, queued = pushWorker(terminalSession(), 11)
+  queued[#queued + 1] = { op = "select", epoch = 11 }
+  worker:step()
+  local failures = packetsOf(replies, "controller-failure")
+  Assert.equal(#failures, 1, "the first lifecycle failure pushes one terminal event")
+  Assert.isTrue(tostring(failures[1].errorMessage) ~= "", "the terminal failure carries its cause")
+  queued[#queued + 1] = { op = "select", epoch = 12 }
+  worker:step()
+  Assert.equal(#packetsOf(replies, "controller-failure"), 1, "later failures never spam the channel")
 end
 
 -- A fully idle session with no clock wait still blocks for the next

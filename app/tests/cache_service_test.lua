@@ -187,7 +187,7 @@ function T.selection_and_frame_updates_do_no_producer_or_filesystem_work_on_the_
   Assert.equal(calls.poolUpdates, 0, "frame updates pump no pool control synchronously on the calling thread")
 end
 
-function T.repeated_host_requests_send_one_command_and_frame_updates_emit_bounded_polls()
+function T.repeated_host_requests_send_one_command_and_frame_updates_send_no_status_probe()
   local Service = requireService()
   local host = newChannelHost()
   local service = assert(Service.new({ thread = host }))
@@ -200,7 +200,15 @@ function T.repeated_host_requests_send_one_command_and_frame_updates_emit_bounde
   end
   local emitted = service:update()
   Assert.isTrue(emitted.ordinary <= 8, "one frame emits at most eight ordinary records")
-  Assert.isTrue(emitted.polls <= 1, "one frame carries at most one poll packet")
+  local probes = 0
+  local command = service._command:pop()
+  while command ~= nil do
+    if command.op == "poll" then
+      probes = probes + 1
+    end
+    command = service._command:pop()
+  end
+  Assert.equal(probes, 0, "thousands of deduplicated requests emit no status probe")
   local again = service:update()
   Assert.equal(again.ordinary, 0, "repeated pending requests send no further ensure commands")
   local ready, failure = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
@@ -237,14 +245,25 @@ function T.retire_then_quiesce_barriers_resolve_without_further_requests()
   local retireBarrier = assert(service:retire(epoch), "retirement returns its barrier identity")
   local quiesceBarrier = assert(service:quiesce(epoch), "quiescence follows retirement on the same epoch")
   Assert.isTrue(quiesceBarrier > retireBarrier, "barrier identities stay process-ordered")
-  service:injectReply({ op = "poll-result", roundId = 1, epoch = epoch, count = 0 })
-  local emitted = service:update()
-  Assert.equal(emitted.polls, 1, "a barrier waiter earns its poll round even while retiring")
-  service:injectReply({ op = "poll-result", roundId = 2, epoch = epoch, count = 0, retiredBarrierId = retireBarrier })
-  local followed = service:update()
+  service:update()
+  local probes = 0
+  local command = service._command:pop()
+  while command ~= nil do
+    if command.op == "poll" then
+      probes = probes + 1
+    end
+    command = service._command:pop()
+  end
+  Assert.equal(probes, 0, "barrier waiters never earn a status probe while retiring")
+  service:injectReply({ op = "barrier-result", epoch = epoch, barrierId = retireBarrier, kind = "retire" })
+  service:update()
   Assert.equal(service:barrierStatus(epoch, retireBarrier), "ready", "the retirement acknowledgement lands")
-  Assert.equal(followed.polls, 1, "the quiescence waiter earns its round after retirement clears the epoch")
-  service:injectReply({ op = "poll-result", roundId = 3, epoch = epoch, count = 0, quiescedBarrierId = quiesceBarrier })
+  Assert.equal(
+    service:barrierStatus(epoch, quiesceBarrier),
+    "pending",
+    "the retirement answer never settles quiescence"
+  )
+  service:injectReply({ op = "barrier-result", epoch = epoch, barrierId = quiesceBarrier, kind = "quiesce" })
   service:update()
   Assert.equal(service:barrierStatus(epoch, quiesceBarrier), "ready", "the quiescence acknowledgement lands")
   local ok, _ = service:importSource(epoch, quiesceBarrier)
@@ -260,11 +279,10 @@ function T.stale_barrier_answers_never_satisfy_a_newer_waiter()
   service:update()
   local retireBarrier = assert(service:retire(epoch), "retirement returns its barrier identity")
   local quiesceBarrier = assert(service:quiesce(epoch), "quiescence follows retirement on the same epoch")
-  service:injectReply({ op = "poll-result", roundId = 1, epoch = epoch, count = 0 })
   service:update()
-  service:injectReply({ op = "poll-result", roundId = 2, epoch = epoch, count = 0, retiredBarrierId = retireBarrier })
+  service:injectReply({ op = "barrier-result", epoch = epoch, barrierId = retireBarrier, kind = "retire" })
   service:update()
-  service:injectReply({ op = "poll-result", roundId = 3, epoch = epoch, count = 0, quiescedBarrierId = retireBarrier })
+  service:injectReply({ op = "barrier-result", epoch = epoch, barrierId = retireBarrier, kind = "quiesce" })
   service:update()
   Assert.equal(
     service:barrierStatus(epoch, quiesceBarrier),
@@ -272,7 +290,7 @@ function T.stale_barrier_answers_never_satisfy_a_newer_waiter()
     "an older barrier identity never satisfies a newer waiter"
   )
   service:update()
-  service:injectReply({ op = "poll-result", roundId = 4, epoch = epoch, count = 0, quiescedBarrierId = quiesceBarrier })
+  service:injectReply({ op = "barrier-result", epoch = epoch, barrierId = quiesceBarrier, kind = "quiesce" })
   service:update()
   Assert.equal(service:barrierStatus(epoch, quiesceBarrier), "ready", "the exact acknowledgement still lands")
 end
@@ -334,7 +352,7 @@ function T.selection_answer_caches_the_controller_generation_token()
     generationId = "g4:test:rotated",
   })
   service:update()
-  Assert.equal(service:generationId(epoch), "g4:test:rotated", "later poll answers refresh the token")
+  Assert.equal(service:generationId(epoch), "g4:test:token", "a retired status round never rotates the token")
   service:shutdown()
 end
 
@@ -394,6 +412,195 @@ function T.icon_page_requests_validate_selectors_and_never_alias_portraits()
     service:request(epoch, { requestKind = "icon", pageId = 3, urgency = "required" })
   end)
   Assert.isFalse(kindOk, "an unlisted request kind is rejected")
+  service:shutdown()
+end
+
+function T.frame_updates_send_no_status_probe_for_pending_requests()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  for _ = 1, 50 do
+    service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
+  end
+  local emitted = service:update()
+  Assert.equal(emitted.ordinary, 1, "repeated pending requests send one initial command")
+  Assert.equal(emitted.polls or 0, 0, "frame updates send no status probe")
+  local seen = {}
+  local command = service._command:pop()
+  while command ~= nil do
+    seen[#seen + 1] = command.op
+    command = service._command:pop()
+  end
+  local probes, requests = 0, 0
+  for _, op in ipairs(seen) do
+    if op == "poll" then
+      probes = probes + 1
+    end
+    if op == "request" then
+      requests = requests + 1
+    end
+  end
+  Assert.equal(probes, 0, "no status probe command leaves the game thread")
+  Assert.equal(requests, 1, "the deduplicated request still leaves the game thread")
+  local again = service:update()
+  Assert.equal(again.ordinary, 0, "repeated pending requests send no further commands")
+  Assert.equal(again.polls or 0, 0, "idle frames send no status probe")
+  local ready, failure = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
+  Assert.isNil(ready, "an unanswered request observes no readiness")
+  Assert.isNil(failure, "an unanswered request observes no failure")
+  service:shutdown()
+end
+
+function T.pushed_request_completion_lands_in_the_matching_cached_observation()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  local first = assert(service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" }))
+  local second =
+    assert(service:request(epoch, { requestKind = "milestone", name = "field-planning", urgency = "required" }))
+  service:update()
+  local pending, _ = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
+  Assert.isNil(pending, "an unanswered request observes no readiness")
+  service:injectReply({ op = "request-result", epoch = epoch, requestId = first, state = "ready" })
+  service:update()
+  local ready, failure = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
+  Assert.isTrue(ready, "the pushed ready event lands in the matching cached observation")
+  Assert.isNil(failure, "a ready observation carries no failure")
+  local stillPending, _ = service:observe(epoch, { requestKind = "milestone", name = "field-planning" })
+  Assert.isNil(stillPending, "an unrelated request stays pending after another request completes")
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = second,
+    state = "failed",
+    errorMessage = "background production failed",
+  })
+  service:update()
+  local failedReady, failedCause = service:observe(epoch, { requestKind = "milestone", name = "field-planning" })
+  Assert.isFalse(failedReady, "a failed request reports no readiness")
+  Assert.isTrue(
+    tostring(failedCause):find("background production failed", 1, true) ~= nil,
+    "the pushed failure carries its cause: " .. tostring(failedCause)
+  )
+  service:shutdown()
+end
+
+function T.pushed_barrier_answers_settle_only_the_exact_waiter()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
+  service:update()
+  local retireBarrier = assert(service:retire(epoch), "retirement returns its barrier identity")
+  local quiesceBarrier = assert(service:quiesce(epoch), "quiescence follows retirement on the same epoch")
+  Assert.equal(service:barrierStatus(epoch, retireBarrier), "pending", "retirement waits for its pushed answer")
+  service:injectReply({ op = "barrier-result", epoch = epoch, barrierId = retireBarrier, kind = "retire" })
+  service:update()
+  Assert.equal(service:barrierStatus(epoch, retireBarrier), "ready", "the exact retirement answer lands")
+  Assert.equal(
+    service:barrierStatus(epoch, quiesceBarrier),
+    "pending",
+    "the retirement answer never settles quiescence"
+  )
+  service:injectReply({ op = "barrier-result", epoch = epoch, barrierId = retireBarrier, kind = "quiesce" })
+  service:update()
+  Assert.equal(
+    service:barrierStatus(epoch, quiesceBarrier),
+    "pending",
+    "an older barrier identity never satisfies a newer waiter"
+  )
+  service:injectReply({ op = "barrier-result", epoch = epoch, barrierId = quiesceBarrier, kind = "quiesce" })
+  service:update()
+  Assert.equal(service:barrierStatus(epoch, quiesceBarrier), "ready", "the exact quiescence answer lands")
+  local ok, _ = service:importSource(epoch, quiesceBarrier)
+  Assert.isTrue(ok, "an acknowledged quiescence barrier authorizes import")
+  local again, _ = service:importSource(epoch, quiesceBarrier)
+  Assert.isFalse(again, "the quiescence barrier authorizes exactly one import")
+  service:shutdown()
+end
+
+function T.pushed_controller_failure_fails_pending_observations_terminally()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
+  service:update()
+  service:injectReply({ op = "controller-failure", errorMessage = "cache worker exploded" })
+  service:update()
+  local ready, failure = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
+  Assert.isNil(ready, "a failed controller reports no readiness")
+  Assert.isTrue(
+    tostring(failure):find("cache worker exploded", 1, true) ~= nil,
+    "pending observations carry the pushed failure cause: " .. tostring(failure)
+  )
+  Assert.isNil(
+    service:request(epoch, { requestKind = "milestone", name = "field-planning", urgency = "required" }),
+    "a failed controller takes no new requests"
+  )
+  Assert.equal(host.threads[1].starts, 1, "a failed controller is never silently restarted")
+  service:shutdown()
+  Assert.equal(host.threads[1].waits, 1, "process shutdown joins the controller exactly once")
+end
+
+function T.selection_generation_comes_only_from_the_selection_answer()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
+  service:update()
+  service:injectReply({ op = "select-result", epoch = epoch, ok = true, generationId = "g4:test:token" })
+  service:update()
+  Assert.equal(service:generationId(epoch), "g4:test:token", "the selection answer publishes its generation token")
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = 1,
+    state = "ready",
+    generationId = "g4:test:rotated",
+  })
+  service:update()
+  Assert.equal(service:generationId(epoch), "g4:test:token", "request completion never rotates the token")
+  service:injectReply({
+    op = "poll-result",
+    roundId = 7,
+    epoch = epoch,
+    count = 0,
+    generationId = "g4:test:rotated",
+  })
+  service:update()
+  Assert.equal(service:generationId(epoch), "g4:test:token", "no later status round rotates the token")
+  service:shutdown()
+end
+
+function T.stale_pushed_results_never_enter_a_new_selection()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local first = assert(service:select({ versionId = "heartgold", development = true }))
+  local firstRequest =
+    assert(service:request(first, { requestKind = "milestone", name = "bootstrap", urgency = "required" }))
+  service:update()
+  local firstBarrier = assert(service:retire(first), "retirement returns its barrier identity")
+  local second = assert(service:select({ versionId = "heartgold", development = true }))
+  service:injectReply({ op = "select-result", epoch = second, ok = true, generationId = "g4:test:second" })
+  service:update()
+  service:injectReply({ op = "request-result", epoch = first, requestId = firstRequest, state = "ready" })
+  service:injectReply({ op = "barrier-result", epoch = first, barrierId = firstBarrier, kind = "retire" })
+  service:injectReply({ op = "select-result", epoch = first, ok = true, generationId = "g4:test:late" })
+  service:update()
+  local ready, failure = service:observe(second, { requestKind = "milestone", name = "bootstrap" })
+  Assert.isNil(ready, "an obsolete-epoch reply authorizes no new-epoch transition")
+  Assert.isNil(failure, "an obsolete-epoch reply reports no new-epoch failure")
+  Assert.equal(
+    service:generationId(second),
+    "g4:test:second",
+    "a late answer for a retired epoch never enters the new selection"
+  )
   service:shutdown()
 end
 

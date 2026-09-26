@@ -3,8 +3,8 @@
 -- session graph (including the retained background completion cursor),
 -- compiler worker dispatch, serialized publication/recovery, retirement and
 -- source-close barriers, and orderly shutdown. The game thread sees only
--- flat scalar request/status observations through its service proxy and
--- never blocks for cache production. Batch preparation stays a separate
+-- pushed terminal request/barrier/failure facts through its service proxy
+-- and never blocks for cache production. Batch preparation stays a separate
 -- synchronous client of the same build modules.
 --
 -- Threading contract (official LOVE semantics): worker Lua states are
@@ -92,17 +92,13 @@ function Worker.new(control, reply)
     session = nil,
     liveEpoch = nil,
     lastRetiredEpoch = nil,
-    generationId = nil,
     lifecycle = "starting",
     lifecycleError = nil,
     frozenProducerRoot = nil,
     frozenProducerId = nil,
     requests = {},
     deferredSelect = nil,
-    pendingRetire = nil,
     pendingQuiesce = nil,
-    retiredBarrierId = nil,
-    quiescedBarrierId = nil,
     exiting = false,
   }, Worker)
 end
@@ -114,9 +110,46 @@ function Worker:_fail(message)
   end
   self.lifecycle = "failed"
   self.lifecycleError = message
-  self.pendingRetire = nil
   self.pendingQuiesce = nil
   self.deferredSelect = nil
+  self.reply:push({ op = "controller-failure", errorMessage = message })
+end
+
+---@param epoch integer
+---@param requestId integer
+---@param observation table<string, unknown> terminal ready/failed observation
+function Worker:_emitRequestResult(epoch, requestId, observation)
+  local packet = { op = "request-result", epoch = epoch, requestId = requestId, state = observation.state }
+  if observation.state == "failed" then
+    packet.errorMessage = observation.errorMessage or ""
+    packet.errorCode = observation.errorCode or ""
+  end
+  self.reply:push(packet)
+end
+
+---@param epoch integer
+---@param barrierId integer
+---@param kind string "retire" or "quiesce"
+function Worker:_emitBarrierResult(epoch, barrierId, kind)
+  self.reply:push({ op = "barrier-result", epoch = epoch, barrierId = barrierId, kind = kind })
+end
+
+-- Re-observe only the still-pending application-originated request records
+-- after session progress and emit exactly one terminal event per settled
+-- request. Emitted records leave the table, so a terminal fact can never
+-- be pushed twice and memory stays bounded by the selection lifecycle.
+function Worker:_flushTerminalRequests()
+  if self.session == nil or self.liveEpoch == nil then
+    return
+  end
+  local epoch = self.liveEpoch
+  for requestId, record in pairs(self.requests) do
+    local observation = self:_observe(record.params)
+    if observation.state == "ready" or observation.state == "failed" then
+      self.requests[requestId] = nil
+      self:_emitRequestResult(epoch, requestId, observation)
+    end
+  end
 end
 
 local function formatError(value)
@@ -331,11 +364,8 @@ function Worker:_applySelect(command)
   end
   self.liveEpoch = epoch
   self.lastRetiredEpoch = nil
-  self.generationId = identity.generationId
   self.lifecycle = "active"
   self.requests = {}
-  self.retiredBarrierId = nil
-  self.quiescedBarrierId = nil
   self:_answerSelect({ epoch = epoch, ok = true, generationId = identity.generationId })
 end
 
@@ -391,12 +421,23 @@ function Worker:_applyRequest(command)
     pageId = command.pageId,
   }
   local selectorError = validateSelectors(params)
-  self.requests[command.requestId] = { params = params, observation = nil, invalid = selectorError }
   if selectorError ~= nil then
+    self.reply:push({
+      op = "request-result",
+      epoch = command.epoch,
+      requestId = command.requestId,
+      state = "failed",
+      errorMessage = selectorError,
+      errorCode = "protocol",
+    })
     return
   end
+  self.requests[command.requestId] = { params = params }
   local observation = self:_observe(params)
-  self.requests[command.requestId].observation = observation
+  if observation.state == "ready" or observation.state == "failed" then
+    self.requests[command.requestId] = nil
+    self:_emitRequestResult(command.epoch, command.requestId, observation)
+  end
 end
 
 ---@param command table<string, unknown>
@@ -405,11 +446,15 @@ function Worker:_applyPromote(command)
     return
   end
   local record = self.requests[command.requestId]
-  if record == nil or record.invalid ~= nil then
+  if record == nil then
     return
   end
   record.params.urgency = "required"
-  record.observation = self:_observe(record.params)
+  local observation = self:_observe(record.params)
+  if observation.state == "ready" or observation.state == "failed" then
+    self.requests[command.requestId] = nil
+    self:_emitRequestResult(command.epoch, command.requestId, observation)
+  end
 end
 
 ---@param command table<string, unknown>
@@ -453,11 +498,9 @@ function Worker:_applyRetire(command)
   end
   self.lastRetiredEpoch = command.epoch
   self.liveEpoch = nil
-  self.generationId = nil
   self.requests = {}
   self.lifecycle = "retiring"
-  self.retiredBarrierId = command.barrierId
-  self.pendingRetire = nil
+  self:_emitBarrierResult(command.epoch, command.barrierId, "retire")
 end
 
 ---@return boolean
@@ -468,7 +511,7 @@ function Worker:_pumpQuiesce()
   end
   local pool = self.pool
   if pool == nil then
-    self.quiescedBarrierId = pending.barrierId
+    self:_emitBarrierResult(pending.epoch, pending.barrierId, "quiesce")
     self.lifecycle = "quiescent"
     self.pendingQuiesce = nil
     return true
@@ -488,7 +531,7 @@ function Worker:_pumpQuiesce()
     return false
   end
   if quiet then
-    self.quiescedBarrierId = pending.barrierId
+    self:_emitBarrierResult(pending.epoch, pending.barrierId, "quiesce")
     self.lifecycle = "quiescent"
     self.pendingQuiesce = nil
     local deferred = self.deferredSelect
@@ -524,56 +567,6 @@ function Worker:_applyQuiesce(command)
   self:_pumpQuiesce()
 end
 
----@param command table<string, unknown>
-function Worker:_answerPoll(command)
-  local entries = {}
-  local count = math.min(tonumber(command.count) or 0, 8)
-  for position = 1, count do
-    local id = command["id" .. tostring(position)]
-    local record = self.requests[id]
-    local observation
-    if command.epoch ~= self.liveEpoch or record == nil then
-      observation =
-        { state = "failed", completed = 0, total = 0, errorCode = "stale", errorMessage = "unknown request" }
-    elseif record.invalid ~= nil then
-      observation =
-        { state = "failed", completed = 0, total = 0, errorCode = "protocol", errorMessage = record.invalid }
-    elseif self.pendingQuiesce ~= nil then
-      observation = record.observation
-        or { state = "pending", completed = 0, total = 0, errorCode = "", errorMessage = "" }
-    else
-      observation = self:_observe(record.params)
-      record.observation = observation
-    end
-    entries[#entries + 1] = { id = id, observation = observation }
-  end
-  local packet = {
-    op = "poll-result",
-    roundId = command.roundId,
-    epoch = command.epoch,
-    count = #entries,
-    lifecycle = self.lifecycle,
-    generationId = self.generationId or "",
-    lifecycleError = self.lifecycleError or "",
-  }
-  for position, entry in ipairs(entries) do
-    local tag = tostring(position)
-    packet["id" .. tag] = entry.id
-    packet["state" .. tag] = entry.observation.state
-    packet["completed" .. tag] = entry.observation.completed
-    packet["total" .. tag] = entry.observation.total
-    packet["errorCode" .. tag] = entry.observation.errorCode
-    packet["errorMessage" .. tag] = entry.observation.errorMessage
-  end
-  if self.retiredBarrierId ~= nil then
-    packet.retiredBarrierId = self.retiredBarrierId
-  end
-  if self.quiescedBarrierId ~= nil then
-    packet.quiescedBarrierId = self.quiescedBarrierId
-  end
-  self.reply:push(packet)
-end
-
 ---@param command unknown
 function Worker:_handle(command)
   if type(command) ~= "table" then
@@ -588,9 +581,6 @@ function Worker:_handle(command)
     return
   end
   if self.lifecycle == "failed" then
-    if op == "poll" then
-      self:_answerPoll(command)
-    end
     return
   end
   if op == "select" then
@@ -635,13 +625,6 @@ function Worker:_handle(command)
     if not ok then
       self:_fail("controller quiescence failed: " .. formatError(failure))
     end
-  elseif op == "poll" then
-    local ok, failure = pcall(function()
-      self:_answerPoll(command)
-    end)
-    if not ok then
-      self:_fail("controller status observation failed: " .. formatError(failure))
-    end
   end
 end
 
@@ -682,6 +665,8 @@ function Worker:step()
     end)
     if not ok then
       self:_fail("controller session pump failed: " .. formatError(failure))
+    else
+      self:_flushTerminalRequests()
     end
     return
   end

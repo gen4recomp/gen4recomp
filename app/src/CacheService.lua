@@ -1,14 +1,13 @@
 -- Process-owned transport to the single off-main cache controller. The
--- service owns channel identities, a bounded outbox, one outstanding
--- eight-ID status round, deduplicated semantic observations, and epoch and
--- barrier bookkeeping only. It mirrors no dependency graph, performs no
--- producer hashing, filesystem traversal, publication, recovery, or
--- source-plan parsing, and never waits on a channel: requests return cached
--- ready/error observations, lifecycle progress arrives through exact barrier
--- acknowledgements, and process shutdown alone joins the controller thread.
+-- service owns channel identities, a bounded outbox, deduplicated semantic
+-- observations, and epoch and barrier bookkeeping only. It mirrors no
+-- dependency graph, performs no producer hashing, filesystem traversal,
+-- publication, recovery, or source-plan parsing, and never waits on a
+-- channel: requests return cached ready/error observations, terminal
+-- request/barrier/failure facts arrive as pushed controller events, and
+-- process shutdown alone joins the controller thread.
 
 local ORDINARY_PER_UPDATE = 8
-local POLL_IDS_PER_ROUND = 8
 local ABSORB_PER_UPDATE = 32
 
 local VALID_KINDS =
@@ -27,13 +26,11 @@ local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
 ---@field _liveEpoch integer?
 ---@field _retiring boolean
 ---@field _nextRequestId integer
----@field _nextRoundId integer
 ---@field _nextBarrierId integer
 ---@field _records table<integer, table<string, unknown>> requestId -> record
 ---@field _byKey table<string, integer> epoch:key -> requestId
 ---@field _controls table<string, unknown>[] lifecycle commands awaiting emission
 ---@field _ordinary table<string, unknown>[] request/promote commands awaiting emission
----@field _outstanding table<string, unknown>? the one in-flight poll round
 ---@field _barriers table<string, table<string, unknown>> "epoch:barrier" -> waiter
 ---@field _failure string? terminal controller failure, never restarted
 ---@field _generations table<integer, string> controller-derived generation token by epoch
@@ -67,13 +64,11 @@ function CacheService.new(options)
     _liveEpoch = nil,
     _retiring = false,
     _nextRequestId = 0,
-    _nextRoundId = 0,
     _nextBarrierId = 0,
     _records = {},
     _byKey = {},
     _controls = {},
     _ordinary = {},
-    _outstanding = nil,
     _barriers = {},
     _generations = {},
     _failure = nil,
@@ -93,7 +88,7 @@ local function selectorKey(selector)
   local kind = selector.requestKind
   assert(VALID_KINDS[kind], "unknown cache request kind: " .. tostring(kind))
   -- Observations may omit urgency: the dedup key never carries it, so a
-  -- status probe addresses the same record its request registered.
+  -- terminal event addresses the same record its request registered.
   local urgency = selector.urgency
   if urgency ~= nil then
     assert(VALID_URGENCIES[urgency], "unknown cache urgency: " .. tostring(urgency))
@@ -402,7 +397,6 @@ function CacheService:_enterTerminalFailure(cause)
   self._failure = "controller thread stopped: " .. tostring(cause)
   self._controls = {}
   self._ordinary = {}
-  self._outstanding = nil
 end
 
 function CacheService:_checkWorkerHealth()
@@ -437,82 +431,64 @@ function CacheService:_absorb(packet)
     return
   end
   local op = packet.op
-  if op == "poll-result" then
-    self:_absorbPollResult(packet)
-    return
-  end
   if op == "select-result" then
     self:_absorbSelectResult(packet)
-    return
+  elseif op == "request-result" then
+    self:_absorbRequestResult(packet)
+  elseif op == "barrier-result" then
+    self:_absorbBarrierResult(packet)
+  elseif op == "controller-failure" then
+    self:_enterTerminalFailure(packet.errorMessage)
   end
-  self:_absorbObservation(packet)
 end
 
+-- A pushed terminal request fact lands only in its exact record: the
+-- packet epoch must be live and the request identity must belong to it.
+-- Stale or unknown results are ignored.
 ---@param packet table<string, unknown>
-function CacheService:_absorbPollResult(packet)
-  local outstanding = self._outstanding
-  if outstanding == nil or packet.roundId ~= outstanding.round then
-    return
-  end
-  -- The round is over whether or not its epoch is still live: clearing a
-  -- stale round lets a new epoch poll again instead of wedging behind an
-  -- obsolete answer.
-  self._outstanding = nil
-  -- Barrier acknowledgements are lifecycle facts, not request
-  -- observations: a retiring selection or an already-retired epoch still
-  -- needs its retirement/quiescence answers, or the import wait behind
-  -- them can never complete. Barrier identities are process-monotone, so
-  -- a late duplicate can only confirm an already-settled waiter, never
-  -- satisfy a newer one early.
-  if packet.retiredBarrierId ~= nil then
-    for _, waiter in pairs(self._barriers) do
-      if waiter.quiesce ~= true and waiter.state == "pending" and waiter.barrier <= packet.retiredBarrierId then
-        waiter.state = "ready"
-      end
-    end
-    if self._retiring then
-      self._liveEpoch = nil
-      self._retiring = false
-    end
-  end
-  if packet.quiescedBarrierId ~= nil then
-    for _, waiter in pairs(self._barriers) do
-      if waiter.quiesce == true and waiter.state == "pending" and waiter.barrier <= packet.quiescedBarrierId then
-        waiter.state = "ready"
-      end
-    end
-  end
+function CacheService:_absorbRequestResult(packet)
   if packet.epoch ~= self._liveEpoch or self._retiring then
     return
   end
-  if type(packet.generationId) == "string" and packet.generationId ~= "" then
-    self._generations[packet.epoch] = packet.generationId
-  end
-  local count = math.min(tonumber(packet.count) or 0, POLL_IDS_PER_ROUND)
-  for position = 1, count do
-    local tag = tostring(position)
-    local id = packet["id" .. tag]
-    local record = self._records[id]
-    if record ~= nil and record.epoch == self._liveEpoch and not record.terminal then
-      local state = packet["state" .. tag]
-      if state == "ready" then
-        record.terminal = true
-        record.ready = true
-        record.failure = nil
-      elseif state == "failed" then
-        record.terminal = true
-        record.ready = false
-        local message = packet["errorMessage" .. tag]
-        if message == nil or message == "" then
-          message = packet["errorCode" .. tag]
-        end
-        record.failure = message
-      end
-    end
-  end
-  if packet.lifecycle == "failed" and (packet.lifecycleError or "") ~= "" then
-    self:_enterTerminalFailure(packet.lifecycleError)
+  local record = self._records[packet.requestId]
+  if record == nil or record.epoch ~= self._liveEpoch or record.terminal then
     return
+  end
+  if packet.state == "ready" then
+    record.terminal = true
+    record.ready = true
+    record.failure = nil
+  elseif packet.state == "failed" then
+    record.terminal = true
+    record.ready = false
+    record.failure = packet.errorMessage or packet.errorCode
+  end
+end
+
+-- A pushed barrier fact settles only its exact waiter: epoch, barrier
+-- identity, and kind must all match. An older identity never satisfies a
+-- newer waiter by ordering alone.
+---@param packet table<string, unknown>
+function CacheService:_absorbBarrierResult(packet)
+  local waiter = self._barriers[tostring(packet.epoch) .. ":" .. tostring(packet.barrierId)]
+  if waiter == nil or waiter.state ~= "pending" then
+    return
+  end
+  if packet.kind == "quiesce" then
+    if waiter.quiesce ~= true then
+      return
+    end
+  elseif packet.kind == "retire" then
+    if waiter.quiesce == true then
+      return
+    end
+  else
+    return
+  end
+  waiter.state = "ready"
+  if packet.kind == "retire" and waiter.epoch == self._liveEpoch and self._retiring then
+    self._liveEpoch = nil
+    self._retiring = false
   end
 end
 
@@ -538,68 +514,9 @@ function CacheService:_absorbSelectResult(packet)
   end
 end
 
----@param packet table<string, unknown>
-function CacheService:_absorbObservation(packet)
-  if packet.epoch ~= self._liveEpoch or self._retiring then
-    return
-  end
-  local key
-  if packet.requestKind == "milestone" then
-    key = "milestone:" .. tostring(packet.name)
-  elseif packet.requestKind == "field" or packet.requestKind == "logical-field" then
-    key = packet.requestKind .. ":" .. tostring(packet.mapId)
-  elseif packet.requestKind == "cell" then
-    key = "cell:" .. tostring(packet.matrixMemberId) .. ":" .. tostring(packet.index)
-  elseif packet.requestKind == "portrait" then
-    key = "portrait:" .. tostring(packet.pageId)
-  elseif packet.requestKind == "icon-page" then
-    key = "icon-page:" .. tostring(packet.pageId)
-  else
-    return
-  end
-  local id = self._byKey[tostring(packet.epoch) .. ":" .. key]
-  if id == nil then
-    return
-  end
-  local record = self._records[id]
-  if record == nil or record.terminal then
-    return
-  end
-  if packet.state == "ready" then
-    record.terminal = true
-    record.ready = true
-  elseif packet.state == "failed" then
-    record.terminal = true
-    record.ready = false
-    record.failure = packet.errorMessage or packet.errorCode
-  end
-end
-
----@return integer[] pending request identities for the live epoch
-function CacheService:_pendingPollIds()
-  local ids = {}
-  for id, record in pairs(self._records) do
-    if record.epoch == self._liveEpoch and not record.terminal then
-      ids[#ids + 1] = id
-    end
-  end
-  table.sort(ids)
-  return ids
-end
-
----@return boolean waiter true while an unacknowledged barrier needs polling
-function CacheService:_barrierWaiter()
-  for _, waiter in pairs(self._barriers) do
-    if waiter.state == "pending" then
-      return true
-    end
-  end
-  return false
-end
-
 ---@return table<string, integer> emitted counts for the frame
 function CacheService:_emit()
-  local sent = { ordinary = 0, polls = 0 }
+  local sent = { ordinary = 0 }
   for _, command in ipairs(self._controls) do
     self._command:push(command)
   end
@@ -624,68 +541,26 @@ function CacheService:_emit()
     end
     self._ordinary = waiting
   end
-  -- Barrier acknowledgements must keep flowing while retiring and after
-  -- retirement clears the live epoch: those rounds carry no request
-  -- observations (count 0), only the latest barrier identities, so a
-  -- quiescence wait behind them can complete instead of wedging.
-  local epoch = self._liveEpoch
-  local ids = {}
-  if epoch ~= nil and not self._retiring then
-    ids = self:_pendingPollIds()
-  elseif epoch == nil then
-    epoch = self:_pendingBarrierEpoch()
-  end
-  if self._outstanding == nil and epoch ~= nil and (#ids > 0 or self:_barrierWaiter()) then
-    self._nextRoundId = self._nextRoundId + 1
-    local packet = { op = "poll", roundId = self._nextRoundId, epoch = epoch, count = 0 }
-    local take = math.min(#ids, POLL_IDS_PER_ROUND)
-    packet.count = take
-    for position = 1, take do
-      packet["id" .. tostring(position)] = ids[position]
-    end
-    self._command:push(packet)
-    self._outstanding = { round = self._nextRoundId }
-    sent.polls = 1
-  end
   return sent
 end
 
--- Pump the transport once: absorb at most one result packet, emit at most
--- eight queued ordinary records plus one poll packet. Never blocks, never
--- performs producer or filesystem work.
----@return integer? epoch of the oldest pending barrier waiter, when one waits
-function CacheService:_pendingBarrierEpoch()
-  local found = nil
-  for _, waiter in pairs(self._barriers) do
-    if waiter.state == "pending" and (found == nil or waiter.epoch < found) then
-      found = waiter.epoch
-    end
-  end
-  return found
-end
-
+-- Pump the transport once: absorb a bounded batch of pushed terminal
+-- events, then emit at most eight queued ordinary records. Never blocks,
+-- never performs producer or filesystem work.
 ---@return table<string, integer> emitted counts for the frame
 function CacheService:update()
   self:_checkWorkerHealth()
   local absorbed = 0
-  local processedResult = false
   while absorbed < ABSORB_PER_UPDATE do
     local packet = self._reply:pop()
     if packet == nil then
       break
     end
     absorbed = absorbed + 1
-    if type(packet) == "table" and packet.op == "poll-result" then
-      if not processedResult then
-        processedResult = true
-        self:_absorb(packet)
-      end
-    else
-      self:_absorb(packet)
-    end
+    self:_absorb(packet)
   end
   if self._failure ~= nil then
-    return { ordinary = 0, polls = 0 }
+    return { ordinary = 0 }
   end
   return self:_emit()
 end
@@ -700,7 +575,6 @@ function CacheService:shutdown()
   self._joined = true
   self._controls = {}
   self._ordinary = {}
-  self._outstanding = nil
   if not self._started then
     return
   end
