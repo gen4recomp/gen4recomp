@@ -591,7 +591,10 @@ function FieldRuntime:_load()
       cacheFs:loadLua(FieldUiAssetCache.manifestPath()),
       "field UI cache is cold -- run `scripts/buildcache.sh` first"
     )
-    assert(FieldUiAssetCache.validateManifest(uiManifest), "field UI manifest is invalid")
+    assert(
+      type(uiManifest) == "table" and uiManifest.schema == FieldUiAssetCache.SCHEMA,
+      "field UI manifest is invalid"
+    )
     -- The window-style catalogue is composed per runtime from the generated
     -- manifest: the production-owned built-in styles, immutable from then on.
     self.windowStyles = FieldWindowStyles.new(uiManifest)

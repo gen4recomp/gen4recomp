@@ -96,11 +96,9 @@ function OakIntroComposition.compose(options)
   local cacheFs = CacheFs.forVersion(options.versionId)
   local introManifest =
     validManifest(assert(cacheFs:loadLua(IntroAssetCache.manifestPath())), IntroAssetCache.validateManifest, "intro")
-  local uiManifest = validManifest(
-    assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath())),
-    FieldUiAssetCache.validateManifest,
-    "field UI"
-  )
+  local uiManifest = validManifest(assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath())), function(manifest)
+    return type(manifest) == "table" and manifest.schema == FieldUiAssetCache.SCHEMA
+  end, "field UI")
   local fontDef = FieldFontLoader.load(cacheFs)
   local frameIndexes = {}
   for frame = 0, uiManifest.dialogueFrames.count - 1 do

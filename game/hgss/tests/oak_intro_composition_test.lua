@@ -92,7 +92,10 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
         return {}
       end
       if path == fieldUiCache.manifestPath() then
-        return { dialogueFrames = { count = 0, continueCursor = { placement = {} } } }
+        return {
+          schema = fieldUiCache.SCHEMA,
+          dialogueFrames = { count = 0, continueCursor = { placement = {} } },
+        }
       end
       error("unexpected cache path " .. path)
     end,

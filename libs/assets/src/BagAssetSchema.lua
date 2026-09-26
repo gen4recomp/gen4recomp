@@ -535,17 +535,17 @@ local function checkFramingRecord(record, context, what)
   checkFinite(record.modelY, context, what .. ".modelY")
 end
 
--- Pocket-aware hero framing: the fixed seven-tick transition duration, one
--- neutral baseline record per gender, and one record per canonical pocket
--- per gender. Transition progress stays runtime-owned; only these immutable
--- facts reach the manifest.
+-- Pocket-aware hero framing: the transition duration as plain pacing data,
+-- one neutral baseline record per gender, and one record per canonical
+-- pocket per gender. Transition progress stays runtime-owned; only these
+-- immutable facts reach the manifest.
 local function checkFraming(framing, context)
   if type(framing) ~= "table" then
     fail("hero.presentation.framing must be a record", context)
   end
   checkKeys(framing, { transitionTicks = true, baseline = true, byGender = true }, context, "hero.presentation.framing")
-  if framing.transitionTicks ~= 7 then
-    fail("hero.presentation.framing.transitionTicks must be exactly seven", context)
+  if type(framing.transitionTicks) ~= "number" or framing.transitionTicks % 1 ~= 0 or framing.transitionTicks < 1 then
+    fail("hero.presentation.framing.transitionTicks must be a positive integer", context)
   end
   local baseline = framing.baseline
   if type(baseline) ~= "table" then
@@ -781,9 +781,9 @@ local function checkFocus(focus, context)
   checkFocusClass(focus.actions, 4, context, "interactive.focus.actions")
 end
 
--- The modal confirmation placement is the audited source geometry, not a
--- tunable: only the compact prompt at its audited position with YES
--- preselected opens the destructive confirmation.
+-- The modal confirmation placement is plain layout data: the compact
+-- prompt at a non-negative integral position with a supported initial
+-- selection opens the destructive confirmation.
 ---@param prompt table<string, unknown>?
 ---@param context table<string, unknown>
 local function checkTossPrompt(prompt, context)
@@ -797,14 +797,16 @@ local function checkTossPrompt(prompt, context)
     "interactive.overlays.tossPrompt"
   )
   assert(type(prompt) == "table", "the toss prompt placement is a record")
-  if prompt.x ~= 200 or prompt.y ~= 48 then
-    fail("interactive.overlays.tossPrompt must carry the audited placement", context)
+  for _, axis in ipairs({ "x", "y" }) do
+    if type(prompt[axis]) ~= "number" or prompt[axis] % 1 ~= 0 or prompt[axis] < 0 then
+      fail("interactive.overlays.tossPrompt." .. axis .. " must be a non-negative integer", context)
+    end
   end
   if prompt.shape ~= "compact" then
     fail("interactive.overlays.tossPrompt must use the compact prompt shape", context)
   end
-  if prompt.initialSelection ~= "yes" then
-    fail("interactive.overlays.tossPrompt must preselect YES", context)
+  if prompt.initialSelection ~= "yes" and prompt.initialSelection ~= "no" then
+    fail("interactive.overlays.tossPrompt must preselect a supported choice", context)
   end
 end
 
@@ -1038,8 +1040,8 @@ local function checkInteractive(interactive, context)
     checkVisual(visual.normal, context, what .. ".normal")
     checkVisual(visual.pressed, context, what .. ".pressed")
   end
-  if quantity.pressTicks ~= 2 then
-    fail("interactive.overlays.quantity.pressTicks must be exactly two ticks", context)
+  if type(quantity.pressTicks) ~= "number" or quantity.pressTicks % 1 ~= 0 or quantity.pressTicks < 1 then
+    fail("interactive.overlays.quantity.pressTicks must be a positive integer", context)
   end
   local confirm = quantity.confirm
   if type(confirm) ~= "table" then

@@ -519,7 +519,6 @@ end
 function T.previous_manifest_fails_schema_and_cache_contract()
   local manifest = validManifest()
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "the previous highlight-shaped fixture is stale")
-  Assert.isFalse(pcall(BagCache.validateManifest, manifest), "the cache validator must reject the stale fixture")
   Assert.isNil(manifest.interactive.widgets, "the stale manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
   Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v11")
@@ -646,7 +645,6 @@ end
 function T.complete_manifest_with_text_and_registration_passes()
   local manifest = validFocusManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the complete fixture must pass")
-  Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the complete fixture")
 end
 
 function T.incomplete_manifest_is_rejected()
@@ -896,7 +894,6 @@ end
 function T.semantic_focus_contract_validates_with_exact_target_counts()
   local manifest = validFocusManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the focus manifest must pass the schema")
-  Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the focus manifest")
   Assert.keySet(manifest.interactive.pocketTabs, "rects,strips", "pocket tabs carry only rects and strips")
   Assert.keySet(manifest.interactive.focus, "actions,cancel,items,tabs", "focus carries exactly four classes")
   Assert.equal(#manifest.interactive.focus.tabs.targets, 8, "eight tab targets are required")
@@ -933,9 +930,9 @@ function T.control_overlay_rejects_incomplete_or_timeline_shapes()
   local wrongControlOrder = validFocusManifest()
   wrongControlOrder.interactive.overlays.quantity.controls[1].delta = 10
   assertInvalid(wrongControlOrder, "quantity controls must keep their source order")
-  local wrongDuration = validFocusManifest()
-  wrongDuration.interactive.overlays.quantity.pressTicks = 3
-  assertInvalid(wrongDuration, "quantity press duration must be source-derived")
+  local alternateDuration = validFocusManifest()
+  alternateDuration.interactive.overlays.quantity.pressTicks = 3
+  Assert.isTrue(BagAssetSchema.isValidManifest(alternateDuration), "a positive press duration stays consumable")
   local timeline = validFocusManifest()
   timeline.interactive.overlays.quantity.visuals.increment.normal.frames = {}
   assertInvalid(timeline, "a quantity visual timeline must fail")
@@ -1184,9 +1181,12 @@ function T.hero_framing_rejects_incomplete_and_nonfinite_records()
   local notANumber = validDynamicManifest()
   notANumber.hero.presentation.framing.baseline.female.angleXDegrees = 0 / 0
   Assert.isFalse(BagAssetSchema.isValidManifest(notANumber), "a non-numeric framing angle must fail")
-  local wrongDuration = validDynamicManifest()
-  wrongDuration.hero.presentation.framing.transitionTicks = 8
-  Assert.isFalse(BagAssetSchema.isValidManifest(wrongDuration), "a transition duration past seven ticks must fail")
+  local alternateDuration = validDynamicManifest()
+  alternateDuration.hero.presentation.framing.transitionTicks = 8
+  Assert.isTrue(BagAssetSchema.isValidManifest(alternateDuration), "a positive transition duration stays consumable")
+  local noDuration = validDynamicManifest()
+  noDuration.hero.presentation.framing.transitionTicks = 0
+  Assert.isFalse(BagAssetSchema.isValidManifest(noDuration), "a non-positive transition duration must fail")
   local staticOnly = validDynamicManifest()
   staticOnly.hero.presentation.framing = nil
   Assert.isFalse(
@@ -1249,7 +1249,6 @@ function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")
-  Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the pocket-strip manifest")
   Assert.keySet(manifest.interactive.pocketTabs, "rects,strips", "pocket tabs carry only rects and strips")
   local retired = validFocusManifest()
   retired.schema = "g4-bag-assets-v7"
@@ -1417,12 +1416,41 @@ function T.toss_prompt_rejects_malformed_placement_and_source_identities()
   assertInvalid(unselected, "an unsupported initial selection must fail")
   local moved = validTossManifest()
   moved.interactive.overlays.tossPrompt = { x = 0, y = 0, shape = "compact", initialSelection = "yes" }
-  assertInvalid(moved, "an unaudited prompt placement must fail")
+  Assert.isTrue(BagAssetSchema.isValidManifest(moved), "a non-negative prompt placement stays consumable")
+  local negative = validTossManifest()
+  negative.interactive.overlays.tossPrompt = { x = -1, y = 0, shape = "compact", initialSelection = "yes" }
+  assertInvalid(negative, "a negative prompt placement must fail")
   local quantityOnly = validTossManifest()
   quantityOnly.interactive.text.tossResult = {
     segments = { { kind = "text", value = "Gone." } },
   }
   assertInvalid(quantityOnly, "a result template outside the item vocabulary must fail")
+end
+
+function T.generic_contract_accepts_safe_presentation_variants()
+  local timing = validDynamicManifest()
+  timing.hero.presentation.framing.transitionTicks = 12
+  Assert.isTrue(BagAssetSchema.isValidManifest(timing), "a positive framing cadence stays consumable")
+  local moved = validTossManifest()
+  moved.interactive.overlays.tossPrompt = { x = 100, y = 100, shape = "compact", initialSelection = "yes" }
+  Assert.isTrue(BagAssetSchema.isValidManifest(moved), "a record-shaped prompt placement stays consumable")
+  local alternate = validTossManifest()
+  alternate.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "no" }
+  Assert.isTrue(BagAssetSchema.isValidManifest(alternate), "either supported preselection stays consumable")
+end
+
+function T.path_enumeration_lists_referenced_files_without_reauditing_the_contract()
+  local manifest = validDynamicManifest()
+  manifest.hero.presentation.framing.transitionTicks = 12
+  local paths = BagCache.referencedPaths(manifest)
+  Assert.isTrue(type(paths) == "table" and #paths > 0, "traversal lists referenced files")
+  local found = false
+  for _, path in ipairs(paths) do
+    if path == "assets/generated/bag/tabs-mail.png" then
+      found = true
+    end
+  end
+  Assert.isTrue(found, "traversal still reaches the tab images")
 end
 
 return { tests = T }

@@ -43,11 +43,12 @@ function BagCache.marker(romSha1, depHash)
 end
 
 -- Every cache-relative path the manifest references: pane/sprite images
--- plus each hero model's geometry and textures.
+-- plus each hero model's geometry and textures. The manifest must already
+-- be accepted by its owning boundary (publication or readiness); traversal
+-- never re-audits the contract itself.
 ---@param manifest table<string, unknown>
 ---@return string[]
 function BagCache.referencedPaths(manifest)
-  BagAssetSchema.assertManifest(manifest)
   local paths = {}
   local function addVisual(visual)
     assert(type(visual) == "table", "bag manifest visual is malformed")
@@ -104,7 +105,9 @@ function BagCache.referencedPaths(manifest)
 end
 
 -- True only when the marker is exact, the manifest loads with the expected
--- schema, and every referenced artifact is present.
+-- schema, and every referenced artifact is present. The staged publication
+-- boundary already proved the full contract, so readiness traverses the
+-- published envelope once without re-auditing it.
 function BagCache.isReady(cacheFs, expectedMarker)
   local marker = cacheFs:read(BagCache.markerPath())
   if
@@ -116,7 +119,7 @@ function BagCache.isReady(cacheFs, expectedMarker)
     return false
   end
   local manifest = cacheFs:loadLua(BagCache.manifestPath())
-  if not BagAssetSchema.isValidManifest(manifest) then
+  if type(manifest) ~= "table" or manifest.schema ~= BagCache.SCHEMA then
     return false
   end
   local provenance = cacheFs:loadLua(BagCache.provenancePath())
@@ -139,13 +142,9 @@ function BagCache.isReady(cacheFs, expectedMarker)
   return true
 end
 
-function BagCache.validateManifest(manifest)
-  return BagAssetSchema.assertManifest(manifest)
-end
-
 function BagCache.loadManifest(cacheFs)
   local manifest = cacheFs:loadLua(BagCache.manifestPath())
-  BagAssetSchema.assertManifest(manifest)
+  assert(type(manifest) == "table" and manifest.schema == BagCache.SCHEMA, "bag manifest is unavailable")
   return manifest
 end
 

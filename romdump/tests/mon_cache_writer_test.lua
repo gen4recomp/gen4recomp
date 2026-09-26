@@ -343,4 +343,16 @@ function T.failed_layout_handoff_preserves_the_previous_layout()
   Assert.isTrue(ready, "the previous handoff remains ready")
 end
 
+function T.page_readiness_trusts_the_staged_marker_and_file_presence()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = MonCache.marker("synthetic-rom", "synthetic-deps")
+  cache:write(MonCache.pageMarkerPath("icons", 0), marker)
+  cache:write(MonCache.pageImagePath("icons", 0), "staged-bytes-without-envelope")
+  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, marker), "a staged page reads ready by marker and presence")
+  Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, "other-marker"), "a marker mismatch is not ready")
+  local missing = CacheFs.forVersion("heartgold", FakeCache.new())
+  missing:write(MonCache.pageMarkerPath("icons", 0), marker)
+  Assert.isFalse(MonCache.isPageReady(missing, "icons", 0, marker), "a missing page file is not ready")
+end
+
 return { tests = T }

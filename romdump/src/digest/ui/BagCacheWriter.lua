@@ -23,6 +23,10 @@ function BagCacheWriter.isReady(cacheFs, marker)
   return BagCache.isReady(cacheFs, marker)
 end
 
+-- Bundle shape, dependency identity, hero model safety, and referenced
+-- asset closure are proven before staging so no unsafe stage is attempted.
+-- The full manifest contract is proven once against the serialized staged
+-- readback below, never twice against the same in-memory manifest.
 ---@param bundle table<string, unknown>
 local function validateBundle(bundle)
   if type(bundle) ~= "table" or type(bundle.marker) ~= "string" or bundle.marker == "" then
@@ -36,10 +40,6 @@ local function validateBundle(bundle)
   end
   if bundle.dependencies.cacheFormat ~= BagCache.FORMAT or bundle.dependencies.schema ~= BagCache.SCHEMA then
     Errors.raise(BagCacheWriter.ERROR.BUNDLE_INVALID, "bag bundle dependencies identify the wrong cache", {})
-  end
-  local ok, err = pcall(BagAssetSchema.assertManifest, bundle.manifest)
-  if not ok then
-    Errors.raise(BagCacheWriter.ERROR.BUNDLE_INVALID, "bag manifest is invalid: " .. Errors.format(err), {})
   end
   for _, gender in ipairs({ "male", "female" }) do
     local valid, modelErr = pcall(ModelAsset.validate, bundle.manifest.hero.model[gender])

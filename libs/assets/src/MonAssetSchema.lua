@@ -716,31 +716,13 @@ local function checkManifestRect(rect, context, code, field)
   end
 end
 
--- Presentation manifest validation: the manifest names every page with
--- its image and dimensions, every entry carries its page id with
--- page-local rectangles and animation frames, and every representative
--- selector resolves. No source archive, member, or palette identity may
--- appear here: pages are source-independent.
-function MonAssetSchema.assertManifest(manifest, expectedSchema)
-  local context = {}
-  if type(manifest) ~= "table" then
-    fail("MON_MANIFEST_INVALID", "manifest must be a record", context)
-  end
-  checkKeys(
-    manifest,
-    { schema = true, version = true, pages = true, pageIds = true, entries = true, representative = true },
-    context,
-    "MON_MANIFEST_INVALID"
-  )
-  if manifest.schema ~= expectedSchema then
-    fail("MON_MANIFEST_INVALID", "manifest schema must be " .. expectedSchema, context)
-  end
-  if type(manifest.version) ~= "table" then
-    fail("MON_MANIFEST_INVALID", "manifest version must be a record", context)
-  end
-  checkKeys(manifest.version, { id = true, language = true }, context, "MON_MANIFEST_INVALID")
-  checkNonEmptyString(manifest.version.id, context, "MON_MANIFEST_INVALID", "manifest version id")
-  checkNonEmptyString(manifest.version.language, context, "MON_MANIFEST_INVALID", "manifest version language")
+-- Page inventory validation: every page carries its own id with a named
+-- image and positive dimensions, and the pageIds array inventories exactly
+-- those pages consecutively from zero so staged page markers stay aligned
+-- with the published inventory.
+---@param manifest table<string, unknown>
+---@param context table<string, unknown>
+local function checkManifestPages(manifest, context)
   if type(manifest.pages) ~= "table" then
     fail("MON_MANIFEST_INVALID", "manifest pages must be a record", context)
   end
@@ -778,6 +760,15 @@ function MonAssetSchema.assertManifest(manifest, expectedSchema)
       fail("MON_MANIFEST_INVALID", "manifest page inventory names undeclared page " .. pageId, context)
     end
   end
+end
+
+-- Entry and frame validation: every selector names a declared page, every
+-- entry and frame rectangle stays inside its page bounds, and the entry
+-- rectangle matches its first frame so the reported dimensions and the
+-- default realized quad never disagree.
+---@param manifest table<string, unknown>
+---@param context table<string, unknown>
+local function checkManifestEntries(manifest, context)
   if type(manifest.entries) ~= "table" then
     fail("MON_MANIFEST_INVALID", "manifest entries must be a record", context)
   end
@@ -852,6 +843,13 @@ function MonAssetSchema.assertManifest(manifest, expectedSchema)
   if entryCount == 0 then
     fail("MON_MANIFEST_INVALID", "manifest must carry entries", context)
   end
+end
+
+-- Representative validation: every representative selector resolves to a
+-- validated entry.
+---@param manifest table<string, unknown>
+---@param context table<string, unknown>
+local function checkManifestRepresentatives(manifest, context)
   if not Validate.isArray(manifest.representative) or #manifest.representative == 0 then
     fail("MON_MANIFEST_INVALID", "manifest must carry representative selectors", context)
   end
@@ -860,6 +858,36 @@ function MonAssetSchema.assertManifest(manifest, expectedSchema)
       fail("MON_MANIFEST_INVALID", "representative selector has no entry: " .. tostring(selector), context)
     end
   end
+end
+
+-- Presentation manifest validation: the manifest names every page with
+-- its image and dimensions, every entry carries its page id with
+-- page-local rectangles and animation frames, and every representative
+-- selector resolves. No source archive, member, or palette identity may
+-- appear here: pages are source-independent.
+function MonAssetSchema.assertManifest(manifest, expectedSchema)
+  local context = {}
+  if type(manifest) ~= "table" then
+    fail("MON_MANIFEST_INVALID", "manifest must be a record", context)
+  end
+  checkKeys(
+    manifest,
+    { schema = true, version = true, pages = true, pageIds = true, entries = true, representative = true },
+    context,
+    "MON_MANIFEST_INVALID"
+  )
+  if manifest.schema ~= expectedSchema then
+    fail("MON_MANIFEST_INVALID", "manifest schema must be " .. expectedSchema, context)
+  end
+  if type(manifest.version) ~= "table" then
+    fail("MON_MANIFEST_INVALID", "manifest version must be a record", context)
+  end
+  checkKeys(manifest.version, { id = true, language = true }, context, "MON_MANIFEST_INVALID")
+  checkNonEmptyString(manifest.version.id, context, "MON_MANIFEST_INVALID", "manifest version id")
+  checkNonEmptyString(manifest.version.language, context, "MON_MANIFEST_INVALID", "manifest version language")
+  checkManifestPages(manifest, context)
+  checkManifestEntries(manifest, context)
+  checkManifestRepresentatives(manifest, context)
   return true
 end
 

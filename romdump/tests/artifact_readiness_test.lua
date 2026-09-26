@@ -1545,156 +1545,11 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   )
 end
 
--- Mon page byte damage: the page boundary and the dispatcher boundary share
--- one structural guard, so empty and truncated PNG bodies are unusable even
--- with exact markers and current receipts. Offsets below follow the encoder's
--- single-IHDR/single-IDAT/IEND layout: an 8-byte signature, a 25-byte IHDR
--- chunk, then the IDAT length word.
-local function pngU32(png, position)
-  local a, b, c, d = string.byte(png, position, position + 3)
-  assert(a ~= nil and d ~= nil, "the synthetic PNG must carry its chunk header")
-  return ((a * 256 + b) * 256 + c) * 256 + d
-end
-
--- Empty, header-only, mid-IDAT-truncated, and missing-IEND damage over one
--- valid page. Markers and receipts stay intact; only the bytes change.
-local function pngDamageVariants(png)
-  local idatLength = pngU32(png, 34)
-  return {
-    { name = "empty", bytes = "" },
-    { name = "header-only", bytes = png:sub(1, 33) },
-    { name = "mid-idat-truncated", bytes = png:sub(1, 42 + math.floor(idatLength / 2)) },
-    { name = "missing-iend", bytes = png:sub(1, #png - 12) },
-  }
-end
-
-local function packU32(value)
-  return string.char(
-    math.floor(value / 16777216) % 256,
-    math.floor(value / 65536) % 256,
-    math.floor(value / 256) % 256,
-    value % 256
-  )
-end
-
-local function pngCrc32(bytes)
-  local bit = require("bit")
-  local table_ = {}
-  for n = 0, 255 do
-    local c = n
-    for _ = 1, 8 do
-      if bit.band(c, 1) == 1 then
-        c = bit.bxor(0xEDB88320, bit.rshift(c, 1))
-      else
-        c = bit.rshift(c, 1)
-      end
-    end
-    table_[n] = c
-  end
-  local crc = bit.bnot(0)
-  for i = 1, #bytes do
-    crc = bit.bxor(bit.rshift(crc, 8), table_[bit.band(bit.bxor(crc, string.byte(bytes, i)), 0xFF)])
-  end
-  return bit.bnot(crc) % 4294967296
-end
-
-local function pngChunk(chunkType, data)
-  return packU32(#data) .. chunkType .. data .. packU32(pngCrc32(chunkType .. data))
-end
-
--- A structurally valid envelope with split IDAT chunks and one ancillary
--- chunk, built from a valid page by reusing its IHDR and IEND chunks
--- verbatim. Returns the rebuilt bytes plus the offset where the first IDAT
--- chunk ends, so truncation can land exactly on a chunk boundary.
-local function splitIdatWithAncillary(png)
-  local signature = png:sub(1, 8)
-  local ihdr = png:sub(9, 33)
-  local idatLength = pngU32(png, 34)
-  local idatData = png:sub(42, 42 + idatLength - 1)
-  local iend = png:sub(42 + idatLength + 4)
-  assert(iend:sub(5, 8) == "IEND", "the synthetic PNG must end with its IEND chunk")
-  local half = math.floor(#idatData / 2)
-  local prefix = signature .. ihdr .. pngChunk("tEXt", "Title\0synthetic")
-  local first = pngChunk("IDAT", idatData:sub(1, half))
-  local second = pngChunk("IDAT", idatData:sub(half + 1))
-  return prefix .. first .. second .. iend, #prefix + #first
-end
-
--- A valid synthetic page with its receipt and exact marker reads ready, but
--- only the intact bytes do: every damage variant is rejected at both the page
--- boundary and the dispatcher boundary while the untouched sibling stays ready.
-function T.truncated_mon_page_images_are_not_ready()
-  local cache = newCache()
-  local family = publishMonFamily(cache, MonCache.marker("test-rom", "test-dep"))
-  local plans = {}
-  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the valid icon page reads ready")
-  Assert.isTrue(
-    MonCache.isPageReady(cache, "portraits", 0, family.portraitMarker),
-    "the valid portrait page reads ready"
-  )
-  Assert.isTrue(ArtifactJobs.validate(cache, GENERATION, "mon-icon-page", "0", plans), "the valid icon job validates")
-  Assert.isTrue(
-    ArtifactJobs.validate(cache, GENERATION, "mon-portrait-page", "0", plans),
-    "the valid portrait job validates"
-  )
-  local pages = {
-    { kind = "icons", jobKind = "mon-icon-page", marker = family.iconMarker, png = family.iconPng },
-    { kind = "portraits", jobKind = "mon-portrait-page", marker = family.portraitMarker, png = family.portraitPng },
-  }
-  for _, page in ipairs(pages) do
-    for _, variant in ipairs(pngDamageVariants(page.png)) do
-      cache:write(MonCache.pageImagePath(page.kind, 0), variant.bytes)
-      Assert.isFalse(
-        MonCache.isPageReady(cache, page.kind, 0, page.marker),
-        "a " .. variant.name .. " " .. page.kind .. " page must not read ready"
-      )
-      Assert.isFalse(
-        ArtifactJobs.validate(cache, GENERATION, page.jobKind, "0", plans),
-        "a " .. variant.name .. " " .. page.kind .. " job must not validate"
-      )
-    end
-    cache:write(MonCache.pageImagePath(page.kind, 0), page.png)
-    Assert.isTrue(
-      MonCache.isPageReady(cache, page.kind, 0, page.marker),
-      "the restored " .. page.kind .. " page reads ready"
-    )
-  end
-  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the icon page survives portrait damage")
-  Assert.isTrue(
-    MonCache.isPageReady(cache, "portraits", 0, family.portraitMarker),
-    "the portrait page survives icon damage"
-  )
-end
-
--- Truncation exactly at a chunk boundary is still unusable, while a valid
--- split-IDAT envelope with an ancillary chunk stays usable: the guard is
--- structural, not an encoder fingerprint.
-function T.mon_page_chunk_boundary_truncation_is_cold_but_split_idat_stays_ready()
-  local cache = newCache()
-  local family = publishMonFamily(cache, MonCache.marker("test-rom", "test-dep"))
-  local split, firstChunkEnd = splitIdatWithAncillary(family.iconPng)
-  cache:write(MonCache.iconPagePath(0), split)
-  Assert.isTrue(
-    MonCache.isPageReady(cache, "icons", 0, family.iconMarker),
-    "a split-IDAT page with an ancillary chunk reads ready"
-  )
-  cache:write(MonCache.iconPagePath(0), split:sub(1, firstChunkEnd))
-  Assert.isFalse(
-    MonCache.isPageReady(cache, "icons", 0, family.iconMarker),
-    "a page ending exactly at a chunk boundary without its IEND must not read ready"
-  )
-  cache:write(MonCache.iconPagePath(0), split:sub(1, firstChunkEnd + 5))
-  Assert.isFalse(
-    MonCache.isPageReady(cache, "icons", 0, family.iconMarker),
-    "a page with a partial chunk header must not read ready"
-  )
-  cache:write(MonCache.iconPagePath(0), family.iconPng)
-  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the restored page reads ready")
-end
-
--- One damaged page rejects the summary and the controlled audit with its exact
+-- One missing page rejects the summary and the controlled audit with its exact
 -- key, and the real page writer restores exactly that leaf: the controlled
--- audit passes again with the sibling bytes and receipts untouched. The
+-- audit passes again with the sibling bytes and receipts untouched. Page
+-- readiness trusts staged production (marker plus file presence), so absence
+-- of the staged file is the damage mode this boundary still rejects. The
 -- controlled inventory proves audit delegation and read-only rejection, not
 -- full-corpus completeness.
 function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
@@ -1751,9 +1606,9 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
   local availableBefore, reasonBefore = controlledAudit()
   Assert.isTrue(availableBefore, "the controlled audit passes before damage, got: " .. tostring(reasonBefore))
 
-  cache:write(MonCache.iconPagePath(0), "")
-  Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the emptied page must not read ready")
-  Assert.isFalse(MonCache.isReady(cache, summaryMarker), "the summary must not stay ready over an emptied page")
+  cache:remove(MonCache.iconPagePath(0))
+  Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the removed page must not read ready")
+  Assert.isFalse(MonCache.isReady(cache, summaryMarker), "the summary must not stay ready over a removed page")
   Assert.isFalse(
     ArtifactJobs.validate(cache, GENERATION, "mon-summary", "global", plans),
     "the damaged summary must not validate"

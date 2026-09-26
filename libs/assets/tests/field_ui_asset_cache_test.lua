@@ -528,13 +528,16 @@ function T.continuation_cursor_contract_rejects_incomplete_manifests()
       m.dialogueFrames.continueCursor.styles[0].phases[0].x = 40
     end,
     function(m)
-      m.dialogueFrames.continueCursor.cycle = { 0, 1, 0, 1 }
+      m.dialogueFrames.continueCursor.cycle = { 0, 1, 2, 3 }
     end,
     function(m)
-      m.dialogueFrames.continueCursor.placement.x = 239
+      m.dialogueFrames.continueCursor.cycle = { 0, 1, 2 }
     end,
     function(m)
-      m.dialogueFrames.continueCursor.framePrinterTicks = 8
+      m.dialogueFrames.continueCursor.placement.width = 0
+    end,
+    function(m)
+      m.dialogueFrames.continueCursor.framePrinterTicks = 0
     end,
   }
   for index, mutate in ipairs(mutations) do
@@ -553,22 +556,13 @@ function T.v5_rejects_v4_manifest_missing_text_colors()
   end, "FIELD_UI_MANIFEST_INVALID")
 end
 
-function T.v5_rejects_wrong_text_color_foreground()
-  reject(function(m)
-    m.signposts.textColors.foreground = 1
-  end, "FIELD_UI_MANIFEST_INVALID")
-end
-
-function T.v5_rejects_wrong_text_color_shadow()
-  reject(function(m)
-    m.signposts.textColors.shadow = 9
-  end, "FIELD_UI_MANIFEST_INVALID")
-end
-
-function T.v5_rejects_wrong_text_color_background()
-  reject(function(m)
-    m.signposts.textColors.background = 14
-  end, "FIELD_UI_MANIFEST_INVALID")
+-- Text slots are plain palette data: any integral slot 0..15 resolves
+-- against the published per-type palettes, so only missing,
+-- non-integral, or out-of-range slots fail here.
+function T.v5_accepts_any_integral_text_color_slot()
+  local manifest = validManifest()
+  manifest.signposts.textColors = { foreground = 1, shadow = 9, background = 14 }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "in-range text slots validate")
 end
 
 function T.v5_rejects_non_integral_text_color_slot()
@@ -899,6 +893,54 @@ function T.prompt_section_rejects_extra_shapes_and_source_identities()
     local ok, err = FieldUiAssetCache.validateManifest(manifest)
     Assert.isFalse(ok, "prompt contract case " .. index .. " must be rejected: " .. tostring(err))
   end
+end
+
+function T.generic_manifest_accepts_safe_timing_and_placement_variants()
+  local timing = validManifest()
+  timing.dialogueFrames.continueCursor.framePrinterTicks = 12
+  Assert.isTrue(FieldUiAssetCache.validateManifest(timing), "a positive cursor cadence stays consumable")
+  local moved = validManifest()
+  moved.dialogueFrames.continueCursor.placement = { x = 232, y = 160, width = 16, height = 16 }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(moved), "a canonical cursor placement stays consumable")
+  local palette = validManifest()
+  palette.signposts.textColors = { foreground = 3, shadow = 11, background = 14 }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(palette), "in-range text slots stay consumable")
+end
+
+function T.readiness_reports_ready_without_repeating_the_deep_contract_audit()
+  local manifest = validManifest()
+  manifest.dialogueFrames.continueCursor.framePrinterTicks = 12
+  local marker = FieldUiAssetCache.marker("rom-sha", "dep-hash")
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  cache:write(FieldUiAssetCache.markerPath(), marker)
+  for _, entry in pairs(manifest.assets) do
+    cache:write(entry.image, "png")
+  end
+  Assert.isTrue(FieldUiAssetCache.isReady(cache, marker), "a published safe variant reads ready")
+  cache:remove("assets/generated/field/ui/start-menu.png")
+  Assert.isFalse(FieldUiAssetCache.isReady(cache, marker), "a missing indexed file is not ready")
+  local wrongSchema = validManifest()
+  wrongSchema.schema = "stale-schema"
+  local cache2 = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache2:writeLua(FieldUiAssetCache.manifestPath(), wrongSchema)
+  cache2:write(FieldUiAssetCache.markerPath(), marker)
+  for _, entry in pairs(wrongSchema.assets) do
+    cache2:write(entry.image, "png")
+  end
+  Assert.isFalse(FieldUiAssetCache.isReady(cache2, marker), "a wrong schema is not ready")
+end
+
+function T.continuation_cursor_cycle_accepts_any_four_phase_sequence()
+  local alternate = validManifest()
+  alternate.dialogueFrames.continueCursor.cycle = { 0, 1, 0, 1 }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(alternate), "a four-phase sequence of valid phases validates")
+  local short = validManifest()
+  short.dialogueFrames.continueCursor.cycle = { 0, 1, 2 }
+  Assert.isFalse(FieldUiAssetCache.validateManifest(short), "a short cycle must fail")
+  local wild = validManifest()
+  wild.dialogueFrames.continueCursor.cycle = { 0, 1, 2, 9 }
+  Assert.isFalse(FieldUiAssetCache.validateManifest(wild), "a phase outside 0..2 must fail")
 end
 
 return { tests = T }

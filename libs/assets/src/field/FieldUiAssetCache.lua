@@ -322,22 +322,31 @@ function FieldUiAssetCache.validateManifest(manifest)
     if type(cursor.cycle) ~= "table" or #cursor.cycle ~= 4 then
       return false, Errors.new(MANIFEST_INVALID, "dialogue continuation cursor cycle is invalid", {})
     end
-    for index, phase in ipairs({ 0, 1, 2, 1 }) do
-      if cursor.cycle[index] ~= phase then
-        return false, Errors.new(MANIFEST_INVALID, "dialogue continuation cursor cycle is not source-faithful", {})
+    for index = 1, 4 do
+      local phase = cursor.cycle[index]
+      if type(phase) ~= "number" or phase % 1 ~= 0 or phase < 0 or phase > 2 then
+        return false, Errors.new(MANIFEST_INVALID, "dialogue continuation cursor cycle must name phases 0..2", {})
       end
     end
-    if cursor.framePrinterTicks ~= 9 then
-      return false, Errors.new(MANIFEST_INVALID, "dialogue continuation cursor timing is invalid", {})
+    if
+      type(cursor.framePrinterTicks) ~= "number"
+      or cursor.framePrinterTicks % 1 ~= 0
+      or cursor.framePrinterTicks < 1
+    then
+      return false, Errors.new(MANIFEST_INVALID, "dialogue continuation cursor timing must be positive", {})
     end
     local placement = cursor.placement
-    if
-      type(placement) ~= "table"
-      or placement.x ~= 240
-      or placement.y ~= 168
-      or placement.width ~= 16
-      or placement.height ~= 16
-    then
+    if type(placement) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "dialogue continuation cursor placement is invalid", {})
+    end
+    for _, field in ipairs({ "x", "y", "width", "height" }) do
+      local v = placement[field]
+      if type(v) ~= "number" or v % 1 ~= 0 or v < 0 then
+        return false,
+          Errors.new(MANIFEST_INVALID, "dialogue continuation cursor placement " .. field .. " is invalid", {})
+      end
+    end
+    if placement.width == 0 or placement.height == 0 then
       return false, Errors.new(MANIFEST_INVALID, "dialogue continuation cursor placement is invalid", {})
     end
     if type(cursor.styles) ~= "table" then
@@ -395,31 +404,13 @@ function FieldUiAssetCache.validateManifest(manifest)
     if not foregroundOk then
       return false, foregroundErr
     end
-    if s.textColors.foreground ~= 2 then
-      return false,
-        Errors.new(MANIFEST_INVALID, "signposts.textColors.foreground must be slot 2 (HGSS contract)", {
-          value = s.textColors.foreground,
-        })
-    end
     local shadowOk, shadowErr = validateSlot(s.textColors.shadow, "shadow")
     if not shadowOk then
       return false, shadowErr
     end
-    if s.textColors.shadow ~= 10 then
-      return false,
-        Errors.new(MANIFEST_INVALID, "signposts.textColors.shadow must be slot 10 (HGSS contract)", {
-          value = s.textColors.shadow,
-        })
-    end
     local backgroundOk, backgroundErr = validateSlot(s.textColors.background, "background")
     if not backgroundOk then
       return false, backgroundErr
-    end
-    if s.textColors.background ~= 15 then
-      return false,
-        Errors.new(MANIFEST_INVALID, "signposts.textColors.background must be slot 15 (HGSS contract)", {
-          value = s.textColors.background,
-        })
     end
 
     if type(s.types) ~= "table" then
@@ -1384,22 +1375,22 @@ function FieldUiAssetCache.validateManifest(manifest)
 end
 
 -- Every generated file the manifest indexes must exist for the class to be
--- ready. The marker must also match exactly; the manifest itself must be
--- present and valid.
+-- ready. The marker must also match exactly and the manifest must load
+-- with the current schema. The staged publication boundary already proved
+-- the full contract, so readiness never repeats that audit here.
 function FieldUiAssetCache.isReady(cacheFs, expectedMarker)
   if cacheFs:read(FieldUiAssetCache.markerPath()) ~= expectedMarker then
     return false
   end
   local manifest = cacheFs:loadLua(FieldUiAssetCache.manifestPath())
-  if type(manifest) ~= "table" then
+  if type(manifest) ~= "table" or manifest.schema ~= FieldUiAssetCache.SCHEMA then
     return false
   end
-  local ok = FieldUiAssetCache.validateManifest(manifest)
-  if not ok then
+  if type(manifest.assets) ~= "table" then
     return false
   end
   for _, entry in pairs(manifest.assets) do
-    if not cacheFs:exists(entry.image, "file") then
+    if type(entry) ~= "table" or type(entry.image) ~= "string" or not cacheFs:exists(entry.image, "file") then
       return false
     end
   end

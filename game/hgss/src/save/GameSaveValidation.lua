@@ -41,9 +41,8 @@ local function contextForCache(cacheFs, overrideFs, versionId)
   if not manifest then
     error(loadError)
   end
-  local valid, err = FieldUiAssetCache.validateManifest(manifest)
-  if not valid then
-    error(err)
+  if type(manifest) ~= "table" or manifest.schema ~= FieldUiAssetCache.SCHEMA then
+    error("field UI manifest is invalid")
   end
   local frameIndexes = {}
   for frame = 0, manifest.dialogueFrames.count - 1 do
