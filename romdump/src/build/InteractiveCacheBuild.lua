@@ -52,7 +52,6 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field causeJobKey string|nil deepest failed leaf identity when a dependency failed
 ---@field poolState string|nil last observed pool state
 ---@field direct boolean|nil true once a public single-request method claims this entry; milestone enrollment never sets it
----@field chain string[] expansion ancestry from the requesting root, naming concrete back-edges
 ---@field phase string plan, expand, admit, waitMembership, waitDeps, waitPool, ready or failed
 ---@field await string|nil source, pages, deps, pool or capacity: the named external prerequisite while waiting
 ---@field finalDeps { kind: string, key: string }[]|nil authoritative dependency list for the current knowledge
@@ -597,7 +596,6 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
       failureClass = nil,
       causeJobKey = nil,
       poolState = nil,
-      chain = { jobKey },
       phase = "plan",
       await = nil,
       finalDeps = nil,
@@ -1023,28 +1021,6 @@ function InteractiveCacheBuild:_submit(entry, budget)
 end
 
 ---@param entry InteractiveCacheBuild.Interest
----@param dep { kind: string, key: string }
----@return string|nil concrete back-edge path when the dependency closes a loop
-function InteractiveCacheBuild:_backEdgePath(entry, dep)
-  -- Only a genuine expansion back-edge is a cycle: the dependency names
-  -- an ancestor of the expanding record, so the concrete key path proves
-  -- the loop. Unadmitted work, unexpanded inventory, running workers and
-  -- missed bookkeeping are pending states, never evidence of a cycle.
-  local target = dep.kind .. ":" .. dep.key
-  for _, ancestor in ipairs(entry.chain) do
-    if ancestor == target then
-      local path = {}
-      for _, link in ipairs(entry.chain) do
-        path[#path + 1] = link
-      end
-      path[#path + 1] = target
-      return table.concat(path, " -> ")
-    end
-  end
-  return nil
-end
-
----@param entry InteractiveCacheBuild.Interest
 ---@param budget InteractiveCacheBuild.Budget|nil
 ---@return boolean settled into a wait or terminal state; false when the budget paused the attempt
 function InteractiveCacheBuild:_stepEntry(entry, budget)
@@ -1120,27 +1096,10 @@ function InteractiveCacheBuild:_stepEntry(entry, budget)
         -- Attach-time terminal check: a completion that occurred before
         -- attachment is not lost, and a failure settles the parent at once
         -- with the deepest cause.
+        -- A dependency cycle is a repository/corpus defect proven by the
+        -- slow concrete-graph suite, never a recoverable runtime state:
+        -- an unready child simply keeps its parent waiting here.
         local child = self:_register(dep.kind, dep.key, entry.urgency)
-        if child.failure == nil and not child.ready then
-          if #child.chain == 1 then
-            local ancestry = {}
-            for _, link in ipairs(entry.chain) do
-              ancestry[#ancestry + 1] = link
-            end
-            ancestry[#ancestry + 1] = child.jobKey
-            child.chain = ancestry
-          end
-          local backEdge = self:_backEdgePath(entry, dep)
-          if backEdge ~= nil then
-            self:_failEntry(
-              entry,
-              self.generationId .. " " .. entry.kind .. " " .. entry.key .. ": dependency cycle follows " .. backEdge,
-              "planning",
-              nil
-            )
-            return true
-          end
-        end
         if child.failure ~= nil then
           self:_failEntry(
             entry,

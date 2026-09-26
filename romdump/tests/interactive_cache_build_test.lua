@@ -1977,31 +1977,6 @@ function T.blocking_wait_times_out_without_completion()
   shutdownEnv(env)
 end
 
-function T.dependency_cycle_is_a_terminal_failure()
-  local originalDependencies = ArtifactJobs.dependencies
-  ArtifactJobs.dependencies = function(kind, key, plans)
-    if kind == "message-bank" then
-      return { { kind = "message-summary", key = "global" } }, true
-    end
-    return originalDependencies(kind, key, plans)
-  end
-  local pool = recordingPool()
-  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local session = summarySession(pool, cacheFs, { 3, 5 })
-  local callOk, ready, failure = pcall(session.requestJob, session, "message-summary", "global", "required")
-  Assert.isTrue(callOk, "registration answers instead of overflowing: " .. tostring(ready))
-  Assert.isFalse(ready, "a cyclic plan stays pending until the pump runs")
-  Assert.isNil(failure, "registration reports no failure")
-  session:update()
-  local again, againFailure = session:requestJob("message-summary", "global", "required")
-  ArtifactJobs.dependencies = originalDependencies
-  Assert.isFalse(again, "a cyclic plan never answers ready")
-  Assert.isTrue(
-    tostring(againFailure):find("cycle", 1, true) ~= nil,
-    "the cyclic plan names its cycle: " .. tostring(againFailure)
-  )
-end
-
 function T.stale_epoch_demand_fails_at_the_pool()
   local env = openLiveSession({ generation = "dependency-epoch-generation", bankIds = { 3, 5 } })
   withHost(env.host, function()
@@ -3197,38 +3172,8 @@ function T.required_scope_settles_while_unrelated_background_waits()
   Assert.isFalse(stillPending, "the unreplied leaf never borrows the scope's readiness")
 end
 
--- An unproven wait stays pending: only a genuine dependency back-edge
--- fails, and it names the concrete key path. A failed child settles
--- its dependent once with the original cause.
-function T.unproven_wait_stays_pending_without_a_cycle_path()
-  local originalDependencies = ArtifactJobs.dependencies
-  ArtifactJobs.dependencies = function(kind, key, plans)
-    if kind == "message-bank" then
-      return { { kind = "message-summary", key = "global" } }, true
-    end
-    return originalDependencies(kind, key, plans)
-  end
-  local pool = recordingPool()
-  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local session = summarySession(pool, cacheFs, { 3, 5 })
-  local callOk, ready, failure = pcall(session.requestJob, session, "message-summary", "global", "required")
-  Assert.isTrue(callOk, "registration answers instead of overflowing: " .. tostring(ready))
-  Assert.isFalse(ready, "a cyclic plan stays pending until the pump runs")
-  Assert.isNil(failure, "registration reports no failure")
-  session:update()
-  local again, againFailure = session:requestJob("message-summary", "global", "required")
-  ArtifactJobs.dependencies = originalDependencies
-  Assert.isFalse(again, "a cyclic plan never answers ready")
-  Assert.isTrue(
-    tostring(againFailure):find("cycle", 1, true) ~= nil,
-    "the cyclic plan names its cycle: " .. tostring(againFailure)
-  )
-  Assert.isTrue(
-    tostring(againFailure):find("message-bank", 1, true) ~= nil,
-    "the cycle names the concrete key path: " .. tostring(againFailure)
-  )
-end
-
+-- An unproven wait stays pending: a failed child settles its dependent
+-- once with the original cause, while inventory waits never fail.
 function T.unexpanded_inventory_waits_without_a_cycle()
   local backend = FakeCache.new()
   local pool = recordingPool()

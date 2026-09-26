@@ -144,6 +144,33 @@ function T.vocabulary_has_no_runtime_registration_surface()
   Assert.isNil(vocabulary.addKind)
 end
 
+-- The closed job inventory behind dispatch is observable as one list: every
+-- lower-level kind resolves to exactly one handler record, no handler names
+-- an unknown kind, and neither the dispatcher nor the vocabulary can grow
+-- at runtime.
+function T.closed_job_inventory_lists_every_handler_kind_once()
+  local enumerate = ArtifactJobs.descriptorKinds
+  Assert.isTrue(type(enumerate) == "function", "the closed job inventory is observable as one list")
+  local listed = enumerate()
+  Assert.equal(type(listed), "table", "the job inventory answers a kind list")
+  local seen = {}
+  for _, kind in ipairs(listed) do
+    Assert.isNil(seen[kind], "the job inventory names no kind twice: " .. tostring(kind))
+    seen[kind] = true
+  end
+  for kind in pairs(ArtifactState.KINDS) do
+    Assert.isTrue(seen[kind] == true, "the job inventory covers kind: " .. tostring(kind))
+  end
+  for kind in pairs(seen) do
+    Assert.isTrue(ArtifactState.KINDS[kind] == true, "the job inventory names no unknown kind: " .. tostring(kind))
+  end
+  ---@type table<string, unknown>
+  local dispatcher = ArtifactJobs
+  Assert.isNil(dispatcher.register)
+  Assert.isNil(dispatcher.extend)
+  Assert.isNil(dispatcher.addKind)
+end
+
 -- Unknown dynamic membership is incomplete, never an empty final list;
 -- known-empty lists are complete. Callers may record and wake from
 -- incomplete edges but never dispatch a parent from them.

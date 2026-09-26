@@ -43,38 +43,34 @@ local PRIORITY = {
   sweep = 100,
 }
 
-local SIZE_CLASS = {
-  ["world-catalog"] = "normal",
-  ["field-cell-index"] = "normal",
-  ["field-camera"] = "normal",
-  ["field-weather"] = "normal",
-  ["field-effects"] = "normal",
-  ["field-emotes"] = "normal",
-  ["field-ui"] = "normal",
-  intro = "normal",
-  ["new-game-init"] = "normal",
-  ["starter-choice"] = "normal",
-  items = "normal",
-  bag = "normal",
-  ["mon-icon-page"] = "normal",
-  ["mon-portrait-page"] = "normal",
-  ["map-data"] = "normal",
-  ["message-summary"] = "normal",
-  ["mon-summary"] = "normal",
-  ["source-plan"] = "heavy",
-  ["field-font"] = "heavy",
-  actors = "heavy",
-  ["mon-catalog"] = "heavy",
-  ["mon-layout"] = "heavy",
-  ["audio-bank"] = "heavy",
-  ["audio-catalog"] = "heavy",
-  ["audio-summary"] = "heavy",
-  ["script-member"] = "heavy",
-  ["script-summary"] = "heavy",
-  ["message-bank"] = "heavy",
-  ["field-cell"] = "jumbo",
-  map = "jumbo",
-}
+---@class ArtifactJobs.Descriptor
+---@field size string worker lane behind this kind
+---@field dependencies (fun(key: string, plans: ArtifactJobs.Plans): { kind: string, key: string }[], boolean)|nil currently known prerequisites plus whether planning prerequisites made the list final; nil means no prerequisite
+---@field execute fun(artifact: table<string, unknown>, context: table<string, unknown>, job: ArtifactJobs.Job): string compiler marker for the receipt
+---@field validate fun(check: ArtifactJobs.ReadinessCheck): boolean, table<string, unknown>|nil family readiness for the retained receipt marker, plus the validated source plan on source-plan success
+
+---@class ArtifactJobs.ReadinessCheck
+---@field cacheFs table<string, unknown>
+---@field generationId string
+---@field key string
+---@field plans ArtifactJobs.Plans
+---@field marker string retained receipt marker
+---@field identity table<string, unknown>|nil expected source identity, mandatory for source-plan
+
+-- One closed record per derived job kind: the size class plus the exact
+-- dependency, execution and readiness behavior previously repeated across
+-- parallel switch chains. Assigned after the family helpers below; every
+-- public wrapper resolves through it. There is no registration surface.
+---@type table<string, ArtifactJobs.Descriptor>
+local DESCRIPTORS
+
+---@param kind string
+---@return ArtifactJobs.Descriptor
+local function descriptorFor(kind)
+  local descriptor = DESCRIPTORS[kind]
+  assert(descriptor ~= nil, "unknown artifact kind: " .. tostring(kind))
+  return descriptor
+end
 
 ---@param urgency string
 ---@return integer
@@ -87,9 +83,20 @@ end
 ---@param kind string
 ---@return string
 function ArtifactJobs.sizeClass(kind)
-  local size = SIZE_CLASS[kind]
-  assert(size ~= nil, "unknown artifact kind: " .. tostring(kind))
-  return size
+  return descriptorFor(kind).size
+end
+
+--- Read-only inventory of the closed job taxonomy: every kind with a
+--- descriptor, in sorted order, as a fresh table. The descriptors
+--- themselves stay private and immutable.
+---@return string[]
+function ArtifactJobs.descriptorKinds()
+  local kinds = {}
+  for kind in pairs(DESCRIPTORS) do
+    kinds[#kinds + 1] = kind
+  end
+  table.sort(kinds)
+  return kinds
 end
 
 ---@param kind string
@@ -262,86 +269,15 @@ end
 function ArtifactJobs.dependencies(kind, key, plans)
   ArtifactState.path(kind, key)
   assert(type(plans) == "table", "dependency edges require the session plans")
-  local deps = {}
-  -- False until the planning prerequisites behind this list are satisfied
-  -- and adopted. Callers may record and wake from incomplete edges but must
-  -- never dispatch a parent from them, and must never read nil membership
-  -- as a known-empty final list.
-  local complete = true
-  local function awaitMembership()
-    complete = false
+  -- False until the planning prerequisites behind the resolved list are
+  -- satisfied and adopted. Callers may record and wake from incomplete
+  -- edges but must never dispatch a parent from them, and must never read
+  -- nil membership as a known-empty final list.
+  local resolve = descriptorFor(kind).dependencies
+  if resolve == nil then
+    return {}, true
   end
-  if kind == "source-plan" then
-    -- The worker inventory plans no prerequisite.
-  elseif kind == "mon-layout" then
-    deps[#deps + 1] = { kind = "mon-catalog", key = "global" }
-  elseif kind == "mon-icon-page" or kind == "mon-portrait-page" then
-    deps[#deps + 1] = { kind = "source-plan", key = "global" }
-    deps[#deps + 1] = { kind = "mon-layout", key = "global" }
-    local pages = kind == "mon-icon-page" and plans.iconPageIds or plans.portraitPageIds
-    if pages == nil then
-      awaitMembership()
-    end
-  elseif kind == "mon-summary" then
-    deps[#deps + 1] = { kind = "source-plan", key = "global" }
-    deps[#deps + 1] = { kind = "mon-catalog", key = "global" }
-    deps[#deps + 1] = { kind = "mon-layout", key = "global" }
-    if plans.iconPageIds == nil or plans.portraitPageIds == nil then
-      awaitMembership()
-    else
-      for _, pageId in ipairs(plans.iconPageIds) do
-        deps[#deps + 1] = { kind = "mon-icon-page", key = tostring(pageId) }
-      end
-      for _, pageId in ipairs(plans.portraitPageIds) do
-        deps[#deps + 1] = { kind = "mon-portrait-page", key = tostring(pageId) }
-      end
-    end
-  elseif kind == "message-summary" then
-    for _, bankId in ipairs(assert(plans.messageBankIds, "message summary needs the required banks")) do
-      deps[#deps + 1] = { kind = "message-bank", key = tostring(bankId) }
-    end
-  elseif kind == "audio-catalog" then
-    deps[#deps + 1] = { kind = "source-plan", key = "global" }
-  elseif kind == "audio-summary" then
-    deps[#deps + 1] = { kind = "source-plan", key = "global" }
-    deps[#deps + 1] = { kind = "audio-catalog", key = "global" }
-    if plans.audioBankIds == nil then
-      awaitMembership()
-    else
-      for _, bankId in ipairs(plans.audioBankIds) do
-        deps[#deps + 1] = { kind = "audio-bank", key = tostring(bankId) }
-      end
-    end
-  elseif kind == "script-summary" then
-    deps[#deps + 1] = { kind = "source-plan", key = "global" }
-    if plans.scriptMemberIds == nil then
-      awaitMembership()
-    else
-      for _, memberId in ipairs(plans.scriptMemberIds) do
-        deps[#deps + 1] = { kind = "script-member", key = tostring(memberId) }
-      end
-    end
-  elseif kind == "script-member" then
-    deps[#deps + 1] = { kind = "source-plan", key = "global" }
-  elseif kind == "audio-bank" then
-    deps[#deps + 1] = { kind = "source-plan", key = "global" }
-  elseif kind == "map" then
-    deps[#deps + 1] = { kind = "source-plan", key = "global" }
-    deps[#deps + 1] = { kind = "world-catalog", key = "global" }
-    deps[#deps + 1] = { kind = "field-cell-index", key = "global" }
-    local cellKeys = plans.mapCellKeys and plans.mapCellKeys[tonumber(key)]
-    if cellKeys == nil then
-      awaitMembership()
-    else
-      for _, cellKey in ipairs(cellKeys) do
-        deps[#deps + 1] = { kind = "field-cell", key = cellKey }
-      end
-    end
-  elseif kind == "field-cell" then
-    deps[#deps + 1] = { kind = "source-plan", key = "global" }
-    deps[#deps + 1] = { kind = "field-cell-index", key = "global" }
-  end
-  return deps, complete
+  return resolve(key, plans)
 end
 
 local function failArtifact(artifact, failure, traceback)
@@ -953,92 +889,7 @@ end
 ---@param context table<string, unknown>
 ---@return string compiler marker for the receipt
 local function dispatchExecute(artifact, job, context)
-  local payload = job.payload or {}
-  if job.kind == "source-plan" then
-    return executeSourcePlan(artifact, context, job)
-  elseif job.kind == "world-catalog" then
-    return executeWorldCatalog(artifact, context)
-  elseif job.kind == "field-cell-index" then
-    return executeCellIndex(artifact, context, assert(job.producerFingerprint, "index jobs require a producer"))
-  elseif job.kind == "field-camera" then
-    return executeFieldCamera(artifact, context)
-  elseif job.kind == "field-weather" then
-    return executeFieldWeather(artifact, context)
-  elseif job.kind == "field-effects" then
-    return executeFieldEffects(artifact, context)
-  elseif job.kind == "field-emotes" then
-    return executeFieldEmotes(artifact, context)
-  elseif job.kind == "field-ui" then
-    return executeFieldUi(artifact, context)
-  elseif job.kind == "field-font" then
-    return executeFieldFont(artifact, context)
-  elseif job.kind == "intro" then
-    return executeIntro(artifact, context)
-  elseif job.kind == "starter-choice" then
-    return executeStarterChoice(artifact, context)
-  elseif job.kind == "new-game-init" then
-    return executeNewGameInit(artifact, context)
-  elseif job.kind == "actors" then
-    return executeActors(artifact, context)
-  elseif job.kind == "items" then
-    return executeItems(artifact, context)
-  elseif job.kind == "bag" then
-    return executeBag(artifact, context)
-  elseif job.kind == "mon-catalog" then
-    return executeMonCatalog(artifact, context)
-  elseif job.kind == "mon-layout" then
-    return executeMonLayout(artifact, context, assert(job.generationId, "mon layout jobs require a generation"))
-  elseif job.kind == "mon-icon-page" then
-    return executeMonPage(
-      artifact,
-      context,
-      "icons",
-      canonicalKeyId(job.key, "page key"),
-      assert(job.generationId, "mon page jobs require a generation")
-    )
-  elseif job.kind == "mon-portrait-page" then
-    return executeMonPage(
-      artifact,
-      context,
-      "portraits",
-      canonicalKeyId(job.key, "page key"),
-      assert(job.generationId, "mon page jobs require a generation")
-    )
-  elseif job.kind == "mon-summary" then
-    return executeMonSummary(artifact, context)
-  elseif job.kind == "message-bank" then
-    return executeMessageBank(artifact, context, assert(tonumber(job.key), "bank key is not canonical"))
-  elseif job.kind == "message-summary" then
-    return executeMessageSummary(artifact, context)
-  elseif job.kind == "audio-bank" then
-    return executeAudioBank(artifact, context, job, assert(tonumber(job.key), "bank key is not canonical"))
-  elseif job.kind == "audio-catalog" then
-    return executeAudioCatalog(artifact, context, job)
-  elseif job.kind == "audio-summary" then
-    return executeAudioSummary(artifact, context, job)
-  elseif job.kind == "script-member" then
-    return executeScriptMember(
-      artifact,
-      context,
-      assert(payload.memberId, "script member jobs require memberId"),
-      assert(payload.generationKey, "script member jobs require generationKey"),
-      assert(job.producerFingerprint, "script member jobs require a producer")
-    )
-  elseif job.kind == "script-summary" then
-    return executeScriptSummary(artifact, context, assert(job.producerFingerprint, "summary jobs require a producer"))
-  elseif job.kind == "map-data" then
-    return executeMapData(artifact, context, assert(tonumber(job.key), "map key is not canonical"))
-  elseif job.kind == "field-cell" then
-    return executeFieldCell(artifact, context, payload, assert(job.producerFingerprint, "cell jobs require a producer"))
-  elseif job.kind == "map" then
-    return executeMap(
-      artifact,
-      context,
-      assert(tonumber(job.key), "map key is not canonical"),
-      assert(job.producerFingerprint, "map jobs require a producer")
-    )
-  end
-  error("unsupported compiler job kind: " .. tostring(job.kind), 0)
+  return descriptorFor(job.kind).execute(artifact, context, job)
 end
 
 ---@param job ArtifactJobs.Job
@@ -1131,6 +982,741 @@ local function childReady(cacheFs, generationId, childKind, childKey, ready)
   return ready(marker)
 end
 
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateWorldCatalog(check)
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
+  return MapAssetCache.isStructuralWorld(check.cacheFs:loadLua(MapAssetCache.worldPath()))
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeFieldCellIndexJob(artifact, context, job)
+  return executeCellIndex(artifact, context, assert(job.producerFingerprint, "index jobs require a producer"))
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateFieldCellIndex(check)
+  local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+  local cacheFs, marker = check.cacheFs, check.marker
+  if cacheFs:read(FieldCellCache.indexMarkerPath()) ~= marker then
+    return false
+  end
+  local indexOk, index = pcall(cacheFs.loadLua, cacheFs, FieldCellCache.indexPath())
+  if not indexOk or not FieldCellCache.validateIndex(index) then
+    return false
+  end
+  return true
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateFieldCamera(check)
+  local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
+  return FieldCameraCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateFieldWeather(check)
+  local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
+  return FieldWeatherCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateFieldEffects(check)
+  local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+  return FieldEffectAssetCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateFieldEmotes(check)
+  local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
+  return FieldEmoteAssetCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateFieldUi(check)
+  local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+  return FieldUiAssetCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateFieldFont(check)
+  local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+  return FieldFontCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateIntro(check)
+  local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
+  return IntroAssetCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateNewGameInit(check)
+  local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
+  return NewGameInitCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateActors(check)
+  local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
+  return FieldActorCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateStarterChoice(check)
+  local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
+  return StarterChoiceAssetCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateMonCatalog(check)
+  local MonCache = require("libs.assets.src.MonCache")
+  return MonCache.isCatalogReady(check.cacheFs, check.marker)
+end
+
+---@return { kind: string, key: string }[], boolean
+local function dependenciesMonLayout()
+  return { { kind = "mon-catalog", key = "global" } }, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeMonLayoutJob(artifact, context, job)
+  return executeMonLayout(artifact, context, assert(job.generationId, "mon layout jobs require a generation"))
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateMonLayout(check)
+  local MonCache = require("libs.assets.src.MonCache")
+  if not MonCache.isLayoutReady(check.cacheFs, check.marker) then
+    return false
+  end
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local ready, _ = MonCacheWriter.isLayoutSourceReady(check.cacheFs, check.generationId, check.marker)
+  return ready == true
+end
+
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesMonIconPage(_, plans)
+  local deps = {
+    { kind = "source-plan", key = "global" },
+    { kind = "mon-layout", key = "global" },
+  }
+  if plans.iconPageIds == nil then
+    return deps, false
+  end
+  return deps, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeMonIconPage(artifact, context, job)
+  return executeMonPage(
+    artifact,
+    context,
+    "icons",
+    canonicalKeyId(job.key, "page key"),
+    assert(job.generationId, "mon page jobs require a generation")
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateMonIconPage(check)
+  local MonCache = require("libs.assets.src.MonCache")
+  return MonCache.isPageReady(check.cacheFs, "icons", canonicalKeyId(check.key, "page key"), check.marker)
+end
+
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesMonPortraitPage(_, plans)
+  local deps = {
+    { kind = "source-plan", key = "global" },
+    { kind = "mon-layout", key = "global" },
+  }
+  if plans.portraitPageIds == nil then
+    return deps, false
+  end
+  return deps, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeMonPortraitPage(artifact, context, job)
+  return executeMonPage(
+    artifact,
+    context,
+    "portraits",
+    canonicalKeyId(job.key, "page key"),
+    assert(job.generationId, "mon page jobs require a generation")
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateMonPortraitPage(check)
+  local MonCache = require("libs.assets.src.MonCache")
+  return MonCache.isPageReady(check.cacheFs, "portraits", canonicalKeyId(check.key, "page key"), check.marker)
+end
+
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesMonSummary(_, plans)
+  local deps = {
+    { kind = "source-plan", key = "global" },
+    { kind = "mon-catalog", key = "global" },
+    { kind = "mon-layout", key = "global" },
+  }
+  if plans.iconPageIds == nil or plans.portraitPageIds == nil then
+    return deps, false
+  end
+  for _, pageId in ipairs(plans.iconPageIds) do
+    deps[#deps + 1] = { kind = "mon-icon-page", key = tostring(pageId) }
+  end
+  for _, pageId in ipairs(plans.portraitPageIds) do
+    deps[#deps + 1] = { kind = "mon-portrait-page", key = tostring(pageId) }
+  end
+  return deps, true
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateMonSummary(check)
+  local MonCache = require("libs.assets.src.MonCache")
+  local cacheFs, generationId, plans, marker = check.cacheFs, check.generationId, check.plans, check.marker
+  if not MonCache.isReady(cacheFs, marker) then
+    return false
+  end
+  for _, pageId in ipairs(assert(plans.iconPageIds, "mon summary needs the icon pages")) do
+    local pageKey = tostring(pageId)
+    if
+      not childReady(cacheFs, generationId, "mon-icon-page", pageKey, function(childMarker)
+        return MonCache.isPageReady(cacheFs, "icons", pageId, childMarker)
+      end)
+    then
+      return false
+    end
+  end
+  for _, pageId in ipairs(assert(plans.portraitPageIds, "mon summary needs the portrait pages")) do
+    local pageKey = tostring(pageId)
+    if
+      not childReady(cacheFs, generationId, "mon-portrait-page", pageKey, function(childMarker)
+        return MonCache.isPageReady(cacheFs, "portraits", pageId, childMarker)
+      end)
+    then
+      return false
+    end
+  end
+  return true
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateItems(check)
+  local ItemCache = require("libs.assets.src.ItemCache")
+  return ItemCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateBag(check)
+  local BagCache = require("libs.assets.src.BagCache")
+  return BagCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeMessageBankJob(artifact, context, job)
+  return executeMessageBank(artifact, context, assert(tonumber(job.key), "bank key is not canonical"))
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateMessageBank(check)
+  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  return FieldMessageCache.isBankReady(check.cacheFs, canonicalKeyId(check.key, "bank key"), check.marker)
+end
+
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesMessageSummary(_, plans)
+  local deps = {}
+  for _, bankId in ipairs(assert(plans.messageBankIds, "message summary needs the required banks")) do
+    deps[#deps + 1] = { kind = "message-bank", key = tostring(bankId) }
+  end
+  return deps, true
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateMessageSummary(check)
+  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  local cacheFs, generationId, plans, marker = check.cacheFs, check.generationId, check.plans, check.marker
+  if not FieldMessageCache.isReady(cacheFs, marker) then
+    return false
+  end
+  for _, bankId in ipairs(assert(plans.messageBankIds, "message summary needs the required banks")) do
+    if
+      not childReady(cacheFs, generationId, "message-bank", tostring(bankId), function(childMarker)
+        return FieldMessageCache.isBankReady(cacheFs, bankId, childMarker)
+      end)
+    then
+      return false
+    end
+  end
+  return true
+end
+
+---@return { kind: string, key: string }[], boolean
+local function dependenciesOnSourcePlan()
+  return { { kind = "source-plan", key = "global" } }, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeAudioBankJob(artifact, context, job)
+  return executeAudioBank(artifact, context, job, assert(tonumber(job.key), "bank key is not canonical"))
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateAudioBank(check)
+  local AudioCache = require("libs.assets.src.audio.AudioCache")
+  return AudioCache.isBankReady(check.cacheFs, canonicalKeyId(check.key, "bank key"), check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateAudioCatalog(check)
+  local AudioCache = require("libs.assets.src.audio.AudioCache")
+  return AudioCache.isCatalogReady(check.cacheFs, check.marker)
+end
+
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesAudioSummary(_, plans)
+  local deps = {
+    { kind = "source-plan", key = "global" },
+    { kind = "audio-catalog", key = "global" },
+  }
+  if plans.audioBankIds == nil then
+    return deps, false
+  end
+  for _, bankId in ipairs(plans.audioBankIds) do
+    deps[#deps + 1] = { kind = "audio-bank", key = tostring(bankId) }
+  end
+  return deps, true
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateAudioSummary(check)
+  local AudioCache = require("libs.assets.src.audio.AudioCache")
+  local cacheFs, generationId, plans, marker = check.cacheFs, check.generationId, check.plans, check.marker
+  if not AudioCache.isReady(cacheFs, marker) then
+    return false
+  end
+  for _, bankId in ipairs(assert(plans.audioBankIds, "audio summary needs the bank closures")) do
+    if
+      not childReady(cacheFs, generationId, "audio-bank", tostring(bankId), function(childMarker)
+        return AudioCache.isBankReady(cacheFs, bankId, childMarker)
+      end)
+    then
+      return false
+    end
+  end
+  return true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeScriptMemberJob(artifact, context, job)
+  local payload = job.payload or {}
+  return executeScriptMember(
+    artifact,
+    context,
+    assert(payload.memberId, "script member jobs require memberId"),
+    assert(payload.generationKey, "script member jobs require generationKey"),
+    assert(job.producerFingerprint, "script member jobs require a producer")
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateScriptMember(check)
+  local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
+  local scriptPlan = assert(check.plans.scriptPlan, "script members need the generation plan")
+  local memberId = canonicalKeyId(check.key, "member key")
+  local ready, _ = ScriptCacheWriter.isMemberReady(check.cacheFs, scriptPlan, memberId)
+  return ready == true
+end
+
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesScriptSummary(_, plans)
+  local deps = { { kind = "source-plan", key = "global" } }
+  if plans.scriptMemberIds == nil then
+    return deps, false
+  end
+  for _, memberId in ipairs(plans.scriptMemberIds) do
+    deps[#deps + 1] = { kind = "script-member", key = tostring(memberId) }
+  end
+  return deps, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeScriptSummaryJob(artifact, context, job)
+  return executeScriptSummary(artifact, context, assert(job.producerFingerprint, "summary jobs require a producer"))
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateScriptSummary(check)
+  local ScriptCache = require("libs.assets.src.ScriptCache")
+  local cacheFs, generationId, plans, marker = check.cacheFs, check.generationId, check.plans, check.marker
+  if not ScriptCache.isReady(cacheFs, marker) then
+    return false
+  end
+  local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
+  local scriptPlan = assert(plans.scriptPlan, "script summary needs the generation plan")
+  for _, memberId in ipairs(assert(plans.scriptMemberIds, "script summary needs the nonempty members")) do
+    if receiptMarker(cacheFs, generationId, "script-member", tostring(memberId)) == nil then
+      return false
+    end
+    local ready, _ = ScriptCacheWriter.isMemberReady(cacheFs, scriptPlan, memberId)
+    if not ready then
+      return false
+    end
+  end
+  return true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeMapDataJob(artifact, context, job)
+  return executeMapData(artifact, context, assert(tonumber(job.key), "map key is not canonical"))
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateMapData(check)
+  local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
+  return FieldMapDataCache.isReady(check.cacheFs, tonumber(check.key), check.marker)
+end
+
+---@return { kind: string, key: string }[], boolean
+local function dependenciesFieldCell()
+  return {
+    { kind = "source-plan", key = "global" },
+    { kind = "field-cell-index", key = "global" },
+  }, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeFieldCellJob(artifact, context, job)
+  return executeFieldCell(
+    artifact,
+    context,
+    job.payload or {},
+    assert(job.producerFingerprint, "cell jobs require a producer")
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateFieldCell(check)
+  local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+  local cacheFs, key, plans, marker = check.cacheFs, check.key, check.plans, check.marker
+  local matrixMemberId, index = key:match("^([0-9]+)-([0-9]+)$")
+  local descriptor = nil
+  for _, matrix in ipairs(assert(plans.indexBundle, "cells need the canonical index").index.matrices) do
+    if matrix.matrixMemberId == tonumber(matrixMemberId) then
+      for _, cell in ipairs(matrix.cells) do
+        if cell.index == tonumber(index) then
+          descriptor = cell
+          break
+        end
+      end
+    end
+    if descriptor ~= nil then
+      break
+    end
+  end
+  if descriptor == nil then
+    return false
+  end
+  return FieldCellCache.isCellReady(cacheFs, descriptor, marker)
+end
+
+---@param key string
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesMap(key, plans)
+  local deps = {
+    { kind = "source-plan", key = "global" },
+    { kind = "world-catalog", key = "global" },
+    { kind = "field-cell-index", key = "global" },
+  }
+  local cellKeys = plans.mapCellKeys and plans.mapCellKeys[tonumber(key)]
+  if cellKeys == nil then
+    return deps, false
+  end
+  for _, cellKey in ipairs(cellKeys) do
+    deps[#deps + 1] = { kind = "field-cell", key = cellKey }
+  end
+  return deps, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeMapJob(artifact, context, job)
+  return executeMap(
+    artifact,
+    context,
+    assert(tonumber(job.key), "map key is not canonical"),
+    assert(job.producerFingerprint, "map jobs require a producer")
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateMap(check)
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
+  return MapAssetCache.isReady(check.cacheFs, canonicalKeyId(check.key, "map key"), check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+---@return table<string, unknown>|nil validated source plan on success for immediate adoption
+local function validateSourcePlan(check)
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  if check.marker ~= SourcePlan.marker(check.generationId) then
+    return false
+  end
+  -- The expected identity always comes from the caller, never from the
+  -- record being validated. The full reader is the single authority:
+  -- any record it rejects is not ready, exactly once.
+  local expected = assert(check.identity, "source-plan validation requires its expected identity")
+  local plan, _ = SourcePlan.read(check.cacheFs, expected)
+  if plan == nil then
+    return false
+  end
+  return true, plan
+end
+
+DESCRIPTORS = {
+  -- Planning roots: no prerequisite.
+  ["world-catalog"] = {
+    size = "normal",
+    execute = executeWorldCatalog,
+    validate = validateWorldCatalog,
+  },
+  ["field-cell-index"] = {
+    size = "normal",
+    execute = executeFieldCellIndexJob,
+    validate = validateFieldCellIndex,
+  },
+  -- Coarse bootstrap field families: no prerequisite.
+  ["field-camera"] = {
+    size = "normal",
+    execute = executeFieldCamera,
+    validate = validateFieldCamera,
+  },
+  ["field-weather"] = {
+    size = "normal",
+    execute = executeFieldWeather,
+    validate = validateFieldWeather,
+  },
+  ["field-effects"] = {
+    size = "normal",
+    execute = executeFieldEffects,
+    validate = validateFieldEffects,
+  },
+  ["field-emotes"] = {
+    size = "normal",
+    execute = executeFieldEmotes,
+    validate = validateFieldEmotes,
+  },
+  ["field-ui"] = {
+    size = "normal",
+    execute = executeFieldUi,
+    validate = validateFieldUi,
+  },
+  ["field-font"] = {
+    size = "heavy",
+    execute = executeFieldFont,
+    validate = validateFieldFont,
+  },
+  -- Game-start families: no prerequisite.
+  intro = {
+    size = "normal",
+    execute = executeIntro,
+    validate = validateIntro,
+  },
+  ["new-game-init"] = {
+    size = "normal",
+    execute = executeNewGameInit,
+    validate = validateNewGameInit,
+  },
+  actors = {
+    size = "heavy",
+    execute = executeActors,
+    validate = validateActors,
+  },
+  ["starter-choice"] = {
+    size = "normal",
+    execute = executeStarterChoice,
+    validate = validateStarterChoice,
+  },
+  -- Mon families.
+  ["mon-catalog"] = {
+    size = "heavy",
+    execute = executeMonCatalog,
+    validate = validateMonCatalog,
+  },
+  ["mon-layout"] = {
+    size = "heavy",
+    dependencies = dependenciesMonLayout,
+    execute = executeMonLayoutJob,
+    validate = validateMonLayout,
+  },
+  ["mon-icon-page"] = {
+    size = "normal",
+    dependencies = dependenciesMonIconPage,
+    execute = executeMonIconPage,
+    validate = validateMonIconPage,
+  },
+  ["mon-portrait-page"] = {
+    size = "normal",
+    dependencies = dependenciesMonPortraitPage,
+    execute = executeMonPortraitPage,
+    validate = validateMonPortraitPage,
+  },
+  ["mon-summary"] = {
+    size = "normal",
+    dependencies = dependenciesMonSummary,
+    execute = executeMonSummary,
+    validate = validateMonSummary,
+  },
+  -- Item and bag presentation: no prerequisite.
+  items = {
+    size = "normal",
+    execute = executeItems,
+    validate = validateItems,
+  },
+  bag = {
+    size = "normal",
+    execute = executeBag,
+    validate = validateBag,
+  },
+  -- Message banks and summary.
+  ["message-bank"] = {
+    size = "heavy",
+    execute = executeMessageBankJob,
+    validate = validateMessageBank,
+  },
+  ["message-summary"] = {
+    size = "normal",
+    dependencies = dependenciesMessageSummary,
+    execute = executeMessageSummary,
+    validate = validateMessageSummary,
+  },
+  -- Audio banks, catalog and summary.
+  ["audio-bank"] = {
+    size = "heavy",
+    dependencies = dependenciesOnSourcePlan,
+    execute = executeAudioBankJob,
+    validate = validateAudioBank,
+  },
+  ["audio-catalog"] = {
+    size = "heavy",
+    dependencies = dependenciesOnSourcePlan,
+    execute = executeAudioCatalog,
+    validate = validateAudioCatalog,
+  },
+  ["audio-summary"] = {
+    size = "heavy",
+    dependencies = dependenciesAudioSummary,
+    execute = executeAudioSummary,
+    validate = validateAudioSummary,
+  },
+  -- Script members and summary.
+  ["script-member"] = {
+    size = "heavy",
+    dependencies = dependenciesOnSourcePlan,
+    execute = executeScriptMemberJob,
+    validate = validateScriptMember,
+  },
+  ["script-summary"] = {
+    size = "heavy",
+    dependencies = dependenciesScriptSummary,
+    execute = executeScriptSummaryJob,
+    validate = validateScriptSummary,
+  },
+  -- Field records, cells and scenes.
+  ["map-data"] = {
+    size = "normal",
+    execute = executeMapDataJob,
+    validate = validateMapData,
+  },
+  ["field-cell"] = {
+    size = "jumbo",
+    dependencies = dependenciesFieldCell,
+    execute = executeFieldCellJob,
+    validate = validateFieldCell,
+  },
+  map = {
+    size = "jumbo",
+    dependencies = dependenciesMap,
+    execute = executeMapJob,
+    validate = validateMap,
+  },
+  -- The single worker-compiled source inventory: no prerequisite.
+  ["source-plan"] = {
+    size = "heavy",
+    execute = executeSourcePlan,
+    validate = validateSourcePlan,
+  },
+}
 ---@param cacheFs table<string, unknown>
 ---@param generationId string
 ---@param kind string
@@ -1162,203 +1748,14 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans, identity
     if marker == nil then
       return false
     end
-    if kind == "world-catalog" then
-      local MapAssetCache = require("libs.assets.src.MapAssetCache")
-      return MapAssetCache.isStructuralWorld(cacheFs:loadLua(MapAssetCache.worldPath()))
-    elseif kind == "field-cell-index" then
-      local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
-      if cacheFs:read(FieldCellCache.indexMarkerPath()) ~= marker then
-        return false
-      end
-      local indexOk, index = pcall(cacheFs.loadLua, cacheFs, FieldCellCache.indexPath())
-      if not indexOk or not FieldCellCache.validateIndex(index) then
-        return false
-      end
-      return true
-    elseif kind == "field-camera" then
-      local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
-      return FieldCameraCache.isReady(cacheFs, marker)
-    elseif kind == "field-weather" then
-      local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
-      return FieldWeatherCache.isReady(cacheFs, marker)
-    elseif kind == "field-effects" then
-      local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
-      return FieldEffectAssetCache.isReady(cacheFs, marker)
-    elseif kind == "field-emotes" then
-      local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
-      return FieldEmoteAssetCache.isReady(cacheFs, marker)
-    elseif kind == "field-ui" then
-      local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
-      return FieldUiAssetCache.isReady(cacheFs, marker)
-    elseif kind == "field-font" then
-      local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
-      return FieldFontCache.isReady(cacheFs, marker)
-    elseif kind == "intro" then
-      local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
-      return IntroAssetCache.isReady(cacheFs, marker)
-    elseif kind == "new-game-init" then
-      local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
-      return NewGameInitCache.isReady(cacheFs, marker)
-    elseif kind == "actors" then
-      local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
-      return FieldActorCache.isReady(cacheFs, marker)
-    elseif kind == "starter-choice" then
-      local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
-      return StarterChoiceAssetCache.isReady(cacheFs, marker)
-    elseif kind == "items" then
-      local ItemCache = require("libs.assets.src.ItemCache")
-      return ItemCache.isReady(cacheFs, marker)
-    elseif kind == "bag" then
-      local BagCache = require("libs.assets.src.BagCache")
-      return BagCache.isReady(cacheFs, marker)
-    elseif kind == "mon-catalog" then
-      local MonCache = require("libs.assets.src.MonCache")
-      return MonCache.isCatalogReady(cacheFs, marker)
-    elseif kind == "mon-layout" then
-      local MonCache = require("libs.assets.src.MonCache")
-      if not MonCache.isLayoutReady(cacheFs, marker) then
-        return false
-      end
-      local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
-      local ready, _ = MonCacheWriter.isLayoutSourceReady(cacheFs, generationId, marker)
-      return ready == true
-    elseif kind == "mon-icon-page" then
-      local MonCache = require("libs.assets.src.MonCache")
-      return MonCache.isPageReady(cacheFs, "icons", canonicalKeyId(key, "page key"), marker)
-    elseif kind == "mon-portrait-page" then
-      local MonCache = require("libs.assets.src.MonCache")
-      return MonCache.isPageReady(cacheFs, "portraits", canonicalKeyId(key, "page key"), marker)
-    elseif kind == "mon-summary" then
-      local MonCache = require("libs.assets.src.MonCache")
-      if not MonCache.isReady(cacheFs, marker) then
-        return false
-      end
-      for _, pageId in ipairs(assert(plans.iconPageIds, "mon summary needs the icon pages")) do
-        local pageKey = tostring(pageId)
-        if
-          not childReady(cacheFs, generationId, "mon-icon-page", pageKey, function(childMarker)
-            return MonCache.isPageReady(cacheFs, "icons", pageId, childMarker)
-          end)
-        then
-          return false
-        end
-      end
-      for _, pageId in ipairs(assert(plans.portraitPageIds, "mon summary needs the portrait pages")) do
-        local pageKey = tostring(pageId)
-        if
-          not childReady(cacheFs, generationId, "mon-portrait-page", pageKey, function(childMarker)
-            return MonCache.isPageReady(cacheFs, "portraits", pageId, childMarker)
-          end)
-        then
-          return false
-        end
-      end
-      return true
-    elseif kind == "message-bank" then
-      local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-      return FieldMessageCache.isBankReady(cacheFs, canonicalKeyId(key, "bank key"), marker)
-    elseif kind == "message-summary" then
-      local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-      if not FieldMessageCache.isReady(cacheFs, marker) then
-        return false
-      end
-      for _, bankId in ipairs(assert(plans.messageBankIds, "message summary needs the required banks")) do
-        if
-          not childReady(cacheFs, generationId, "message-bank", tostring(bankId), function(childMarker)
-            return FieldMessageCache.isBankReady(cacheFs, bankId, childMarker)
-          end)
-        then
-          return false
-        end
-      end
-      return true
-    elseif kind == "audio-bank" then
-      local AudioCache = require("libs.assets.src.audio.AudioCache")
-      return AudioCache.isBankReady(cacheFs, canonicalKeyId(key, "bank key"), marker)
-    elseif kind == "audio-catalog" then
-      local AudioCache = require("libs.assets.src.audio.AudioCache")
-      return AudioCache.isCatalogReady(cacheFs, marker)
-    elseif kind == "audio-summary" then
-      local AudioCache = require("libs.assets.src.audio.AudioCache")
-      if not AudioCache.isReady(cacheFs, marker) then
-        return false
-      end
-      for _, bankId in ipairs(assert(plans.audioBankIds, "audio summary needs the bank closures")) do
-        if
-          not childReady(cacheFs, generationId, "audio-bank", tostring(bankId), function(childMarker)
-            return AudioCache.isBankReady(cacheFs, bankId, childMarker)
-          end)
-        then
-          return false
-        end
-      end
-      return true
-    elseif kind == "script-member" then
-      local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
-      local scriptPlan = assert(plans.scriptPlan, "script members need the generation plan")
-      local memberId = canonicalKeyId(key, "member key")
-      local ready, _ = ScriptCacheWriter.isMemberReady(cacheFs, scriptPlan, memberId)
-      return ready == true
-    elseif kind == "script-summary" then
-      local ScriptCache = require("libs.assets.src.ScriptCache")
-      if not ScriptCache.isReady(cacheFs, marker) then
-        return false
-      end
-      local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
-      local scriptPlan = assert(plans.scriptPlan, "script summary needs the generation plan")
-      for _, memberId in ipairs(assert(plans.scriptMemberIds, "script summary needs the nonempty members")) do
-        if receiptMarker(cacheFs, generationId, "script-member", tostring(memberId)) == nil then
-          return false
-        end
-        local ready, _ = ScriptCacheWriter.isMemberReady(cacheFs, scriptPlan, memberId)
-        if not ready then
-          return false
-        end
-      end
-      return true
-    elseif kind == "map-data" then
-      local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
-      return FieldMapDataCache.isReady(cacheFs, tonumber(key), marker)
-    elseif kind == "field-cell" then
-      local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
-      local matrixMemberId, index = key:match("^([0-9]+)-([0-9]+)$")
-      local descriptor = nil
-      for _, matrix in ipairs(assert(plans.indexBundle, "cells need the canonical index").index.matrices) do
-        if matrix.matrixMemberId == tonumber(matrixMemberId) then
-          for _, cell in ipairs(matrix.cells) do
-            if cell.index == tonumber(index) then
-              descriptor = cell
-              break
-            end
-          end
-        end
-        if descriptor ~= nil then
-          break
-        end
-      end
-      if descriptor == nil then
-        return false
-      end
-      return FieldCellCache.isCellReady(cacheFs, descriptor, marker)
-    elseif kind == "map" then
-      local MapAssetCache = require("libs.assets.src.MapAssetCache")
-      return MapAssetCache.isReady(cacheFs, canonicalKeyId(key, "map key"), marker)
-    elseif kind == "source-plan" then
-      local SourcePlan = require("romdump.src.build.SourcePlan")
-      if marker ~= SourcePlan.marker(generationId) then
-        return false
-      end
-      -- The expected identity always comes from the caller, never from the
-      -- record being validated. The full reader is the single authority:
-      -- any record it rejects is not ready, exactly once.
-      local expected = assert(identity, "source-plan validation requires its expected identity")
-      local plan, _ = SourcePlan.read(cacheFs, expected)
-      if plan == nil then
-        return false
-      end
-      return true, plan
-    end
-    return false
+    return descriptorFor(kind).validate({
+      cacheFs = cacheFs,
+      generationId = generationId,
+      key = key,
+      plans = plans,
+      marker = marker,
+      identity = identity,
+    })
   end)
   if not ok then
     return false

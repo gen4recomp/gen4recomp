@@ -252,6 +252,56 @@ local function openSession(generation, pool, epoch)
   })
 end
 
+-- The scheduler trusts inventory membership that is internally coherent:
+-- bank and record lists only need to ascend without duplicates so concrete
+-- job enumeration stays deterministic. Re-proving the exact producer rule
+-- inside validation would reject a coherent inventory for disagreeing with
+-- the compiler that produced it.
+function T.scheduler_accepts_internally_coherent_membership_without_reproving_its_producer()
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local generation = "coherent-membership-generation"
+  local function warmPlan()
+    return {
+      schema = SourcePlan.SCHEMA,
+      versionId = "heartgold",
+      romSha1 = string.rep("a", 40),
+      generationId = generation,
+      producerId = PRODUCER_ID,
+      world = {
+        maps = { { id = 7 }, { id = 9 } },
+        analysis = { excluded = { { id = 3, reason = "placeholder header" } } },
+      },
+      fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
+      scriptPlan = { members = { { memberId = 1 } }, generationKey = "synthetic-generation" },
+      audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+      audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
+      messageBankIds = FieldMessageCompiler.requiredBankIds(),
+      mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+      mapCellKeys = { [7] = {}, [9] = {} },
+    }
+  end
+  local function trimmed(ids)
+    local out = {}
+    for index = 1, #ids - 1 do
+      out[#out + 1] = ids[index]
+    end
+    return out
+  end
+  Assert.isTrue(SourcePlan.validate(warmPlan(), identity(generation)), "the producer inventory validates")
+  local alteredBanks = warmPlan()
+  alteredBanks.messageBankIds = trimmed(FieldMessageCompiler.requiredBankIds())
+  Assert.isTrue(
+    SourcePlan.validate(alteredBanks, identity(generation)),
+    "the scheduler accepts coherent bank membership without re-proving its producer"
+  )
+  local alteredRecords = warmPlan()
+  alteredRecords.mapDataIds = trimmed(FieldMapDataCompiler.supportedMapIds())
+  Assert.isTrue(
+    SourcePlan.validate(alteredRecords, identity(generation)),
+    "the scheduler accepts coherent record membership without re-proving its producer"
+  )
+end
+
 local function firstOrdinaryMapId()
   local eligible = nil
   for map in MapCatalog.all() do

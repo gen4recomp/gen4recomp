@@ -315,23 +315,14 @@ function SourcePlan.validate(plan, identity)
   if audioIdentity.romSha1 ~= plan.romSha1 then
     return nil, "source inventory sound archive identity disagrees with the ROM identity"
   end
+  -- Scheduler-critical shape only: ascending unique ids keep concrete job
+  -- enumeration deterministic. The compiler that assembles the inventory
+  -- owns the exact producer rule behind these lists.
   if not isAscendingUniqueIds(plan.messageBankIds) then
     return nil, "source inventory message banks are not ascending and unique"
   end
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  if
-    not equalIdLists(plan.messageBankIds --[[@as integer[] ]], FieldMessageCompiler.requiredBankIds())
-  then
-    return nil, "source inventory message banks disagree with the required banks"
-  end
   if not isAscendingUniqueIds(plan.mapDataIds) then
     return nil, "source inventory field records are not ascending and unique"
-  end
-  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
-  if
-    not equalIdLists(plan.mapDataIds --[[@as integer[] ]], FieldMapDataCompiler.supportedMapIds())
-  then
-    return nil, "source inventory field records disagree with the supported records"
   end
   local mapCellKeys = plan.mapCellKeys --[[@as table<integer, string[]> ]]
   if type(mapCellKeys) ~= "table" then
